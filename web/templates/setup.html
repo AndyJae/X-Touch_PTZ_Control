@@ -21,9 +21,22 @@
     <div class="panel">
         <h2>Camera Status</h2>
         <ul class="status-list">
-            <li>CAM 1 — online</li>
-            <li>CAM 2 — online</li>
-            <li>CAM 3 — pending</li>
+            {% for cam in cameras %}
+            <li data-camera-status-row data-camera-id="{{ cam.id }}">
+                <span class="status-dot {{ 'is-connected' if cam.connected }}"></span>
+                {{ cam.name }} ({{ cam.host }}) —
+                <span data-camera-status-text>
+                    {%- if cam.connected -%}
+                        online{{ ' — ' ~ cam.model if cam.model }}
+                    {%- else -%}
+                        {{ cam.error or 'offline' }}
+                    {%- endif -%}
+                </span>
+                <button type="button" class="reconnect-btn" data-reconnect-btn>Reconnect</button>
+            </li>
+            {% else %}
+            <li>Keine Kameras in config.yaml konfiguriert.</li>
+            {% endfor %}
         </ul>
     </div>
 </section>

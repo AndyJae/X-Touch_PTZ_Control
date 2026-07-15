@@ -5,34 +5,39 @@
 
 {% block content %}
 <section class="panel chassis-panel">
-    <h2>MIDI-Steuerfläche — 8 Kanalzüge</h2>
+    <h2>Übersicht — 8 Kanalzüge (Iris live über WebSocket)</h2>
     <div class="chassis">
-        {% for index in range(1, 9) %}
-        {% set fill = (index * 11) % 70 + 15 %}
+        {% for ch in channels %}
+        {% set fill = ((ch.iris * 100) | round) if ch.iris is not none else 0 %}
         {% set lit_seg = (fill // 10) + 1 %}
-        <article class="surface-channel" data-channel="{{ index }}">
-            <div class="channel-index">{{ index }}</div>
+        <article class="surface-channel {{ 'is-unassigned' if not ch.camera_id }}"
+                 data-channel="{{ ch.index }}" data-has-camera="{{ 'true' if ch.camera_id else 'false' }}">
+            <div class="channel-index">{{ ch.index }}</div>
 
-            <div class="encoder" style="--enc-pos: {{ (index * 37) % 100 }}%">
+            <div class="encoder" style="--enc-pos: {{ (ch.index * 37) % 100 }}%">
                 <div class="encoder-ring"></div>
                 <div class="encoder-cap"></div>
             </div>
 
             <div class="encoder-display" data-encoder-display>
                 <span class="encoder-display-fn" data-encoder-fn>GAIN</span>
-                <span class="encoder-display-val" data-encoder-val>+3 dB</span>
+                <span class="encoder-display-val" data-encoder-val>{{ (ch.gain_db ~ ' dB') if ch.gain_db is not none else '—' }}</span>
             </div>
 
             <div class="scribble-strip">
-                <span class="scribble-line">CAM {{ index }}</span>
-                <span class="scribble-line scribble-sub">F 4.0</span>
+                <span class="scribble-line">{{ ch.name or ('CAM ' ~ ch.index) }}</span>
+                {# F-Nummer-Dekodierung ist laut Spec §14 Punkt 10 nicht vollstaendig definiert,
+                   daher hier bewusst Iris-Prozent statt einer erfundenen F-Zahl. #}
+                <span class="scribble-line scribble-sub" data-iris-readout>
+                    {{ (fill ~ '%') if ch.camera_id else '—' }}
+                </span>
             </div>
 
             <div class="surface-buttons">
                 <button type="button" class="surf-btn" data-encoder-fn-select>Button 1</button>
-                <button type="button" class="surf-btn {{ 'is-on' if index == 4 }}">Button 2</button>
-                <button type="button" class="surf-btn {{ 'is-on' if index == 6 }}">Button 3</button>
-                <button type="button" class="surf-btn btn-select {{ 'is-on' if index == 1 }}">SELECT</button>
+                <button type="button" class="surf-btn">Button 2</button>
+                <button type="button" class="surf-btn">Button 3</button>
+                <button type="button" class="surf-btn btn-select {{ 'is-on' if ch.index == 1 }}">SELECT</button>
             </div>
 
             <div class="meter-fader-row">
@@ -41,13 +46,14 @@
                     <span class="meter-seg {{ 'is-lit' if seg <= lit_seg }} {{ 'is-clip' if seg == 10 }}"></span>
                     {% endfor %}
                 </div>
-                <div class="fader-track">
-                    <div class="fader-fill" style="height: {{ fill }}%"></div>
-                    <div class="fader-handle" style="bottom: {{ fill }}%"></div>
+                <div class="fader-track" data-fader-track>
+                    <div class="fader-fill" data-fader-fill style="height: {{ fill }}%"></div>
+                    <div class="fader-handle" data-fader-handle style="bottom: {{ fill }}%"></div>
                 </div>
             </div>
 
-            <span class="tally-dot" data-tally-dot></span>
+            <span class="tally-dot {{ 'is-tally-green' if ch.connected else ('is-tally-red' if ch.camera_id) }}"
+                  data-tally-dot title="{{ ch.error or '' }}"></span>
         </article>
         {% endfor %}
     </div>
