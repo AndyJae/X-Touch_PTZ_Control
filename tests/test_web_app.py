@@ -3,96 +3,30 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+import core.application as core_application
 import web.app as web_app
-from core.state import CameraState
+from core.config import AppConfig
+from tests.fakes import FakeCameraDriver
 
-TEST_CONFIG = {
-    "cameras": [
-        {"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9999},
-    ],
-    "banks": [{"name": "Bank A", "channels": [{"camera": "cam1"}]}],
-    "channel_defaults": {"fader": "iris"},
-    "global": {"rate_limit_hz": 15, "web_port": 8600},
-}
-
-
-class FakeCameraDriver:
-    """Implementiert `drivers.base.CameraDriver`, ohne echtes HTTP zu senden --
-    Spec-Verdrahtung (Mapping -> Rate-Limiter -> Driver -> StateStore ->
-    WebSocket) wird so getestet, ohne von einer echten/emulierten Kamera
-    abhaengig zu sein (Kontrakt-Test statt Wire-Format-Test; Wire-Format wird
-    separat in tests/test_panasonic.py gegen Mock-HTTP geprueft)."""
-
-    def __init__(self, host: str, port: int = 80) -> None:
-        self.host = host
-        self.port = port
-        self.model: str | None = None
-        self._connected = False
-        self.iris = 0.0
-        self.set_iris_calls: list[float] = []
-
-    async def connect(self) -> None:
-        self._connected = True
-        self.model = "AW-UE160"
-
-    async def disconnect(self) -> None:
-        self._connected = False
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
-
-    async def set_iris(self, value: float) -> None:
-        self.set_iris_calls.append(value)
-        self.iris = value
-
-    async def set_auto_iris(self, on: bool) -> None:
-        pass
-
-    async def set_gain_db(self, db: int) -> None:
-        pass
-
-    async def step_gain(self, delta_db: int) -> int:
-        return 0
-
-    async def set_pedestal(self, value: int) -> None:
-        pass
-
-    async def set_rb_gain(self, r: int | None, b: int | None) -> None:
-        pass
-
-    async def set_nd(self, index: int) -> None:
-        pass
-
-    async def cycle_nd(self) -> int:
-        return 0
-
-    async def set_shutter(self, mode: str, value: int | None) -> None:
-        pass
-
-    async def trigger_awb(self) -> None:
-        pass
-
-    async def set_bars(self, on: bool) -> None:
-        pass
-
-    async def recall_preset(self, number: int) -> None:
-        pass
-
-    async def get_state(self) -> CameraState:
-        return CameraState(iris=self.iris, auto_iris=False, gain_db=0, nd_index=0)
-
-    def subscribe(self, callback) -> None:
-        pass
+TEST_CONFIG = AppConfig.model_validate(
+    {
+        "cameras": [
+            {"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9999},
+        ],
+        "banks": [{"name": "Bank A", "channels": [{"camera": "cam1"}]}],
+        "channel_defaults": {"fader": "iris"},
+        "global": {"rate_limit_hz": 15, "web_port": 8600},
+    }
+)
 
 
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setattr(web_app, "load_config", lambda path="config.yaml": TEST_CONFIG)
     monkeypatch.setattr(
-        web_app,
+        core_application,
         "build_driver",
-        lambda camera: FakeCameraDriver(camera["host"], camera.get("port", 80)),
+        lambda camera: FakeCameraDriver(camera.host, camera.port),
     )
     with TestClient(web_app.app) as test_client:
         yield test_client

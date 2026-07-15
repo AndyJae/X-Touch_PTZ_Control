@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 import uvicorn
 
-from web.app import app, load_config
+from core.config import ConfigError, load_config
+from web.app import app
 
 LOGGER = logging.getLogger("ptz_control")
 
 
 def main() -> None:
-    config = load_config()
-    log_level_name = str((config.get("global") or {}).get("log_level", "INFO")).upper()
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"Ungültige config.yaml: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    log_level_name = config.global_.log_level.upper()
     logging.basicConfig(level=getattr(logging, log_level_name, logging.INFO))
 
     # Bind-Adresse: Spec §10 "Bind auf 0.0.0.0 per Config abschaltbar
@@ -20,7 +27,7 @@ def main() -> None:
     # laut Spec §11 Schritt 2 immer, auch ohne MIDI/Kameras -- die eigentliche
     # Komponenten-Verdrahtung (Treiber, Mapping, Rate-Limiter) passiert im
     # FastAPI-Lifespan von `web.app`, siehe dort.
-    port = int((config.get("global") or {}).get("web_port", 8600))
+    port = config.global_.web_port
     LOGGER.info("PTZ Control startet Web-UI auf 127.0.0.1:%d", port)
     uvicorn.run(app, host="127.0.0.1", port=port)
 

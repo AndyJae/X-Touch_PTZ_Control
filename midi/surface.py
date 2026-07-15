@@ -34,12 +34,12 @@ class Surface:
                 function="iris",
             )
 
-    def set_channel_value(self, channel_index: int, value: float, *, source: str = "ui") -> None:
+    async def set_channel_value(self, channel_index: int, value: float, *, source: str = "ui") -> None:
         if 1 <= channel_index <= len(self.channels):
             channel = self.channels[channel_index - 1]
             channel.value = value
             self.state_store.update_channel(channel_index, value=value, source=source)
-            self.event_bus.publish(
+            await self.event_bus.publish(
                 "channel.value_changed",
                 {
                     "channel_index": channel_index,
@@ -49,12 +49,12 @@ class Surface:
                 },
             )
 
-    def set_touch_state(self, channel_index: int, touch_active: bool) -> None:
+    async def set_touch_state(self, channel_index: int, touch_active: bool) -> None:
         if 1 <= channel_index <= len(self.channels):
             channel = self.channels[channel_index - 1]
             channel.touch_active = touch_active
             self.state_store.update_channel(channel_index, touch_active=touch_active, source="midi")
-            self.event_bus.publish(
+            await self.event_bus.publish(
                 "channel.touch_changed",
                 {
                     "channel_index": channel_index,

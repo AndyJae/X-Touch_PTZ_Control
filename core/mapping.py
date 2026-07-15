@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.config import AppConfig
+
 
 @dataclass
 class ChannelMap:
@@ -27,7 +29,7 @@ class MappingEngine:
         }
 
 
-def build_mapping_from_config(config: dict) -> MappingEngine:
+def build_mapping_from_config(config: AppConfig) -> MappingEngine:
     """Baut die Mapping-Engine aus `banks` + `channel_defaults`, Spec §9.
 
     v1: nur die erste Bank ist aktiv (kein Bank-Switch-UI in diesem Schritt,
@@ -36,13 +38,10 @@ def build_mapping_from_config(config: dict) -> MappingEngine:
     `channel_defaults.fader`, nicht pro Kanal ueberschreibbar in diesem Schritt.
     """
     engine = MappingEngine()
-    banks = config.get("banks") or []
-    if not banks:
+    if not config.banks:
         return engine
-    fader_function = (config.get("channel_defaults") or {}).get("fader", "iris")
-    channels = banks[0].get("channels") or []
-    for index, entry in enumerate(channels, start=1):
-        camera_id = (entry or {}).get("camera")
-        if camera_id:
-            engine.set_channel("fader", index, camera_id, fader_function)
+    fader_function = config.channel_defaults.fader
+    for index, entry in enumerate(config.banks[0].channels, start=1):
+        if entry is not None:
+            engine.set_channel("fader", index, entry.camera, fader_function)
     return engine

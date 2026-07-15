@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from core.config import AppConfig
 from core.mapping import build_mapping_from_config
 
 
-def _config(channels: list[dict | None]) -> dict:
-    return {
-        "banks": [{"name": "Bank A", "channels": channels}],
-        "channel_defaults": {"fader": "iris"},
-    }
+def _config(channels: list[dict | None]) -> AppConfig:
+    return AppConfig.model_validate(
+        {
+            "banks": [{"name": "Bank A", "channels": channels}],
+            "channel_defaults": {"fader": "iris"},
+        }
+    )
 
 
 def test_maps_channels_to_cameras_in_order() -> None:
@@ -29,14 +32,14 @@ def test_unassigned_channel_is_missing_not_none_camera() -> None:
 
 
 def test_empty_banks_yields_no_channels() -> None:
-    engine = build_mapping_from_config({"banks": [], "channel_defaults": {"fader": "iris"}})
+    engine = build_mapping_from_config(AppConfig.model_validate({"banks": []}))
 
     assert engine.channels_for_type("fader") == {}
 
 
 def test_fader_function_comes_from_channel_defaults() -> None:
     config = _config([{"camera": "cam1"}])
-    config["channel_defaults"]["fader"] = "iris"
+    config.channel_defaults.fader = "iris"
 
     engine = build_mapping_from_config(config)
 
