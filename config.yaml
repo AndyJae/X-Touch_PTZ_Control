@@ -1,0 +1,24 @@
+midi:
+  transport: system
+  input_port: ""
+  output_port: ""
+  device_profile: xtouch_extender
+
+cameras: []
+
+banks: []
+
+channel_defaults:
+  fader: iris
+  encoder:
+    functions: [gain, pedestal]
+  buttons:
+    rec: { action: awb_trigger }
+    solo: { action: gain_step, step_db: 3 }
+    mute: { action: nd_cycle }
+
+global:
+  rate_limit_hz: 15
+  send_final_on_release: true
+  log_level: INFO
+  web_port: 8600

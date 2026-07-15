@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+
+
+class CameraDriver(ABC):
+    @abstractmethod
+    async def connect(self) -> None:
+        ...
+
+    @abstractmethod
+    async def disconnect(self) -> None:
+        ...
+
+    @property
+    @abstractmethod
+    def connected(self) -> bool:
+        ...
+
+    @abstractmethod
+    async def set_iris(self, value: float) -> None:
+        ...
+
+    @abstractmethod
+    async def set_auto_iris(self, on: bool) -> None:
+        ...
+
+    @abstractmethod
+    async def set_gain_db(self, db: int) -> None:
+        ...
+
+    @abstractmethod
+    async def step_gain(self, delta_db: int) -> int:
+        ...
+
+    @abstractmethod
+    async def set_pedestal(self, value: int) -> None:
+        ...
+
+    @abstractmethod
+    async def set_rb_gain(self, r: int | None, b: int | None) -> None:
+        ...
+
+    @abstractmethod
+    async def set_nd(self, index: int) -> None:
+        ...
+
+    @abstractmethod
+    async def cycle_nd(self) -> int:
+        ...
+
+    @abstractmethod
+    async def set_shutter(self, mode: str, value: int | None) -> None:
+        ...
+
+    @abstractmethod
+    async def trigger_awb(self) -> None:
+        ...
+
+    @abstractmethod
+    async def set_bars(self, on: bool) -> None:
+        ...
+
+    @abstractmethod
+    async def recall_preset(self, number: int) -> None:
+        ...
+
+    @abstractmethod
+    async def get_state(self) -> dict:
+        ...
+
+    @abstractmethod
+    def subscribe(self, callback: Callable[[dict], None]) -> None:
+        ...
