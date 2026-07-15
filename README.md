@@ -6,9 +6,15 @@ Primäre Quelle der Wahrheit für Verhalten und Scope ist
 nur, wie der Code aktuell strukturiert ist.
 
 **Aktueller Stand:** Iris-Steuerung läuft Ende-zu-Ende über das Web-UI
-(Setup verbindet Kamera, Übersicht steuert Iris live). Der X-Touch-Extender-
-Pfad (`midi/`) ist als Scaffold vorhanden, aber noch nicht verdrahtet — MIDI
-ist als zweite Event-Quelle vorgesehen, siehe Architektur unten.
+(Setup verbindet Kamera, Übersicht steuert Iris live). Kameras werden nicht
+mehr extern in `config.yaml` eingetragen, sondern über den "Connect
+Camera"-Button pro Kanal auf der Setup-Seite (Name/IP/Port) registriert —
+die App persistiert das selbst. Kamera-Feature-Buttons (Spec §9a, z. B.
+DRS/Knee/Auto-Iris für AW-UE160) sind Button 2/3 pro Kanal zuweisbar
+(ebenfalls Setup-Seite) und über die Übersicht auslösbar. Der
+X-Touch-Extender-Pfad (`midi/`) ist als Scaffold vorhanden, aber noch nicht
+verdrahtet — MIDI ist als zweite Event-Quelle vorgesehen, siehe Architektur
+unten.
 
 ## Stack
 
@@ -24,8 +30,10 @@ ist als zweite Event-Quelle vorgesehen, siehe Architektur unten.
 2. Dependencies installieren: `pip install -r requirements.txt`
    (für `tools/panasonic_emulator.py`s Control-UI zusätzlich `python-multipart`,
    siehe `pyproject.toml`-Extra `dev`)
-3. `config.yaml` anpassen (Kameras/Bänke; `cameras: []` startet ohne Kamera).
-4. Starten: `python main.py` → Web-UI unter `http://127.0.0.1:8600/`.
+3. Starten: `python main.py` → Web-UI unter `http://127.0.0.1:8600/`
+   (`config.yaml` startet leer, `cameras: []` ist gültig).
+4. Kameras über die Setup-Seite registrieren (Name/IP/Port pro Kanal,
+   "Connect Camera") — nicht mehr von Hand in `config.yaml` eintragen.
 
 Ohne reale Kamera zum Testen: `python tools/panasonic_emulator.py` startet
 einen lokalen AW-UE160-CGI-Emulator (Control-UI unter `--ui-port`, Default
@@ -69,6 +77,15 @@ Treiber           drivers/base.py       CameraDriver-Interface (ABC)
 - **Driver-Interface**: `drivers/base.py` definiert die Kamera-Schnittstelle
   (Spec §6); `drivers/panasonic_aw.py` ist die einzige v1-Implementierung
   (Spec §7). Weitere Kameratypen kämen als zusätzliche Module hinzu.
+- **Kamera-Feature-Buttons** (Spec §9a): Katalog (`BUTTON_FEATURES`/
+  `BUTTON_FEATURE_LABELS`) lebt treiberspezifisch auf `PanasonicAWDriver`,
+  nicht in der `CameraDriver`-ABC — ein Treiber ohne Katalog bietet einfach
+  keine Optionen an. Zustand wird nur lokal getrackt (kein Kamera-Query für
+  diese Kommandos verfügbar, siehe Kommentar dort).
+- **Kamera-Registrierung** (`core/application.py::register_camera`): einzige
+  Stelle, die `AppState.cameras/drivers/rate_limiters/mapping` zur Laufzeit
+  erweitert (alle anderen Use-Cases arbeiten nur mit dem beim Start
+  gebauten Zustand). Kamera-ID ist deterministisch `cam{Kanalnummer}`.
 
 ## Tests
 

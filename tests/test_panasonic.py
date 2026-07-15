@@ -153,3 +153,93 @@ def test_get_state_aggregates_queries() -> None:
     assert state.gain_db == 0
     assert state.nd_index == 2
     assert state.error == "rER1"
+
+
+def test_trigger_button_feature_toggle_sends_on_and_off() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    _run(driver.trigger_button_feature("drs", enabled=True))
+    _run(driver.trigger_button_feature("drs", enabled=False))
+
+    assert seen[0] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OSA:0D:1&res=1"
+    assert seen[1] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OSA:0D:0&res=1"
+
+
+def test_trigger_button_feature_trigger_ignores_enabled() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    _run(driver.trigger_button_feature("awb_black"))
+
+    assert seen == ["http://192.168.0.10/cgi-bin/aw_cam?cmd=OAS&res=1"]
+
+
+def test_trigger_button_feature_auto_iris_delegates_to_set_auto_iris() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    _run(driver.trigger_button_feature("auto_iris", enabled=True))
+
+    # Muss ueber set_auto_iris() laufen (ORS:1), nicht ueber eine zweite,
+    # eigene Kommando-Implementierung fuer denselben Befehl.
+    assert seen == ["http://192.168.0.10/cgi-bin/aw_cam?cmd=ORS:1&res=1"]
+
+
+def test_trigger_button_feature_aww_white_delegates_to_trigger_awb() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    _run(driver.trigger_button_feature("aww_white"))
+
+    assert seen == ["http://192.168.0.10/cgi-bin/aw_cam?cmd=OWS&res=1"]
+
+
+def test_trigger_button_feature_toggle_without_enabled_raises() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    with pytest.raises(ValueError):
+        _run(driver.trigger_button_feature("drs"))
+
+
+def test_trigger_button_feature_unknown_key_raises() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    with pytest.raises(ValueError):
+        _run(driver.trigger_button_feature("does_not_exist", enabled=True))
+
+
+def test_cycle_button_feature_sends_all_commands_of_target_step() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    _run(driver.cycle_button_feature("knee", 2))  # "Auto": OSL:45:1 + OSA:2D:2
+
+    assert seen == [
+        "http://192.168.0.10/cgi-bin/aw_cam?cmd=OSL:45:1&res=1",
+        "http://192.168.0.10/cgi-bin/aw_cam?cmd=OSA:2D:2&res=1",
+    ]
+
+
+def test_cycle_button_feature_out_of_range_raises() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    with pytest.raises(ValueError):
+        _run(driver.cycle_button_feature("knee", 99))

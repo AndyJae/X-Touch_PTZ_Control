@@ -4,40 +4,16 @@
 {% block badge %}Setup{% endblock %}
 
 {% block content %}
-<section class="grid-2">
-    <div class="panel">
-        <h2>MIDI</h2>
-        <label for="midi-port">Port</label>
-        <select id="midi-port">
-            <option>System MIDI Port</option>
-            <option>USB MIDI-Controller</option>
-        </select>
-        <div class="button-row">
-            <button type="button">Resync Surface</button>
-            <button type="button">Reconnect</button>
-        </div>
-    </div>
-
-    <div class="panel">
-        <h2>Camera Status</h2>
-        <ul class="status-list">
-            {% for cam in cameras %}
-            <li data-camera-status-row data-camera-id="{{ cam.id }}">
-                <span class="status-dot {{ 'is-connected' if cam.connected }}"></span>
-                {{ cam.name }} ({{ cam.host }}) —
-                <span data-camera-status-text>
-                    {%- if cam.connected -%}
-                        online{{ ' — ' ~ cam.model if cam.model }}
-                    {%- else -%}
-                        {{ cam.error or 'offline' }}
-                    {%- endif -%}
-                </span>
-                <button type="button" class="reconnect-btn" data-reconnect-btn>Reconnect</button>
-            </li>
-            {% else %}
-            <li>Keine Kameras in config.yaml konfiguriert.</li>
-            {% endfor %}
-        </ul>
+<section class="panel">
+    <h2>MIDI</h2>
+    <label for="midi-port">Port</label>
+    <select id="midi-port">
+        <option>System MIDI Port</option>
+        <option>USB MIDI-Controller</option>
+    </select>
+    <div class="button-row">
+        <button type="button">Resync Surface</button>
+        <button type="button">Reconnect</button>
     </div>
 </section>
 
@@ -60,65 +36,40 @@
             </thead>
             <tbody>
                 {% for index in range(1, 9) %}
-                <tr data-camera-row>
-                    <td><span class="status-dot" data-status-dot></span></td>
+                {% set ch = channels[index - 1] %}
+                <tr data-camera-row data-channel-index="{{ index }}">
+                    <td><span class="status-dot {{ 'is-connected' if ch.connected }}" data-status-dot title="{{ ch.error or '' }}"></span></td>
                     <td>{{ index }}</td>
-                    <td><input type="text" value="CAM {{ index }}" placeholder="Kameraname" /></td>
-                    <td class="ip-cell"><input type="text" class="input-ip" placeholder="192.168.0.1{{ 9 + index }}" /></td>
-                    <td class="port-cell"><input type="text" class="input-port" placeholder="80" /></td>
-                    <td><button type="button" class="connect-btn" data-connect-btn>Connect Camera</button></td>
+                    <td><input type="text" data-name-input value="{{ ch.name or '' }}" placeholder="CAM {{ index }}" /></td>
+                    <td class="ip-cell"><input type="text" class="input-ip" data-host-input value="{{ ch.host or '' }}" placeholder="192.168.0.1{{ 9 + index }}" /></td>
+                    <td class="port-cell"><input type="text" class="input-port" data-port-input value="{{ ch.port or '' }}" placeholder="80" /></td>
+                    <td><button type="button" class="connect-btn {{ 'is-connected' if ch.connected }}" data-connect-btn data-channel-index="{{ index }}">{{ 'Connected' if ch.connected else 'Connect Camera' }}</button></td>
                     <td>
-                        <select>
-                            <option selected>Auto Iris</option>
-                            <option>Auto Focus</option>
-                            <option>ABB (Black)</option>
-                            <option>AWW (White)</option>
-                            <option>DRS</option>
-                            <option>Flare</option>
-                            <option>Gamma</option>
-                            <option>Knee</option>
-                            <option>Linear Matrix</option>
-                            <option>Matrix</option>
-                            <option>OSD</option>
-                            <option>White Clip</option>
+                        <select disabled title="Button 1 ist fest für die Encoder-Funktionsauswahl reserviert (Spec §9)">
+                            <option>Encoder-Auswahl</option>
                         </select>
                     </td>
+                    {% for slot in ["button2", "button3"] %}
+                    {% set features = button_features.get(ch.camera_id, {}) if ch.camera_id else {} %}
+                    {% set assigned = ch.buttons[slot] %}
                     <td>
-                        <select>
-                            <option>Auto Iris</option>
-                            <option>Auto Focus</option>
-                            <option selected>ABB (Black)</option>
-                            <option>AWW (White)</option>
-                            <option>DRS</option>
-                            <option>Flare</option>
-                            <option>Gamma</option>
-                            <option>Knee</option>
-                            <option>Linear Matrix</option>
-                            <option>Matrix</option>
-                            <option>OSD</option>
-                            <option>White Clip</option>
+                        <select
+                            data-button-assign-select
+                            data-channel-index="{{ index }}"
+                            data-button-slot="{{ slot }}"
+                            {{ "disabled" if not features }}
+                        >
+                            <option value="">—</option>
+                            {% for key, label in features.items() %}
+                            <option value="{{ key }}" {{ "selected" if assigned and assigned.key == key }}>{{ label }}</option>
+                            {% endfor %}
                         </select>
                     </td>
-                    <td>
-                        <select>
-                            <option>Auto Iris</option>
-                            <option>Auto Focus</option>
-                            <option>ABB (Black)</option>
-                            <option selected>AWW (White)</option>
-                            <option>DRS</option>
-                            <option>Flare</option>
-                            <option>Gamma</option>
-                            <option>Knee</option>
-                            <option>Linear Matrix</option>
-                            <option>Matrix</option>
-                            <option>OSD</option>
-                            <option>White Clip</option>
-                        </select>
-                    </td>
+                    {% endfor %}
                 </tr>
                 <tr class="camera-type-row">
                     <td></td>
-                    <td colspan="8" class="camera-type-cell">Connected to: <span data-camera-type>—</span></td>
+                    <td colspan="8" class="camera-type-cell">Connected to: <span data-camera-type>{{ ch.model or '—' }}</span></td>
                 </tr>
                 {% endfor %}
             </tbody>

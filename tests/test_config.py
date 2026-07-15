@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from core.config import AppConfig, ConfigError, load_config
+from core.config import AppConfig, ConfigError, load_config, save_config
 
 
 def test_shipped_config_yaml_is_valid() -> None:
@@ -63,3 +64,36 @@ def test_unassigned_bank_channel_is_none() -> None:
 
     assert config.banks[0].channels[0].camera == "cam1"
     assert config.banks[0].channels[1] is None
+
+
+def test_channel_button_slots_accept_button2_and_button3() -> None:
+    config = AppConfig.model_validate(
+        {"banks": [{"name": "Bank A", "channels": [{"camera": "cam1", "buttons": {"button2": "drs", "button3": "knee"}}]}]}
+    )
+
+    assert config.banks[0].channels[0].buttons == {"button2": "drs", "button3": "knee"}
+
+
+def test_channel_button_slot_button1_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="button1"):
+        AppConfig.model_validate(
+            {"banks": [{"name": "Bank A", "channels": [{"camera": "cam1", "buttons": {"button1": "drs"}}]}]}
+        )
+
+
+def test_save_config_roundtrips(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    config = AppConfig.model_validate(
+        {
+            "cameras": [{"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1"}],
+            "banks": [{"name": "Bank A", "channels": [{"camera": "cam1", "buttons": {"button2": "drs"}}, None]}],
+            "global": {"web_port": 9100},
+        }
+    )
+
+    save_config(path, config)
+    reloaded = load_config(path)
+
+    assert reloaded.global_.web_port == 9100
+    assert reloaded.banks[0].channels[0].buttons == {"button2": "drs"}
+    assert reloaded.banks[0].channels[1] is None

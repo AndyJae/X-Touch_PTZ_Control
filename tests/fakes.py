@@ -10,9 +10,17 @@ von tests/test_application.py (Anwendungsschicht, direkt) verwendet.
 from __future__ import annotations
 
 from core.state import CameraState
+from drivers.panasonic_aw import PanasonicAWDriver
 
 
 class FakeCameraDriver:
+    # Wiederverwendet den echten Katalog (Spec §9a) statt einen zweiten,
+    # parallelen Test-Katalog zu erfinden, der von PanasonicAWDriver
+    # abweichen könnte -- Sinn dieses Fakes ist nur, kein echtes HTTP zu
+    # senden, nicht eine andere Feature-Liste zu simulieren.
+    BUTTON_FEATURES = PanasonicAWDriver.BUTTON_FEATURES
+    BUTTON_FEATURE_LABELS = PanasonicAWDriver.BUTTON_FEATURE_LABELS
+
     def __init__(self, host: str, port: int = 80) -> None:
         self.host = host
         self.port = port
@@ -20,6 +28,8 @@ class FakeCameraDriver:
         self._connected = False
         self.iris = 0.0
         self.set_iris_calls: list[float] = []
+        self.button_feature_calls: list[tuple[str, bool | None]] = []
+        self.cycle_feature_calls: list[tuple[str, int]] = []
 
     async def connect(self) -> None:
         self._connected = True
@@ -68,6 +78,12 @@ class FakeCameraDriver:
 
     async def recall_preset(self, number: int) -> None:
         pass
+
+    async def trigger_button_feature(self, key: str, *, enabled: bool | None = None) -> None:
+        self.button_feature_calls.append((key, enabled))
+
+    async def cycle_button_feature(self, key: str, target_index: int) -> None:
+        self.cycle_feature_calls.append((key, target_index))
 
     async def get_state(self) -> CameraState:
         return CameraState(iris=self.iris, auto_iris=False, gain_db=0, nd_index=0)

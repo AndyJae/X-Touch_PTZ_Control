@@ -147,8 +147,12 @@ banks:
   - name: "Bank A"
     channels:                # Index 0–7 = Kanalzug 1–8
       - camera: cam1
+        buttons:              # Button-2/3-Zuordnung pro Kanal, siehe §9a.
+          button2: drs         # Feature-Key aus dem Katalog des erkannten
+          button3: knee        # Kameramodells (button1 ist unzulässig, siehe §9)
       - camera: cam2
       # nicht belegte Kanäle weglassen → Fader unten, Strip leer
+      # `buttons` ist optional; ohne Zuordnung sind Button 2/3 des Kanals inaktiv
 
 channel_defaults:            # gilt für jeden Kanalzug, überschreibbar pro Kanal
   fader: iris                # v1 fix: iris, ausschließlich Blende — keine andere Funktion
@@ -423,7 +427,22 @@ Pro Kamera eine Instanz. Regeln:
 
 ## 9a. Button-Funktionsquelle: Kamera-Modell-Erkennung (extern: smart-reset-browser)
 
-**Status: Anforderung festgehalten, Integrationsmechanismus noch offen (siehe §14).**
+**Status: Für AW-UE160 über das Web-UI umgesetzt. Integrationsmechanismus
+für weitere Modelle sowie physische X-Touch-Auslösung noch offen (siehe §14).**
+
+Umsetzung (`drivers/panasonic_aw.py::PanasonicAWDriver.BUTTON_FEATURES`/
+`BUTTON_FEATURE_LABELS`): der Katalog wurde wörtlich aus
+`smart-reset-browser`s `UI_BUTTONS`/`UI_BUTTON_LABELS` für AW-UE160 in dieses
+Repo portiert — kein Cross-Repo-Import zur Laufzeit (gleiches Muster wie
+`tools/panasonic_emulator.py`). Die Zuordnung Button 2/3 → Feature-Key ist
+pro Kanal in `config.yaml` persistiert (`banks[].channels[].buttons`, §4),
+über die Setup-Seite editierbar. Ausgelöst wird die Aktion aktuell **nur**
+über die schon vorhandenen Button-2/3-Elemente der Übersicht-Seite (Web-UI) —
+**nicht** über den physischen X-Touch Extender, dessen MIDI-Anbindung
+weiterhin nicht implementiert ist (siehe Roadmap/offene Punkte). Zustand
+(an/aus bzw. Cycle-Stufe) wird wie in der Referenzquelle nur lokal getrackt,
+nicht durch Kamera-Rückfrage verifiziert — für die genutzten Kommandos
+existiert kein Query-Gegenstück.
 
 Beim Verbinden einer Kamera wird das Kameramodell erkannt (Teil des bestehenden
 `QID`-Schritts in der Startup-Sequenz, §11). Erkennung analog zu
@@ -459,11 +478,23 @@ Auswahl sind noch nicht festgelegt (§14).
 Seiten/Funktionen v1 — bewusst schlank:
 1. **Setup:** MIDI-Port-Auswahl (Dropdown, Liste live), Verbindungsstatus
    MIDI + je Kamera (grün/gelb/rot), Buttons "Resync Surface", "Reconnect".
+   Kamera-Registrierung pro Kanal (Name/IP/Port, "Connect Camera"-Button in
+   der Kanal-/Tastenbelegungs-Tabelle) — **Nutzerentscheid, Abkehr von der
+   ursprünglichen §10.3-Entscheidung**: Kameras werden nicht mehr extern in
+   `config.yaml` eingetragen, sondern ausschließlich über diesen Button;
+   die App persistiert Name/IP/Port selbst in `config.yaml` und verbindet
+   sofort. Kamera-ID intern deterministisch `cam{Kanalnummer}` — erneutes
+   Klicken in derselben Zeile aktualisiert dieselbe Kamera (z. B. bei
+   IP-Wechsel) statt eine zweite anzulegen.
 2. **Übersicht:** 8 Kanalzüge als Karten: Name, Iris (Balken + F-Nummer),
    Gain, ND, Auto-Iris-Badge, Fehlerstatus, sowie aktive Encoder-Funktion
    (per Button 1 gewählt, siehe §9) und deren aktueller Wert. Live via WebSocket.
 3. **Config-Editor:** v1 nur Anzeige des geladenen YAML + "Reload Config"
-   (Datei wird extern editiert — bewusste Entscheidung, kein Formular-Editor).
+   (freies YAML wird weiterhin extern editiert — bewusste Entscheidung, kein
+   allgemeiner Formular-Editor). Kamera-Stammdaten sind davon ausgenommen,
+   siehe Punkt 1 oben — die "kein Formular-Editor"-Entscheidung bezieht sich
+   nur noch auf die restliche, generische YAML-Struktur (Bänke abseits der
+   Kamera-Zuordnung, `channel_defaults`, `global`, `midi`).
 4. **Log-Ansicht:** letzte 200 Zeilen, Filter nach Level.
 
 Kein Auth in v1 (Betrieb im geschlossenen Produktionsnetz); Bind auf
@@ -546,11 +577,18 @@ MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
    Treiber-Methoden und Encoder-Skalierung/Beschleunigung pro Funktion.
 9. Verwendung des Encoder-Push (Note 32–39, §5.2), nachdem die Funktionsauswahl
    auf Button 1 verlagert wurde — aktuell ungenutzt.
-10. F-Nummer-Dekodiertabelle (`QIF`/`OIF:[Data]`, §7.2): **Geprüft, weiterhin offen.**
-    Sowohl AW-UE160_InterfaceSpecification_E.pdf (Kap. 9, S. 67, „REQUEST IRIS F NO.") als
-    auch die Multi-Modell-Spec nennen ausschließlich dieselben drei Ankerpunkte
-    0Eh=F1.4, A0h=F16, FFh=CLOSE — keine vollständige Dekodiertabelle in der
-    Herstellerdoku vorhanden. **In der Spezifikation nicht definiert.**
+10. F-Nummer-Dekodiertabelle (`QIF`/`OIF:[Data]`, §7.2): **Geprüft, weiterhin offen —
+    genauere Analyse nötig, bevor eine echte F-Zahl (z. B. „F 4.0") angezeigt werden kann.**
+    AW-UE160_InterfaceSpecification_E.pdf (Kap. 9, S. 67, „REQUEST IRIS F NO.") nennt für
+    AW-UE160 nur drei Ankerpunkte: 0Eh=F1.4, A0h=F16, FFh=CLOSE. Die Multi-Modell-Spec
+    (HDIntegratedCamera_InterfaceSpecifications-E.pdf, S. 48/279) hat eine feinere
+    4-Punkte-Tabelle (0Eh=F1.4, 1Ch=F2.8, 38h=F5.6, A0h=F16), die aber ausdrücklich nur für
+    AK-UB300/AW-UE150 gilt, nicht AW-UE160. Diese vier Punkte sind zudem nicht gleichmäßig
+    gestuft (0Eh→1Ch und 1Ch→38h verdoppeln den Hex-Wert je 1 Blendenstufe, 38h→A0h aber nur
+    ~2,86× für 3 Blendenstufen) — eine Interpolation zwischen den Ankerpunkten wäre also
+    keine verlässliche Berechnung, sondern eine Annahme. **In der Spezifikation nicht
+    definiert; bis zur genaueren Analyse (z. B. Messung gegen eine echte Kamera) bleibt die
+    Web-UI bei einer Iris-Prozentanzeige statt einer erfundenen F-Zahl.**
     `drivers/panasonic_aw.py` gibt den Rohwert unverändert zurück, dekodiert nicht.
 11. ~~Shutter-Speed-Wertetabelle (`OSJ:06:[Data]`, 0001h–07D0h, §7.2)~~ **Bestätigt für
     AW-UE160/AW-UE150** (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, S. 50, „SHUTTER

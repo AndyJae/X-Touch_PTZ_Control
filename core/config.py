@@ -43,6 +43,23 @@ class CameraConfig(BaseModel):
 
 class BankChannelConfig(BaseModel):
     camera: str
+    # Feature-Button-Zuordnung pro Kanal (Spec §9a): Schlüssel nur "button2"/
+    # "button3" -- Button 1 ist laut Spec §9 fest für die Encoder-
+    # Funktionsauswahl reserviert und hier ausgeschlossen. Werte sind freie
+    # Feature-Keys (z. B. "drs", "knee"); nicht gegen eine feste Liste
+    # geprüft, da gültige Keys vom erkannten Kameramodell abhängen (gleiches
+    # Muster wie `camera` oben, das auch nicht gegen `cameras` geprüft wird).
+    buttons: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_button_slots(self) -> "BankChannelConfig":
+        unknown = sorted(set(self.buttons) - {"button2", "button3"})
+        if unknown:
+            raise ValueError(
+                f"ungültige Button-Slots {unknown} -- nur 'button2'/'button3' erlaubt "
+                "(Button 1 ist für die Encoder-Funktionsauswahl reserviert, Spec §9)"
+            )
+        return self
 
 
 class BankConfig(BaseModel):
@@ -103,3 +120,14 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
     except ValidationError as exc:
         errors = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
         raise ConfigError(f"{path}: {errors}") from exc
+
+
+def save_config(path: str | Path, config: AppConfig) -> None:
+    """Schreibt `config` als YAML nach `path`. Voller Datei-Rewrite, kein
+    chirurgisches Patchen einzelner Felder -- unkritisch, solange die Datei
+    keine Kommentare/eigene Formatierung enthält (aktuell der Fall für
+    config.yaml). Gleichzeitige manuelle Bearbeitung der Datei, während die
+    App läuft, würde dabei überschrieben."""
+    data = config.model_dump(mode="json", by_alias=True, exclude_none=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(data, handle, sort_keys=False, allow_unicode=True)

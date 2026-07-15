@@ -10,15 +10,22 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import core.application as core_application
 from core.application import (
+    apply_button_action,
     apply_iris,
+    assign_channel_button,
+    available_button_features,
     build_app_state,
-    camera_status_list,
     channel_snapshot,
     connect_camera,
+    disconnect_camera,
+    register_camera,
+    rename_camera,
 )
-from core.config import AppConfig
+from core.config import AppConfig, load_config
 from tests.fakes import FakeCameraDriver
 
 
@@ -38,13 +45,26 @@ TEST_CONFIG = AppConfig.model_validate(
 )
 
 
-def _build_state(monkeypatch, config: AppConfig = TEST_CONFIG):
+def _build_state(monkeypatch, config: AppConfig = TEST_CONFIG, config_path: str = "config.yaml"):
     monkeypatch.setattr(
         core_application,
         "build_driver",
         lambda camera: FakeCameraDriver(camera.host, camera.port),
     )
-    return build_app_state(config)
+    return build_app_state(config, config_path=config_path)
+
+
+def _config_with_button(slot: str, feature_key: str) -> AppConfig:
+    return AppConfig.model_validate(
+        {
+            "cameras": [
+                {"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9999},
+            ],
+            "banks": [{"name": "Bank A", "channels": [{"camera": "cam1", "buttons": {slot: feature_key}}]}],
+            "channel_defaults": {"fader": "iris"},
+            "global": {"rate_limit_hz": 15},
+        }
+    )
 
 
 def test_connect_camera_updates_state_store_on_success(monkeypatch) -> None:
@@ -112,19 +132,265 @@ def test_channel_snapshot_lists_all_eight_channels_with_gaps() -> None:
     assert all(c["camera_id"] is None for c in channels)
 
 
-def test_camera_status_list_reflects_connection_and_model(monkeypatch) -> None:
+def test_disconnect_camera_marks_driver_disconnected(monkeypatch) -> None:
     state = _build_state(monkeypatch)
-
     _run(connect_camera(state, "cam1"))
 
-    statuses = camera_status_list(state)
-    assert statuses == [
-        {
-            "id": "cam1",
-            "name": "CAM 1",
-            "host": "127.0.0.1",
-            "connected": True,
-            "model": "AW-UE160",
-            "error": None,
-        }
-    ]
+    _run(disconnect_camera(state, "cam1"))
+
+    assert state.drivers["cam1"].connected is False
+
+
+def test_disconnect_camera_publishes_connection_changed(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    received = []
+
+    async def on_connection_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("connection_changed", on_connection_changed)
+
+    _run(disconnect_camera(state, "cam1"))
+
+    assert received == [{"camera_id": "cam1"}]
+
+
+def test_disconnect_camera_unknown_id_is_noop(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+
+    _run(disconnect_camera(state, "does-not-exist"))  # darf nicht raisen
+
+
+def test_available_button_features_returns_driver_catalog(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+
+    assert available_button_features(state, "cam1") == FakeCameraDriver.BUTTON_FEATURE_LABELS
+
+
+def test_available_button_features_unknown_camera_is_empty(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+
+    assert available_button_features(state, "does-not-exist") == {}
+
+
+def test_assign_channel_button_persists_to_config_file(monkeypatch, tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    state = _build_state(monkeypatch, config_path=str(config_path))
+
+    _run(assign_channel_button(state, 1, "button2", "drs"))
+
+    assert state.config.banks[0].channels[0].buttons == {"button2": "drs"}
+    from core.config import load_config
+
+    reloaded = load_config(config_path)
+    assert reloaded.banks[0].channels[0].buttons == {"button2": "drs"}
+
+
+def test_assign_channel_button_clears_with_empty_key(monkeypatch, tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    state = _build_state(monkeypatch, config_path=str(config_path))
+    _run(assign_channel_button(state, 1, "button2", "drs"))
+
+    _run(assign_channel_button(state, 1, "button2", None))
+
+    assert state.config.banks[0].channels[0].buttons == {}
+
+
+def test_assign_channel_button_invalid_slot_raises(monkeypatch, tmp_path) -> None:
+    state = _build_state(monkeypatch, config_path=str(tmp_path / "config.yaml"))
+    with pytest.raises(ValueError):
+        _run(assign_channel_button(state, 1, "button1", "drs"))
+
+
+def test_apply_button_action_toggle_flips_state(monkeypatch) -> None:
+    state = _build_state(monkeypatch, config=_config_with_button("button2", "drs"))
+    _run(connect_camera(state, "cam1"))
+
+    _run(apply_button_action(state, 1, "button2"))
+    _run(apply_button_action(state, 1, "button2"))
+
+    driver = state.drivers["cam1"]
+    assert driver.button_feature_calls == [("drs", True), ("drs", False)]
+    assert state.state_store.get_camera("cam1").feature_states["drs"] is False
+
+
+def test_apply_button_action_trigger_ignores_state(monkeypatch) -> None:
+    state = _build_state(monkeypatch, config=_config_with_button("button2", "awb_black"))
+    _run(connect_camera(state, "cam1"))
+
+    _run(apply_button_action(state, 1, "button2"))
+    _run(apply_button_action(state, 1, "button2"))
+
+    driver = state.drivers["cam1"]
+    assert driver.button_feature_calls == [("awb_black", None), ("awb_black", None)]
+    assert "awb_black" not in state.state_store.get_camera("cam1").feature_states
+
+
+def test_apply_button_action_cycle_wraps(monkeypatch) -> None:
+    state = _build_state(monkeypatch, config=_config_with_button("button3", "knee"))
+    _run(connect_camera(state, "cam1"))
+
+    for _ in range(3):
+        _run(apply_button_action(state, 1, "button3"))
+
+    driver = state.drivers["cam1"]
+    assert driver.cycle_feature_calls == [("knee", 1), ("knee", 2), ("knee", 0)]
+
+
+def test_apply_button_action_without_assignment_is_noop(monkeypatch) -> None:
+    state = _build_state(monkeypatch)  # TEST_CONFIG hat keine Button-Zuordnung
+    _run(connect_camera(state, "cam1"))
+
+    _run(apply_button_action(state, 1, "button2"))
+
+    driver = state.drivers["cam1"]
+    assert driver.button_feature_calls == []
+
+
+def test_apply_button_action_on_disconnected_camera_is_noop(monkeypatch) -> None:
+    state = _build_state(monkeypatch, config=_config_with_button("button2", "drs"))
+    # kein connect_camera() -- Treiber bleibt disconnected
+
+    _run(apply_button_action(state, 1, "button2"))
+
+    driver = state.drivers["cam1"]
+    assert driver.button_feature_calls == []
+
+
+def test_apply_button_action_publishes_feature_changed(monkeypatch) -> None:
+    state = _build_state(monkeypatch, config=_config_with_button("button2", "drs"))
+    _run(connect_camera(state, "cam1"))
+    received = []
+
+    async def on_feature_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("feature_changed", on_feature_changed)
+
+    _run(apply_button_action(state, 1, "button2"))
+
+    assert received == [{"camera_id": "cam1", "key": "drs"}]
+
+
+def test_channel_snapshot_includes_button_assignment_and_state(monkeypatch) -> None:
+    state = _build_state(monkeypatch, config=_config_with_button("button2", "drs"))
+    _run(connect_camera(state, "cam1"))
+    _run(apply_button_action(state, 1, "button2"))  # -> enabled True
+
+    channels = channel_snapshot(state)
+    ch1 = channels[0]
+    assert ch1["buttons"]["button2"] == {"key": "drs", "label": "DRS", "state": True}
+    assert ch1["buttons"]["button3"] is None
+
+
+def _empty_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        core_application,
+        "build_driver",
+        lambda camera: FakeCameraDriver(camera.host, camera.port),
+    )
+    return build_app_state(AppConfig.model_validate({}), config_path=str(tmp_path / "config.yaml"))
+
+
+def test_register_camera_creates_camera_and_binds_channel(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+
+    assert [c.id for c in state.config.cameras] == ["cam1"]
+    assert state.config.banks[0].channels[0].camera == "cam1"
+    assert state.mapping.get_channel("fader", 1).camera_id == "cam1"
+    driver = state.drivers["cam1"]
+    assert isinstance(driver, FakeCameraDriver)
+    assert driver.host == "127.0.0.1"
+    assert driver.connected is True
+
+
+def test_register_camera_persists_to_config_file(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+
+    reloaded = load_config(state.config_path)
+    assert reloaded.cameras[0].host == "127.0.0.1"
+    assert reloaded.cameras[0].port == 8081
+    assert reloaded.banks[0].channels[0].camera == "cam1"
+
+
+def test_register_camera_updates_existing_entry_on_same_channel(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+    first_driver = state.drivers["cam1"]
+
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.2", port=8082))
+
+    assert [c.id for c in state.config.cameras] == ["cam1"]  # kein Duplikat
+    assert state.config.cameras[0].host == "127.0.0.2"
+    assert first_driver.connected is False  # alter Treiber wurde disconnected
+    assert state.drivers["cam1"] is not first_driver
+    assert state.drivers["cam1"].host == "127.0.0.2"
+
+
+def test_register_camera_invalid_channel_raises(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    with pytest.raises(ValueError):
+        _run(register_camera(state, 9, name="", host="127.0.0.1", port=80))
+
+
+def test_register_camera_empty_host_raises(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    with pytest.raises(ValueError):
+        _run(register_camera(state, 1, name="", host="", port=80))
+
+
+def test_register_camera_publishes_connection_changed(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    received = []
+
+    async def on_connection_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("connection_changed", on_connection_changed)
+
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+
+    assert received == [{"camera_id": "cam1"}]
+
+
+def test_rename_camera_updates_name_and_persists(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+
+    _run(rename_camera(state, 1, "Studio Weit"))
+
+    assert state.cameras["cam1"].name == "Studio Weit"
+    reloaded = load_config(state.config_path)
+    assert reloaded.cameras[0].name == "Studio Weit"
+
+
+def test_rename_camera_does_not_touch_connection(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+    driver = state.drivers["cam1"]
+    assert driver.connected is True
+
+    _run(rename_camera(state, 1, "Studio Weit"))
+
+    assert driver.connected is True  # derselbe Treiber, nicht neu verbunden/getrennt
+    assert state.drivers["cam1"] is driver
+
+
+def test_rename_camera_empty_name_falls_back_to_default(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+
+    _run(rename_camera(state, 1, "  "))
+
+    assert state.cameras["cam1"].name == "CAM 1"
+
+
+def test_rename_camera_on_unmapped_channel_is_noop(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+
+    _run(rename_camera(state, 3, "Irgendwas"))  # kein Effekt, darf nicht raisen

@@ -19,21 +19,28 @@ from fastapi.templating import Jinja2Templates
 
 from core.application import (
     AppState,
+    apply_button_action,
     apply_iris,
+    assign_channel_button,
+    available_button_features,
     build_app_state,
-    camera_status_list,
     channel_snapshot,
     connect_camera,
+    disconnect_camera,
+    register_camera,
+    rename_camera,
 )
 from core.config import load_config
 
 LOGGER = logging.getLogger("ptz_control.web")
 
+_CONFIG_PATH = "config.yaml"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    config = load_config()
-    state = build_app_state(config)
+    config = load_config(_CONFIG_PATH)
+    state = build_app_state(config, config_path=_CONFIG_PATH)
     app.state.ptz = state
     # Spec §11: Web-UI startet immer, auch wenn Kameras fehlen/nicht erreichbar
     # sind -- Fehler werden pro Kamera geloggt, der Prozess bricht nicht ab.
@@ -72,10 +79,17 @@ async def surface_page(request: Request) -> HTMLResponse:
 @app.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request) -> HTMLResponse:
     state = _ptz_state(request)
+    button_features = {
+        camera_id: available_button_features(state, camera_id) for camera_id in state.cameras
+    }
     return templates.TemplateResponse(
         request=request,
         name="setup.html",
-        context={"active_page": "setup", "cameras": camera_status_list(state)},
+        context={
+            "active_page": "setup",
+            "channels": channel_snapshot(state),
+            "button_features": button_features,
+        },
     )
 
 
@@ -89,19 +103,75 @@ async def logs_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request=request, name="logs.html", context={"active_page": "logs"})
 
 
-@app.post("/api/cameras/{camera_id}/connect")
-async def api_connect_camera(camera_id: str, request: Request) -> JSONResponse:
+@app.post("/api/channels/{channel_index}/camera/disconnect")
+async def api_disconnect_camera(channel_index: int, request: Request) -> JSONResponse:
+    """Entkoppelt die Kamera eines Kanals (Setup-Tabelle: "Connect Camera"
+    im verbundenen Zustand erneut geklickt). Registrierung in config.yaml
+    bleibt bestehen."""
     state = _ptz_state(request)
-    if camera_id not in state.drivers:
-        return JSONResponse({"connected": False, "error": "unbekannte Kamera-ID"}, status_code=404)
+    entry = state.mapping.get_channel("fader", channel_index)
+    if entry is None:
+        return JSONResponse({"error": "kein Kanal/keine Kamera"}, status_code=404)
+    await disconnect_camera(state, entry.camera_id)
+    return JSONResponse({"connected": False})
+
+
+@app.post("/api/channels/{channel_index}/camera")
+async def api_register_camera(channel_index: int, request: Request) -> JSONResponse:
+    """Registriert/aktualisiert die Kamera eines Kanals aus der Setup-Tabelle
+    ("Connect Camera") -- ersetzt externes Eintragen in config.yaml für
+    Kamera-Stammdaten (Nutzerentscheid, Abkehr von Spec §10.3)."""
+    state = _ptz_state(request)
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    host = str(body.get("host") or "").strip()
+    port_raw = body.get("port")
     try:
-        await connect_camera(state, camera_id)
-    except Exception as exc:
-        return JSONResponse({"connected": False, "error": str(exc)}, status_code=502)
-    driver = state.drivers[camera_id]
-    cam_state = state.state_store.get_camera(camera_id)
-    payload = {"connected": driver.connected, "model": driver.model, "error": cam_state.error}
-    return JSONResponse(payload)
+        port = int(port_raw) if port_raw not in (None, "") else 80
+    except (TypeError, ValueError):
+        return JSONResponse({"error": f"ungültiger Port: {port_raw!r}"}, status_code=400)
+    try:
+        await register_camera(state, channel_index, name=name, host=host, port=port)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    entry = state.mapping.get_channel("fader", channel_index)
+    driver = state.drivers[entry.camera_id]
+    cam_state = state.state_store.get_camera(entry.camera_id)
+    return JSONResponse({"connected": driver.connected, "model": driver.model, "error": cam_state.error})
+
+
+@app.post("/api/channels/{channel_index}/camera/name")
+async def api_rename_camera(channel_index: int, request: Request) -> JSONResponse:
+    """Aktualisiert nur den Anzeigenamen (Setup-Tabelle: Namensfeld
+    verlassen) -- unabhängig vom Connect/Disconnect-Toggle, siehe
+    rename_camera()."""
+    state = _ptz_state(request)
+    body = await request.json()
+    name = str(body.get("name") or "")
+    await rename_camera(state, channel_index, name)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/channels/{channel_index}/buttons/{button_slot}")
+async def api_assign_channel_button(channel_index: int, button_slot: str, request: Request) -> JSONResponse:
+    state = _ptz_state(request)
+    body = await request.json()
+    feature_key = body.get("feature_key") or None
+    try:
+        await assign_channel_button(state, channel_index, button_slot, feature_key)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/channels/{channel_index}/buttons/{button_slot}/trigger")
+async def api_trigger_channel_button(channel_index: int, button_slot: str, request: Request) -> JSONResponse:
+    state = _ptz_state(request)
+    try:
+        await apply_button_action(state, channel_index, button_slot)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True})
 
 
 @app.websocket("/ws")

@@ -60,6 +60,59 @@ class PanasonicAWDriver(CameraDriver):
     Callbacks nur für spätere Verwendung, feuert aktuell nichts.
     """
 
+    # Kamera-Feature-Buttons (Spec §9a: Button-2/3-Aktionen kommen aus der
+    # pro Kameramodell verifizierten UI_BUTTONS/UI_BUTTON_LABELS-Definition
+    # des externen Referenzprojekts smart-reset-browser, nicht aus einer
+    # festen Liste in diesem Tool). Wörtlich portiert aus
+    # C:\smart-reset-browser\camera_plugins\panasonic\aw_ue160.py
+    # (UI_BUTTONS/UI_BUTTON_LABELS), dort laut deren CLAUDE.md gegen reale
+    # Panasonic-Interface-Specs verifiziert. NICHT unabhängig gegen die
+    # lokalen PDF-Referenzen (docs/specs/) nachverifiziert — PDF-Rendering
+    # (poppler/pdftoppm) war in dieser Umgebung nicht verfügbar.
+    #
+    # "toggle": on/off-Kommando, kein Query verfügbar (auch in der
+    #   Referenzquelle nicht — Zustand wird dort wie hier nur lokal
+    #   getrackt, nicht kamera-verifiziert, siehe core/state.py).
+    # "trigger": ein einmaliges Kommando, kein Ein/Aus-Zustand.
+    # "cycle": mehrere benannte Schritte, jeder Schritt kann mehrere
+    #   Kommandos umfassen (z. B. "knee").
+    BUTTON_FEATURES: dict[str, dict] = {
+        "auto_focus":    {"kind": "toggle", "on": "OAF:1", "off": "OAF:0"},
+        "auto_iris":     {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
+        "awb_black":     {"kind": "trigger", "cmd": "OAS"},
+        "aww_white":     {"kind": "trigger", "cmd": "OWS"},
+        "drs":           {"kind": "toggle", "on": "OSA:0D:1", "off": "OSA:0D:0"},
+        "flare":         {"kind": "toggle", "on": "OSA:11:1", "off": "OSA:11:0"},
+        "gamma":         {"kind": "toggle", "on": "OSA:0A:1", "off": "OSA:0A:0"},
+        "knee": {
+            "kind": "cycle",
+            "cycle": [
+                {"label": "OFF", "cmd": ["OSL:45:0"]},
+                {"label": "Manual", "cmd": ["OSL:45:1", "OSA:2D:1"]},
+                {"label": "Auto", "cmd": ["OSL:45:1", "OSA:2D:2"]},
+            ],
+        },
+        "linear_matrix": {"kind": "toggle", "on": "OSL:6C:1", "off": "OSL:6C:0"},
+        "matrix":        {"kind": "toggle", "on": "OSA:84:1", "off": "OSA:84:0"},
+        "osd":           {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
+        "white_clip":    {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
+    }
+
+    BUTTON_FEATURE_LABELS: dict[str, str] = {
+        "auto_focus": "Auto Focus",
+        "auto_iris": "Auto Iris",
+        "drs": "DRS",
+        "flare": "Flare",
+        "gamma": "Gamma",
+        "knee": "Knee",
+        "linear_matrix": "Linear Matrix",
+        "matrix": "Matrix",
+        "osd": "OSD",
+        "white_clip": "White Clip",
+        "awb_black": "ABB (Black)",
+        "aww_white": "AWW (White)",
+    }
+
     def __init__(self, host: str, port: int = 80) -> None:
         self.host = host
         self.port = port
@@ -160,6 +213,45 @@ class PanasonicAWDriver(CameraDriver):
         if not 0 <= number <= 99:
             raise ValueError(f"preset number out of range: {number}")
         await self._request("aw_ptz", f"#R{number:02d}")
+
+    # --- Kamera-Feature-Buttons (§9a, Katalog: BUTTON_FEATURES) -----------
+    # Kein Teil der CameraDriver-ABC (Spec §6 bleibt unveraendert) -- die
+    # Anwendungsschicht greift nur ueber getattr(driver, "BUTTON_FEATURES", {})
+    # zu, ein Treiber ohne Katalog bietet dann einfach keine Optionen an.
+
+    async def trigger_button_feature(self, key: str, *, enabled: bool | None = None) -> None:
+        """Toggle (braucht `enabled`) oder Trigger (ignoriert `enabled`).
+        `auto_iris`/`aww_white` delegieren an die vorhandenen typisierten
+        Methoden, um Kommando-Logik nicht doppelt zu halten."""
+        if key == "auto_iris":
+            if enabled is None:
+                raise ValueError("'auto_iris' ist ein Toggle, 'enabled' erforderlich")
+            await self.set_auto_iris(enabled)
+            return
+        if key == "aww_white":
+            await self.trigger_awb()
+            return
+        feature = self.BUTTON_FEATURES.get(key)
+        if feature is None:
+            raise ValueError(f"unbekanntes Button-Feature: {key!r}")
+        if feature["kind"] == "toggle":
+            if enabled is None:
+                raise ValueError(f"{key!r} ist ein Toggle, 'enabled' erforderlich")
+            await self._request("aw_cam", feature["on"] if enabled else feature["off"])
+        elif feature["kind"] == "trigger":
+            await self._request("aw_cam", feature["cmd"])
+        else:
+            raise ValueError(f"{key!r} ist kein Toggle/Trigger, cycle_button_feature() nutzen")
+
+    async def cycle_button_feature(self, key: str, target_index: int) -> None:
+        feature = self.BUTTON_FEATURES.get(key)
+        if feature is None or feature["kind"] != "cycle":
+            raise ValueError(f"{key!r} ist kein Cycle-Feature")
+        steps = feature["cycle"]
+        if not 0 <= target_index < len(steps):
+            raise ValueError(f"cycle index out of range: {target_index}")
+        for cmd in steps[target_index]["cmd"]:
+            await self._request("aw_cam", cmd)
 
     # --- Status ----------------------------------------------------------
 

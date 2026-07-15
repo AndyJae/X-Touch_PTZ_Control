@@ -21,8 +21,11 @@ TEST_CONFIG = AppConfig.model_validate(
 
 
 @pytest.fixture()
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     monkeypatch.setattr(web_app, "load_config", lambda path="config.yaml": TEST_CONFIG)
+    # Verhindert, dass Tests, die register_camera/assign_channel_button ueber
+    # die echte Route ausloesen, in die reale config.yaml des Repos schreiben.
+    monkeypatch.setattr(web_app, "_CONFIG_PATH", str(tmp_path / "config.yaml"))
     monkeypatch.setattr(
         core_application,
         "build_driver",
@@ -125,16 +128,45 @@ def test_set_iris_on_unmapped_channel_is_ignored(client) -> None:
     assert driver.set_iris_calls == []
 
 
-def test_connect_endpoint_returns_model_and_status(client) -> None:
-    response = client.post("/api/cameras/cam1/connect")
+def test_disconnect_camera_endpoint_marks_disconnected(client) -> None:
+    response = client.post("/api/channels/1/camera/disconnect")
+
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
+    assert web_app.app.state.ptz.drivers["cam1"].connected is False
+
+
+def test_disconnect_camera_endpoint_unmapped_channel_returns_404(client) -> None:
+    response = client.post("/api/channels/5/camera/disconnect")
+
+    assert response.status_code == 404
+
+
+def test_rename_camera_endpoint_updates_name_without_disconnecting(client) -> None:
+    response = client.post("/api/channels/1/camera/name", json={"name": "Studio Weit"})
+
+    assert response.status_code == 200
+    assert web_app.app.state.ptz.cameras["cam1"].name == "Studio Weit"
+    assert web_app.app.state.ptz.drivers["cam1"].connected is True
+
+
+def test_register_camera_endpoint_creates_and_connects(client) -> None:
+    response = client.post(
+        "/api/channels/2/camera",
+        json={"name": "CAM 2", "host": "127.0.0.1", "port": 8082},
+    )
 
     assert response.status_code == 200
     body = response.json()
     assert body["connected"] is True
     assert body["model"] == "AW-UE160"
 
+    driver = web_app.app.state.ptz.drivers["cam2"]
+    assert driver.host == "127.0.0.1"
+    assert driver.port == 8082
 
-def test_connect_endpoint_unknown_camera_returns_404(client) -> None:
-    response = client.post("/api/cameras/does-not-exist/connect")
 
-    assert response.status_code == 404
+def test_register_camera_endpoint_empty_host_returns_400(client) -> None:
+    response = client.post("/api/channels/2/camera", json={"name": "", "host": "", "port": ""})
+
+    assert response.status_code == 400

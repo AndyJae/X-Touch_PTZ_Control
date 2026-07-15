@@ -91,7 +91,9 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
 - `QGU`-Abfrage gegen Gerät prüfen
 - Verhalten von `#AXI` bei aktivem Auto-Iris testen
 - Scribble-Strip-Offsets / Device-ID des Extenders verifizieren
-- Integrationsmechanismus für die Button-Funktionsquelle aus `smart-reset-browser` (§9a)
+- Integrationsmechanismus für die Button-Funktionsquelle aus `smart-reset-browser` (§9a) —
+  für AW-UE160 über das Web-UI umgesetzt (siehe Spec §9a); physische Auslösung über den
+  X-Touch Extender bleibt offen, da MIDI weiterhin nicht angeschlossen ist
 - Verhalten bei erkanntem Kameramodell ohne `smart-reset-browser`-Plugin-Modul (§9a)
 - Umfang etwaiger PTZ-Control-eigener Zusatzfunktionen über `smart-reset-browser` hinaus (§9a)
 

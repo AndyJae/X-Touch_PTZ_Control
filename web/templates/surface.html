@@ -35,8 +35,15 @@
 
             <div class="surface-buttons">
                 <button type="button" class="surf-btn" data-encoder-fn-select>Button 1</button>
-                <button type="button" class="surf-btn">Button 2</button>
-                <button type="button" class="surf-btn">Button 3</button>
+                {% for slot in ["button2", "button3"] %}
+                {% set assigned = ch.buttons[slot] %}
+                <button type="button" class="surf-btn {{ 'is-on' if assigned and assigned.state }}"
+                        data-feature-btn data-channel-index="{{ ch.index }}" data-button-slot="{{ slot }}"
+                        {{ "disabled" if not assigned }}
+                        title="{{ assigned.label if assigned else 'keine Funktion zugewiesen (Setup-Seite)' }}">
+                    {{ assigned.label if assigned else ('Button ' ~ (loop.index + 1)) }}
+                </button>
+                {% endfor %}
                 <button type="button" class="surf-btn btn-select {{ 'is-on' if ch.index == 1 }}">SELECT</button>
             </div>
 

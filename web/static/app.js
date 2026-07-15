@@ -32,62 +32,109 @@ function initEncoderFunctionSelect() {
 }
 
 // Setup-Seite: Connect-Camera-Button pro Zeile in "Kamera- & Tastenbelegung".
-// Rein clientseitiger Platzhalter-Toggle (rot = nicht verbunden, grün = verbunden),
-// da hier noch keine echte Kamera-Verbindung (Treiber/HTTP) angebunden ist.
-const DEMO_CAMERA_TYPE = "AW-UE160";
-
+// Verbunden -> erneuter Klick: entkoppelt (POST .../camera/disconnect).
+// Nicht verbunden -> Klick: registriert/aktualisiert die Kamera für diesen
+// Kanal (Name/IP/Port aus den Sibling-Inputs) über POST
+// /api/channels/{index}/camera -- ersetzt externes Eintragen in config.yaml
+// (Nutzerentscheid, Abkehr von Spec §10.3 für Kamera-Stammdaten). Bei Erfolg
+// wird die Seite neu geladen, damit Modell-Anzeige und Button-2/3-Katalog
+// (die vom erkannten Kameramodell abhängen) konsistent aus dem
+// Server-Render kommen, statt mehrere DOM-Stellen einzeln nachzuziehen.
 function initCameraConnectButtons() {
     document.querySelectorAll("[data-camera-row]").forEach((row) => {
         const button = row.querySelector("[data-connect-btn]");
-        const dot = row.querySelector("[data-status-dot]");
-        const typeLabel = row.nextElementSibling ? row.nextElementSibling.querySelector("[data-camera-type]") : null;
-        if (!button || !dot) return;
+        const channelIndex = row.dataset.channelIndex;
+        const nameInput = row.querySelector("[data-name-input]");
+        const hostInput = row.querySelector("[data-host-input]");
+        const portInput = row.querySelector("[data-port-input]");
+        if (!button || !channelIndex || !hostInput) return;
 
-        let connected = false;
-
-        const render = () => {
-            button.textContent = connected ? "Connected" : "Connect Camera";
-            button.classList.toggle("is-connected", connected);
-            dot.classList.toggle("is-connected", connected);
-            if (typeLabel) typeLabel.textContent = connected ? DEMO_CAMERA_TYPE : "—";
-        };
-
-        button.addEventListener("click", () => {
-            connected = !connected;
-            render();
+        button.addEventListener("click", async () => {
+            const isConnected = button.classList.contains("is-connected");
+            button.disabled = true;
+            button.textContent = isConnected ? "Trenne…" : "Verbinde…";
+            try {
+                const res = isConnected
+                    ? await fetch(`/api/channels/${channelIndex}/camera/disconnect`, { method: "POST" })
+                    : await fetch(`/api/channels/${channelIndex}/camera`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                              name: nameInput ? nameInput.value.trim() : "",
+                              host: hostInput.value.trim(),
+                              port: portInput ? portInput.value.trim() : "",
+                          }),
+                      });
+                if (res.ok) {
+                    location.reload();
+                    return;
+                }
+                const data = await res.json();
+                button.textContent = data.error || "Fehler";
+            } catch (err) {
+                button.textContent = "Verbindungsfehler";
+            } finally {
+                button.disabled = false;
+            }
         });
-
-        render();
     });
 }
 
-// Setup-Seite: "Reconnect"-Button im schlanken "Camera Status"-Block (§10.1)
-// -- ruft echt POST /api/cameras/{id}/connect auf, im Unterschied zum reinen
-// Demo-Toggle in initCameraConnectButtons() (Kamera-/Tastenbelegungs-Tabelle,
-// bleibt unangetastetes Mockup, siehe Implementierungsplan).
-function initCameraReconnectButtons() {
-    document.querySelectorAll("[data-camera-status-row]").forEach((row) => {
-        const button = row.querySelector("[data-reconnect-btn]");
-        const dot = row.querySelector(".status-dot");
-        const text = row.querySelector("[data-camera-status-text]");
-        const cameraId = row.dataset.cameraId;
-        if (!button || !cameraId) return;
+// Setup-Seite: Kameraname pro Kanal -- ganz einfaches Eingabefeld ohne
+// weitere Funktion, absichtlich unabhängig vom Connect/Disconnect-Toggle
+// des "Connect Camera"-Buttons (Umbenennen soll keine Verbindung trennen).
+// Speichert bei Verlassen des Felds (change-Event, nicht bei jedem
+// Tastendruck) über POST /api/channels/{index}/camera/name.
+function initCameraNameInputs() {
+    document.querySelectorAll("[data-name-input]").forEach((input) => {
+        const row = input.closest("[data-camera-row]");
+        const channelIndex = row ? row.dataset.channelIndex : null;
+        if (!channelIndex) return;
 
+        input.addEventListener("change", () => {
+            fetch(`/api/channels/${channelIndex}/camera/name`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: input.value.trim() }),
+            });
+        });
+    });
+}
+
+// Setup-Seite: Button-2/3-Zuordnung pro Kanal (Spec §9a) -- persistiert
+// echt über POST /api/channels/{index}/buttons/{slot}.
+function initButtonAssignmentSelects() {
+    document.querySelectorAll("[data-button-assign-select]").forEach((select) => {
+        select.addEventListener("change", async () => {
+            const channelIndex = select.dataset.channelIndex;
+            const buttonSlot = select.dataset.buttonSlot;
+            select.disabled = true;
+            try {
+                await fetch(`/api/channels/${channelIndex}/buttons/${buttonSlot}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ feature_key: select.value }),
+                });
+            } finally {
+                select.disabled = false;
+            }
+        });
+    });
+}
+
+// Übersicht-Seite: Button 2/3 lösen die auf der Setup-Seite zugewiesene
+// Kamera-Feature-Aktion aus (Spec §9a). Der neue Zustand (an/aus/Cycle-Label)
+// kommt über den WebSocket-Snapshot zurück, siehe applySurfaceSnapshot().
+function initFeatureButtons() {
+    document.querySelectorAll("[data-feature-btn]").forEach((button) => {
         button.addEventListener("click", async () => {
+            const channelIndex = button.dataset.channelIndex;
+            const buttonSlot = button.dataset.buttonSlot;
             button.disabled = true;
             try {
-                const res = await fetch(`/api/cameras/${encodeURIComponent(cameraId)}/connect`, {
+                await fetch(`/api/channels/${channelIndex}/buttons/${buttonSlot}/trigger`, {
                     method: "POST",
                 });
-                const data = await res.json();
-                if (dot) dot.classList.toggle("is-connected", !!data.connected);
-                if (text) {
-                    text.textContent = data.connected
-                        ? `online${data.model ? " — " + data.model : ""}`
-                        : (data.error || "offline");
-                }
-            } catch (err) {
-                if (text) text.textContent = "Verbindungsfehler (siehe Log)";
             } finally {
                 button.disabled = false;
             }
@@ -141,6 +188,18 @@ function applySurfaceSnapshot(channels) {
             dot.classList.toggle("is-tally-red", !ch.connected && !!ch.camera_id);
             dot.title = ch.error || "";
         }
+
+        ["button2", "button3"].forEach((slot) => {
+            const button = article.querySelector(`[data-feature-btn][data-button-slot="${slot}"]`);
+            if (!button) return;
+            const assigned = ch.buttons ? ch.buttons[slot] : null;
+            button.disabled = !assigned;
+            button.classList.toggle("is-on", !!(assigned && assigned.state));
+            if (assigned) {
+                button.textContent = assigned.label;
+                button.title = assigned.label;
+            }
+        });
     });
 }
 
@@ -200,10 +259,12 @@ function initFaderDrag(ws) {
 document.addEventListener("DOMContentLoaded", () => {
     initEncoderFunctionSelect();
     initCameraConnectButtons();
-    initCameraReconnectButtons();
+    initCameraNameInputs();
+    initButtonAssignmentSelects();
 
     if (document.querySelector(".surface-channel")) {
         const ws = connectSurfaceSocket();
         initFaderDrag(ws);
+        initFeatureButtons();
     }
 });

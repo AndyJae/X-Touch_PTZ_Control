@@ -114,6 +114,15 @@ def _handle_cam(cmd: str) -> str:
         return cmd  # R/B Gain Preset: nur echoen
     if cmd in ("OWS", "OAS"):
         return cmd  # AWB/ABB-Trigger: Notification-Verhalten wird hier nicht simuliert
+    if cmd.startswith((
+        "OAF:", "OSA:0D:", "OSA:11:", "OSA:0A:", "OSL:45:", "OSA:2D:",
+        "OSL:6C:", "OSA:84:", "DUS:", "OSA:2E:",
+    )):
+        # Kamera-Feature-Buttons (Spec §9a, PanasonicAWDriver.BUTTON_FEATURES):
+        # nur echoen, kein Folgezustand simuliert -- der Treiber fragt diese
+        # Werte nicht ab (keine Query-Kommandos definiert, siehe dortiger
+        # Kommentar), also reicht das Echo fuer den Smoke-Test.
+        return cmd
 
     return f"ER1:{cmd}"
 
