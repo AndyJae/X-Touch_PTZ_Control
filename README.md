@@ -1,4 +1,4 @@
-# Behringer_PTZ
+# PTZ Control
 
 Development environment scaffold for the PTZ Shading Tool specification.
 

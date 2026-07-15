@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}PTZ Control Logs{% endblock %}
+{% block badge %}Logs{% endblock %}
+
+{% block content %}
+<section class="panel">
+    <div class="panel-header-row">
+        <h2>Log-Ausgabe</h2>
+        <label for="log-level" class="visually-hidden">Level</label>
+        <select id="log-level">
+            <option>ALL</option>
+            <option>DEBUG</option>
+            <option>INFO</option>
+            <option>WARNING</option>
+            <option>ERROR</option>
+        </select>
+    </div>
+    <div class="log-list">
+        <div class="log-line"><span class="log-time">10:42:01</span><span class="log-level level-info">INFO</span><span class="log-msg">PTZ Control application starting</span></div>
+        <div class="log-line"><span class="log-time">10:42:01</span><span class="log-level level-info">INFO</span><span class="log-msg">Loaded config with 2 camera entries</span></div>
+        <div class="log-line"><span class="log-time">10:42:02</span><span class="log-level level-warning">WARNING</span><span class="log-msg">MIDI port not configured, waiting for UI selection</span></div>
+        <div class="log-line"><span class="log-time">10:42:03</span><span class="log-level level-info">INFO</span><span class="log-msg">Surface channels initialized: 8</span></div>
+        <div class="log-line"><span class="log-time">10:42:05</span><span class="log-level level-error">ERROR</span><span class="log-msg">cam2: HTTP timeout, retrying</span></div>
+    </div>
+</section>
+{% endblock %}

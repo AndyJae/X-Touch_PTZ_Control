@@ -1,4 +1,4 @@
-# Claude Project Instructions for Behringer_PTZ
+# Claude Project Instructions for PTZ_Control
 
 ## Projektkontext
 
@@ -55,6 +55,9 @@ Alle Implementierungs- und Änderungsentscheidungen müssen sich auf diese Spezi
 - Panasonic AW-Serie, besonders AW-UE160
 - HTTP-basierte Befehle per CGI
 - Feedback über Update-Notifications, Lens-Info und Polling
+- Externe Referenzquelle für Button-Funktionen: `smart-reset-browser`
+  (lokal `C:\smart-reset-browser`) — verifizierte `UI_BUTTONS`/`UI_BUTTON_LABELS`
+  pro Kameramodell, siehe Spec §9a
 
 ## Arbeitsweise bei Codeänderungen
 
@@ -82,6 +85,9 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
 - `QGU`-Abfrage gegen Gerät prüfen
 - Verhalten von `#AXI` bei aktivem Auto-Iris testen
 - Scribble-Strip-Offsets / Device-ID des Extenders verifizieren
+- Integrationsmechanismus für die Button-Funktionsquelle aus `smart-reset-browser` (§9a)
+- Verhalten bei erkanntem Kameramodell ohne `smart-reset-browser`-Plugin-Modul (§9a)
+- Umfang etwaiger PTZ-Control-eigener Zusatzfunktionen über `smart-reset-browser` hinaus (§9a)
 
 ## Abschlussregel
 

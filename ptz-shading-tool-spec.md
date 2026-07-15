@@ -9,10 +9,17 @@ Interface Specification Dec. 2023).
 ## 1. Ziel und Scope v1
 
 **Kernfunktion:**
-- 8 Motorfader steuern die Blende (Iris) von bis zu 8 Kameras absolut.
-- Buttons (Rec/Solo/Mute pro Kanal) frei belegbar: Gain-Step, ND-Filter, Shutter,
-  AWB-Trigger, Bars, Preset-Recall.
-- Encoder pro Kanal belegbar: Gain, Master Pedestal oder R/B-Gain (umschaltbar per Encoder-Push).
+- 8 Motorfader steuern ausschließlich die Blende (Iris) von bis zu 8 Kameras absolut —
+  dem Fader ist in v1 keine andere Funktion zuweisbar.
+- Button 1 pro Kanal (physisch Rec am X-Touch Extender) ist in v1 fest für die
+  Auswahl der Encoder-Funktion reserviert — NICHT Teil der dynamischen,
+  kameramodell-abhängigen Aktionszuordnung aus §9a. Details siehe §9.
+- Button 2/3 pro Kanal (physisch Solo/Mute, in der UI generisch als „Button 2/3"
+  dargestellt, da frei belegbar) — verfügbare Aktionen werden nach
+  Kamera-Modell-Erkennung dynamisch bereitgestellt, siehe §9a.
+- Encoder pro Kanal steuert die Funktion, die aktuell über Button 1 desselben
+  Kanals ausgewählt ist (zyklisches Durchschalten einer konfigurierten Liste,
+  z. B. Gain, Shutter, Master Black — konkrete Liste vorläufig, siehe §9 und §14).
 - Scribble Strips zeigen Kameraname (Zeile 1) und F-Nummer (Zeile 2).
 - Motorfader-Feedback: Iris-Änderungen von außen (Auto-Iris, Web-UI der Kamera,
   anderer Controller) fahren den Fader nach.
@@ -144,11 +151,13 @@ banks:
       # nicht belegte Kanäle weglassen → Fader unten, Strip leer
 
 channel_defaults:            # gilt für jeden Kanalzug, überschreibbar pro Kanal
-  fader: iris                # v1 fix: iris
+  fader: iris                # v1 fix: iris, ausschließlich Blende — keine andere Funktion
   encoder:
-    functions: [gain, pedestal]   # Encoder-Push schaltet zyklisch durch
+    functions: [gain, shutter, master_black]   # Liste vorläufig, siehe §14;
+                                                 # Button 1 (rec) schaltet zyklisch durch, siehe §9
   buttons:
-    rec:  { action: awb_trigger }
+    # rec (Button 1) hat in v1 keine frei belegbare Aktion mehr —
+    # fest reserviert für Encoder-Funktionsauswahl, siehe §9
     solo: { action: gain_step, step_db: 3 }     # LED an wenn Gain > 0dB
     mute: { action: nd_cycle }                  # THROUGH → 1/4 → 1/16 → 1/64
 
@@ -306,6 +315,19 @@ Alle Befehle per HTTP GET. Kein Keep-Alive möglich (Kamera trennt pro Request) 
 **Achtung `OGU` bei AGC:** Wenn AGC aktiv (Antwortwert 80h), Gain-Steps ignorieren
 und Solo-LED blinken lassen (UI-Hinweis "AGC aktiv").
 
+**Modell-Geltungsbereich (Kreuzprüfung gegen `HDIntegratedCamera_InterfaceSpecifications-E.pdf`,
+Panasonic Multi-Modell-Spec):** Die oben gelisteten Shutter- (`OSJ:03`/`OSJ:06`) und
+Gain-Befehle (`OGU`/`QGU`) sind gegen die dedizierte AW-UE160-Spec verifiziert; die
+Multi-Modell-Spec bestätigt dasselbe Befehlsschema unabhängig für AW-UE150 (Kap. 3.2.4/3.2.6).
+Andere AW-Modelle weichen jedoch ab — dieser Treiber ist laut CLAUDE.md ausschließlich für
+AW-UE160 spezifiziert, die Tabelle gilt NICHT automatisch für andere Modelle:
+- **Shutter:** AW-HE50/HE60/HE130/HR140/HE40/UE70/HE42 nutzen den Einzelbefehl `OSH:[Data]`
+  (fester Enum-Wert pro Framerate, z. B. `6h=1/500`) statt `OSJ:03`+`OSJ:06`. AK-UB300 nutzt
+  `OSG:59`(An/Aus)/`OSG:5A`(Modus)/`OSG:5D`(eigene Enum-Tabelle) — ebenfalls kein roher
+  Hex-Nenner.
+- **Gain:** AK-UB300 hat kein `OGU`/`QGU` — stattdessen `OGS` (Gain-Auswahl LOW/MID/HIGH/
+  S.GAIN1-3) + `OSA:50`/`OSA:51`/`OSA:52` (dB-Werte je Bereich, −6…+36dB).
+
 ### 7.3 Feedback-Kanal
 1. **Update-Notifications (bevorzugt):**
    - Registrieren: `http://{host}/cgi-bin/event?connect=start&my_port={p}&uid=0`
@@ -359,7 +381,10 @@ Pro Kamera eine Instanz. Regeln:
   `(element_type, index) → (camera_id, function, params)`.
 - Bank-Wechsel (v1: über Web-UI; Hardware-Taste gibt es am Extender nicht):
   Full-Resync aller 8 Kanalzüge (Fader, LEDs, Strips).
-- Button-Aktionen v1:
+- Button 1 (physisch Rec) je Kanal ist von der folgenden Tabelle ausgenommen —
+  seine Funktion ist fest die Encoder-Funktionsauswahl (siehe unten).
+- Button-Aktionen v1 für Button 2/3 (vorläufig — wird durch den dynamischen
+  Mechanismus aus §9a abgelöst):
 
 | Action | Verhalten | LED |
 |---|---|---|
@@ -371,10 +396,61 @@ Pro Kamera eine Instanz. Regeln:
 | `preset_recall` | `recall_preset(n)`; LED blinkt bis `q`-Notification | blink→aus |
 | `shutter_cycle` | Shutter-Modes durchschalten | an wenn ≠ OFF |
 
+### Encoder-Funktionsauswahl über Button 1
+
+- Der Encoder eines Kanals steuert immer die Funktion, die aktuell über Button 1
+  (physisch Rec) desselben Kanals ausgewählt ist. Ein Druck auf Button 1 sendet
+  keinen Kamerabefehl, sondern schaltet nur lokal um, welche Funktion der Encoder
+  als Nächstes steuert.
+- Jeder Druck auf Button 1 schaltet die aktive Encoder-Funktion zyklisch durch die
+  in `channel_defaults.encoder.functions` konfigurierte Liste (§4).
+- Die vollständige Funktionsliste ist noch nicht final festgelegt (siehe §14);
+  bisher benannt: Gain, Shutter, Master Black. Die genaue Zuordnung zu
+  Treiber-Methoden (`set_gain_db`/`step_gain`, `set_shutter`, ggf. `set_pedestal`
+  für Master Black — Panasonic-Terminologie "Master Pedestal", §7.2) ist noch zu
+  bestätigen.
 - Encoder v1: relativer Modus. `gain`: ±1 Klick = ±1 Step lt. Gerätetabelle.
-  `pedestal`: ±1 Digit, mit Beschleunigung (Klicks/100 ms > 3 → ×5).
+  Skalierung/Beschleunigung der übrigen Funktionen (Shutter, Master Black) ist noch
+  offen (§14); als Ausgangspunkt: ±1 Digit mit Beschleunigung
+  (Klicks/100 ms > 3 → ×5), analog zur bisherigen Pedestal-Regel.
   LED-Ring zeigt Position innerhalb der Range (Modus "Fan").
+- Encoder-Push (physischer Druckknopf des Encoders, Note 32–39, §5.2) hat in v1
+  keine zugewiesene Funktion mehr, da die Funktionsauswahl nun über Button 1
+  erfolgt — Verwendung noch offen (siehe §14).
 - Select-Button: markiert Kamera als "aktiv" für die Web-UI-Detailansicht.
+
+---
+
+## 9a. Button-Funktionsquelle: Kamera-Modell-Erkennung (extern: smart-reset-browser)
+
+**Status: Anforderung festgehalten, Integrationsmechanismus noch offen (siehe §14).**
+
+Beim Verbinden einer Kamera wird das Kameramodell erkannt (Teil des bestehenden
+`QID`-Schritts in der Startup-Sequenz, §11). Erkennung analog zu
+`smart-reset-browser` (`camera_plugins/panasonic/transport.py::query_camera_id()`):
+CGI-Query `QID` → Modell-Regex `(?:AW|AK)-[A-Z0-9]+` auf die Antwort.
+
+Die für die frei belegbaren Buttons (physisch Solo/Mute, UI: „Button 2/3" — Button 1
+ist davon ausgenommen, siehe §9) angebotenen Aktionen werden **nicht** aus einer
+festen Liste in diesem Tool bezogen,
+sondern aus der pro Kameramodell verifizierten `UI_BUTTONS`/`UI_BUTTON_LABELS`-
+Definition des externen Referenzprojekts `smart-reset-browser`
+(lokal: `C:\smart-reset-browser\camera_plugins\panasonic\<modell>.py`). Diese
+Definitionen sind dort gegen reale Panasonic-Interface-Specs verifiziert
+(Toggle-, Trigger- und Cycle-Buttons; siehe `smart-reset-browser`s eigene
+`CLAUDE.md`, Regel „Do not invent camera API commands or response formats").
+
+Beispiel AW-UE160 (`camera_plugins/panasonic/aw_ue160.py`): Auto Focus, Auto Iris,
+ABB (Black), AWW (White), DRS, Flare, Gamma, Knee (Cycle: Off/Manual/Auto),
+Linear Matrix, Matrix, OSD, White Clip.
+
+Wird ein Kameramodell erkannt, für das `smart-reset-browser` kein Plugin-Modul
+besitzt, ist für diesen Kanal aktuell keine Button-Belegung verfügbar — das genaue
+Verhalten in diesem Fall ist noch nicht spezifiziert (§14).
+
+Zusätzliche, PTZ-Control-eigene Funktionen über den `smart-reset-browser`-Katalog
+hinaus (z. B. aus der bisherigen Aktionsliste in §9) sind möglich, aber Umfang und
+Auswahl sind noch nicht festgelegt (§14).
 
 ---
 
@@ -384,7 +460,8 @@ Seiten/Funktionen v1 — bewusst schlank:
 1. **Setup:** MIDI-Port-Auswahl (Dropdown, Liste live), Verbindungsstatus
    MIDI + je Kamera (grün/gelb/rot), Buttons "Resync Surface", "Reconnect".
 2. **Übersicht:** 8 Kanalzüge als Karten: Name, Iris (Balken + F-Nummer),
-   Gain, ND, Auto-Iris-Badge, Fehlerstatus. Live via WebSocket.
+   Gain, ND, Auto-Iris-Badge, Fehlerstatus, sowie aktive Encoder-Funktion
+   (per Button 1 gewählt, siehe §9) und deren aktueller Wert. Live via WebSocket.
 3. **Config-Editor:** v1 nur Anzeige des geladenen YAML + "Reload Config"
    (Datei wird extern editiert — bewusste Entscheidung, kein Formular-Editor).
 4. **Log-Ansicht:** letzte 200 Zeilen, Filter nach Level.
@@ -399,7 +476,9 @@ Kein Auth in v1 (Betrieb im geschlossenen Produktionsnetz); Bind auf
 1. Config laden + validieren (Abbruch bei Fehler mit klarer Meldung).
 2. Web-UI starten (immer, auch wenn MIDI/Kameras fehlen — Diagnose-Zugang).
 3. MIDI-Port öffnen (falls konfiguriert), sonst auf UI-Auswahl warten.
-4. Pro Kamera: `connect()` → `QID` (Modell loggen) → `QER` (Fehlerstatus) →
+4. Pro Kamera: `connect()` → `QID` (Modell erkennen — bestimmt u. a. die
+   verfügbaren Button-Aktionen, siehe §9a; Modell wird zusätzlich geloggt) →
+   `QER` (Fehlerstatus) →
    `get_state()` (Vollabzug via Einzel-Queries: `#GI`, `QIF`, `QGU`, `QFT`,
    `QRS`, `QBR`) → Notifications registrieren → `#LPC1`.
 5. Full-Resync der Surface: Fader auf Ist-Iris, LEDs, Scribble Strips.
@@ -440,11 +519,56 @@ MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
 
 1. Reale Note-/CC-Belegung des X-Touch Extender im MC-Mode am Gerät
    verifizieren (§5.2) — `--midi-monitor` zuerst bauen.
-2. `QGU`-Query-Kommando für Gain-Ist-Wert gegen Gerät prüfen (Spec listet
-   Request `QGU` → `OGU:[Data]`).
+2. ~~`QGU`-Query-Kommando für Gain-Ist-Wert gegen Gerät prüfen~~ **Bestätigt durch
+   Herstellerdoku** (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, Tabelle „GAIN", S. 47):
+   `Request: QGU` → `Response: OGU:[Data]`, gleiche Kodierung wie Control-Befehl. Auch in
+   der Multi-Modell-Spec für dieselbe Befehlsfamilie bestätigt (HDIntegratedCamera-Spec,
+   Kap. 3.2.6, S. 68) — gilt für Modelle mit `OGU` (nicht AK-UB300, siehe §7.2-Hinweis).
+   **Noch unbestätigt gegen echtes Gerät** — nur Dokumenten-Beleg, kein Laufzeittest.
 3. Verhalten `#AXI` bei aktivem Auto-Iris testen (wird ignoriert oder
    schaltet Auto ab?) → bestimmt, ob Fader-Bewegung Auto-Iris deaktivieren soll
    (empfohlen: ja, explizit `ORS:0` vor erstem `#AXI` nach Touch).
+   **Geprüft, weiterhin offen:** Weder AW-UE160_InterfaceSpecification_E.pdf noch
+   die Multi-Modell-Spec (HDIntegratedCamera_InterfaceSpecifications-E.pdf) dokumentieren
+   dieses Verhalten. Bleibt ein Punkt, der nur per echtem Gerätetest zu klären ist.
 4. Scribble-Strip-Offsets beim Extender identisch zum X-Touch? (Extender ist
    in MC-Welt "Extender-Gerät", ggf. eigene Device-ID im SysEx-Header: 0x15
    statt 0x14 testen.)
+5. Integrationsmechanismus für die Button-Funktionsquelle aus `smart-reset-browser`
+   (§9a) — Abhängigkeit/Import der `camera_plugins`-Module vs. eigene Kopie/Adapter;
+   noch nicht festgelegt.
+6. Verhalten wenn ein erkanntes Kameramodell kein `smart-reset-browser`-Plugin-Modul
+   besitzt (§9a) — noch nicht spezifiziert.
+7. Umfang etwaiger PTZ-Control-eigener Zusatzfunktionen über den
+   `smart-reset-browser`-Katalog hinaus (§9a) — auf später verschoben.
+8. Vollständige Liste der über Button 1 wählbaren Encoder-Funktionen (v1 vorläufig:
+   Gain, Shutter, Master Black, siehe §9) — inkl. verbindlicher Zuordnung zu
+   Treiber-Methoden und Encoder-Skalierung/Beschleunigung pro Funktion.
+9. Verwendung des Encoder-Push (Note 32–39, §5.2), nachdem die Funktionsauswahl
+   auf Button 1 verlagert wurde — aktuell ungenutzt.
+10. F-Nummer-Dekodiertabelle (`QIF`/`OIF:[Data]`, §7.2): **Geprüft, weiterhin offen.**
+    Sowohl AW-UE160_InterfaceSpecification_E.pdf (Kap. 9, S. 67, „REQUEST IRIS F NO.") als
+    auch die Multi-Modell-Spec nennen ausschließlich dieselben drei Ankerpunkte
+    0Eh=F1.4, A0h=F16, FFh=CLOSE — keine vollständige Dekodiertabelle in der
+    Herstellerdoku vorhanden. **In der Spezifikation nicht definiert.**
+    `drivers/panasonic_aw.py` gibt den Rohwert unverändert zurück, dekodiert nicht.
+11. ~~Shutter-Speed-Wertetabelle (`OSJ:06:[Data]`, 0001h–07D0h, §7.2)~~ **Bestätigt für
+    AW-UE160/AW-UE150** (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, S. 50, „SHUTTER
+    SPEED"): `[Data]` (hex) entspricht direkt dem Verschlusszeit-Nenner (Dezimal), z. B.
+    `OSJ:06:003C` = 0x3C = 60 = 1/60. Zulässig sind nur bestimmte Nenner je aktivem
+    Videoformat (z. B. 59.94p: 1/100,1/120,1/125,1/250,1/500,1/1000,1/1500,1/2000 — andere
+    Werte liefern `ER3`). `drivers/panasonic_aw.py` reicht den Wert bereits korrekt als
+    4-stelligen Hex durch (bislang zufällig richtig); Treiber-Kommentar dazu wird korrigiert.
+    **Nicht auf andere Modelle übertragbar:** laut Multi-Modell-Spec (HDIntegratedCamera,
+    Kap. 3.2.4) nutzen AW-HE50/HE60/HE130/HR140/HE40/UE70/HE42 stattdessen `OSH:[Data]`
+    (fester Enum-Wert je Framerate) und AK-UB300 `OSG:5D` (eigene Enum-Tabelle) — jeweils
+    kein roher Hex-Nenner. Die je-Format zulässigen Nenner-Listen sind noch nicht im
+    Treiber als Validierung hinterlegt (aktuell keine Prüfung vor dem Senden).
+12. ~~Response-Format von `QBR` (Bars-Status) und Shutter-Status-Query~~ **Bestätigt:**
+    `QBR` → `OBR:[Data]` (0=Off, 1=On), identisch zur Control-Kodierung von `DCB`
+    (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, S. 34, „BAR"); laut Multi-Modell-Spec
+    konsistent über die gesamte AW-Familie (HDIntegratedCamera, Kap. 3.2.2). Shutter-Status
+    `QSJ:03` → `OSJ:03:[Data]` ebenfalls bestätigt (AW-UE160-Spec, Kap. 9, S. 49f.) — gilt
+    aber nur für die UE160/UE150-Befehlsfamilie, siehe Punkt 11. `get_state()` liefert für
+    beide Werte weiterhin `None`, bis sie im Treiber implementiert werden (kein Code-Änderung
+    in diesem Schritt).

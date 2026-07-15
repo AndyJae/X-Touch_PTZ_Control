@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>{% block title %}PTZ Control{% endblock %}</title>
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="/static/app.js" defer></script>
+</head>
+
+<body>
+    <main class="app-shell">
+        <header class="topbar">
+            <div class="topbar-heading">
+                <h1>PTZ Control</h1>
+                <span class="badge">{% block badge %}{% endblock %}</span>
+            </div>
+            <nav class="topnav">
+                <a href="/" class="{{ 'active' if active_page == 'surface' else '' }}">Surface</a>
+                <a href="/setup" class="{{ 'active' if active_page == 'setup' else '' }}">Setup</a>
+                <a href="/config" class="{{ 'active' if active_page == 'config' else '' }}">Config</a>
+                <a href="/logs" class="{{ 'active' if active_page == 'logs' else '' }}">Logs</a>
+            </nav>
+        </header>
+
+        {% block content %}{% endblock %}
+    </main>
+</body>
+
+</html>

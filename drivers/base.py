@@ -3,6 +3,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+from core.state import CameraState
+
+
+class CameraCommandError(Exception):
+    """Kamera antwortet mit ER1/ER2/ER3 (bzw. eR1/2/3 bei ptz-Befehlen, §7.4)
+    oder ist nach Timeout+1 Retry nicht erreichbar."""
+
+    def __init__(self, message: str, *, command: str, response: str | None = None) -> None:
+        super().__init__(message)
+        self.command = command
+        self.response = response
+
 
 class CameraDriver(ABC):
     @abstractmethod
@@ -67,7 +79,7 @@ class CameraDriver(ABC):
         ...
 
     @abstractmethod
-    async def get_state(self) -> dict:
+    async def get_state(self) -> CameraState:
         ...
 
     @abstractmethod
