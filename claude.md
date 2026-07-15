@@ -15,6 +15,7 @@ Alle Implementierungs- und Änderungsentscheidungen müssen sich auf diese Spezi
 - Keine Annahmen über APIs, Protokolle, Gerätebefehle, Dateistrukturen oder Konfigurationen machen, die nicht in der Spezifikation stehen.
 - Wenn etwas unklar ist, explizit auf den offenen Punkt verweisen oder nach Rückfrage handeln.
 - Nicht „eine plausible Lösung“ implementieren, nur weil sie logisch klingt.
+- **Uneingeschränkte harte Regel:** niemals halluzinieren — auch außerhalb von Geräte-/Protokolldetails, z. B. bei Architektur-, Scope- oder Anforderungsfragen. Bei jeder Unklarheit nachfragen statt raten.
 
 ### 2) Nur aus verifizierbaren Quellen arbeiten
 - Relevante Implementierungen und Entscheidungen müssen auf der vorhandenen Spezifikation, vorhandenen Dateien und echten Laufzeit-/Testbelegen basieren.
@@ -34,6 +35,11 @@ Alle Implementierungs- und Änderungsentscheidungen müssen sich auf diese Spezi
 ### 5) Keine Erfindung von „gebräuchlichen“ Strukturen
 - Neue Module, Methoden, Konfigurationsfelder oder Befehle nur dann hinzufügen, wenn sie in der Spezifikation ausdrücklich vorgesehen oder unmittelbar nötig für ein bereits spezifiziertes Verhalten sind.
 - Neue Dateien oder Architekturelemente sind nur dann sinnvoll, wenn sie die vorhandene Struktur sauber ergänzen.
+
+### 6) Minimal-invasiv arbeiten (harte Regel)
+- Wo immer möglich die kleinstmögliche, gezielte Änderung wählen statt eines größeren Umbaus.
+- Bestehenden Code, Stil oder Struktur nicht „nebenbei“ verbessern, umformatieren oder umbenennen, wenn das nicht Teil der eigentlichen Aufgabe ist.
+- Vor einer größeren Änderung prüfen, ob ein chirurgischer, lokal begrenzter Fix denselben Effekt erzielt — wenn ja, diesen Weg wählen.
 
 ## Technischer Rahmen aus der Spezifikation
 
