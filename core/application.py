@@ -12,6 +12,7 @@ Broadcast-Mechanismus, den es gibt, wäre an dieser Stelle spekulativ.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 
@@ -119,12 +120,32 @@ def _channel_config(state: AppState, channel_index: int) -> BankChannelConfig | 
     return channels[channel_index - 1]
 
 
+def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -> None:
+    """Bruecke Treiber-Events (`subscribe()`, sync per ABC §6) auf den
+    EventBus (async) -- damit reagieren Web-UI und MIDI-Motorfader auch auf
+    Iris-Aenderungen, die nicht von PTZ_Control selbst ausgeloest wurden
+    (z. B. Kamera-eigenes Web-UI), siehe `drivers/panasonic_aw.py`s
+    Lens-Info-Feedback (§7.3)."""
+
+    def on_event(event: dict) -> None:
+        if event.get("type") == "iris_changed":
+            state.state_store.get_camera(camera_id).iris = event["value"]
+            asyncio.create_task(
+                state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": event["value"]})
+            )
+
+    driver.subscribe(on_event)
+
+
 async def connect_camera(state: AppState, camera_id: str) -> None:
-    """Spec §11 Schritt 4 (ohne Notification-Registrierung/#LPC1, die in
-    diesem Schritt noch nicht implementiert sind): `connect()` -> `QID` ->
-    `get_state()` (Vollabzug)."""
+    """Spec §11 Schritt 4: `connect()` -> `QID` -> `get_state()` (Vollabzug),
+    danach Lens-Info-Feedback (§7.3) fuer Treiber, die das anbieten (wie
+    BUTTON_FEATURES, §9a, kein Teil der CameraDriver-ABC -- Zugriff per
+    hasattr(), ein Treiber ohne Unterstuetzung liefert dann einfach keine
+    externen Iris-Updates)."""
     driver = state.drivers[camera_id]
     cam_state = state.state_store.get_camera(camera_id)
+    _wire_camera_events(state, camera_id, driver)
     try:
         await driver.connect()
         if not driver.connected:
@@ -137,6 +158,12 @@ async def connect_camera(state: AppState, camera_id: str) -> None:
             return
         full_state.error = None
         state.state_store.set_camera(camera_id, full_state)
+        start_lens_feedback = getattr(driver, "start_lens_feedback", None)
+        if start_lens_feedback is not None:
+            try:
+                await start_lens_feedback()
+            except CameraCommandError as exc:
+                LOGGER.warning("Kamera %s: Lens-Info-Feedback fehlgeschlagen: %s", camera_id, exc)
     finally:
         await state.event_bus.publish("connection_changed", {"camera_id": camera_id})
 

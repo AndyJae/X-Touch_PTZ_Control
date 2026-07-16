@@ -6,7 +6,13 @@ import httpx
 import pytest
 
 from drivers.base import CameraCommandError
-from drivers.panasonic_aw import PanasonicAWDriver, _data_to_iris, _iris_to_data
+from drivers.panasonic_aw import (
+    PanasonicAWDriver,
+    _data_to_iris,
+    _iris_to_data,
+    _parse_lens_info_iris,
+    _parse_notification_payload,
+)
 
 
 def _run(coro):
@@ -243,3 +249,113 @@ def test_cycle_button_feature_out_of_range_raises() -> None:
     driver = _build_driver(lambda request: httpx.Response(200, text=""))
     with pytest.raises(ValueError):
         _run(driver.cycle_button_feature("knee", 99))
+
+
+# --- Update-Notification-Kanal / Lens-Info (§7.3) ---------------------------
+# Die Hex-Fixtures sind raw TCP-Captures gegen eine reale AW-UE160 nach
+# #LPC1-Registrierung (siehe CLAUDE.md Offene Punkte) -- kein konstruiertes
+# Beispiel, sondern das tatsaechlich beobachtete Frame-Layout.
+_REAL_LPC1_ACK_FRAME = bytes.fromhex(
+    "c0a8000a0001170101011025000100800000000000010010010000000d0a"
+    "6c5043310d0a00020018b8208e1725ba0001170101011025000000000000"
+)
+_REAL_LPI_FRAME = bytes.fromhex(
+    "c0a8000a0002170101011025000100800000000000010018010000000d0a"
+    "6c50493535353842444439420d0a00020018b8208e1725ba00011701010110"
+    "25000000000000"
+)
+
+
+def test_parse_notification_payload_lpc1_ack() -> None:
+    assert _parse_notification_payload(_REAL_LPC1_ACK_FRAME) == "lPC1"
+
+
+def test_parse_notification_payload_lpi() -> None:
+    assert _parse_notification_payload(_REAL_LPI_FRAME) == "lPI5558BDD9B"
+
+
+def test_parse_notification_payload_too_short_returns_none() -> None:
+    assert _parse_notification_payload(b"\x00" * 10) is None
+
+
+def test_parse_lens_info_iris_extracts_last_group() -> None:
+    # lPI[ZZZ][FFF][III] -- Iris sind die letzten 3 Hex-Digits (§7.3.2)
+    assert _parse_lens_info_iris("lPI5558BDD9B") == pytest.approx(_data_to_iris(0xD9B))
+
+
+def test_parse_lens_info_iris_wrong_prefix_returns_none() -> None:
+    assert _parse_lens_info_iris("OIF:2B") is None
+
+
+class _FakeWriter:
+    def close(self) -> None:
+        pass
+
+
+class _FakeReader:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def read(self, n: int) -> bytes:
+        return self._data
+
+
+def test_handle_notification_fires_iris_changed_callback() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_REAL_LPI_FRAME), _FakeWriter()))
+
+    assert events == [{"type": "iris_changed", "value": pytest.approx(_data_to_iris(0xD9B))}]
+
+
+def test_handle_notification_non_lpi_payload_fires_no_callback() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_REAL_LPC1_ACK_FRAME), _FakeWriter()))
+
+    assert events == []
+
+
+def test_start_lens_feedback_registers_and_enables_lpc1() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+
+    async def scenario() -> None:
+        await driver.start_lens_feedback()
+        try:
+            assert "cgi-bin/event?connect=start&my_port=" in seen[0]
+            assert "uid=0" in seen[0]
+            assert seen[1] == "http://192.168.0.10/cgi-bin/aw_ptz?cmd=%23LPC1&res=1"
+        finally:
+            await driver.stop_lens_feedback()
+
+    _run(scenario())
+
+
+def test_stop_lens_feedback_sends_lpc0_and_deregisters() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+
+    async def scenario() -> None:
+        await driver.start_lens_feedback()
+        seen.clear()
+        await driver.stop_lens_feedback()
+
+    _run(scenario())
+
+    assert seen[0] == "http://192.168.0.10/cgi-bin/aw_ptz?cmd=%23LPC0&res=1"
+    assert "cgi-bin/event?connect=stop&my_port=" in seen[1]

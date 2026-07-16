@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Callable
 
 import httpx
@@ -33,6 +35,48 @@ _ERROR_STATE_PREFIXES = ("rER", "OER")  # laut CameraState-Docstring in Spec §6
 
 _REQUEST_TIMEOUT = 1.5  # §7.4: Default 1,5s Timeout, 1 Retry
 
+# --- Update-Notification-Kanal (§7.3.1) + Lens-Info (§7.3.2) ---
+# Frame-Layout (22B Reserve, 2B Size big-endian [=Payload-Laenge+8], 4B Reserve,
+# Payload, 24B Reserve) live gegen die reale AW-UE160 verifiziert (Raw-TCP-
+# Capture nach #LPC1-Registrierung) -- ebenso verifiziert: jede Notification
+# kommt als eigene, kurzlebige TCP-Verbindung mit genau einem Frame, kein
+# Dauer-Stream.
+_NOTIFY_HEADER_RESERVE = 22
+_NOTIFY_SIZE_FIELD_LEN = 2
+_NOTIFY_MID_RESERVE = 4
+_NOTIFY_HEADER_LEN = _NOTIFY_HEADER_RESERVE + _NOTIFY_SIZE_FIELD_LEN + _NOTIFY_MID_RESERVE
+# §7.3.1: QSV-Notifications alle 60s als Heartbeat, >90s ohne Notification ->
+# Verbindung als gestoert werten und neu registrieren. Hier wird JEDE
+# empfangene Notification als Heartbeat gewertet (nicht nur QSV) -- waehrend
+# aktivem #LPC1 kommt ohnehin alle 300ms ein lPI-Frame, das QSV-Intervall ist
+# dann nur der Ruhezustand-Fallback.
+_NOTIFY_HEARTBEAT_TIMEOUT = 90.0
+
+
+def _parse_notification_payload(frame: bytes) -> str | None:
+    if len(frame) < _NOTIFY_HEADER_LEN:
+        return None
+    size = int.from_bytes(
+        frame[_NOTIFY_HEADER_RESERVE : _NOTIFY_HEADER_RESERVE + _NOTIFY_SIZE_FIELD_LEN], "big"
+    )
+    payload_len = size - 8
+    if payload_len < 0 or len(frame) < _NOTIFY_HEADER_LEN + payload_len:
+        return None
+    payload = frame[_NOTIFY_HEADER_LEN : _NOTIFY_HEADER_LEN + payload_len]
+    return payload.decode("ascii", errors="replace").strip()
+
+
+def _parse_lens_info_iris(body: str) -> float | None:
+    """`lPI[ZZZ][FFF][III]` (Spec §7.3.2, Zoom/Fokus/Iris je 3 Hex-Digits) --
+    nur Iris (die letzten 3 Digits) wird ausgewertet, Zoom/Fokus ungenutzt."""
+    if not body.startswith("lPI") or len(body) != 12:
+        return None
+    try:
+        data = int(body[9:12], 16)
+    except ValueError:
+        return None
+    return _data_to_iris(data)
+
 
 def _iris_to_data(value: float) -> int:
     return _IRIS_DATA_MIN + round(value * (_IRIS_DATA_MAX - _IRIS_DATA_MIN))
@@ -54,10 +98,11 @@ def _extract_value(body: str) -> str | None:
 class PanasonicAWDriver(CameraDriver):
     """AW-Serie (Referenz AW-UE160) über CGI/HTTP, §7 der Spec.
 
-    Notification-Feedback-Kanal (§7.3: Update-Notifications, #LPC1 Lens-Info,
-    QSV-Heartbeat) ist hier NICHT implementiert — das ist ein eigener,
-    separater Arbeitsschritt (async TCP-Listener). subscribe() speichert
-    Callbacks nur für spätere Verwendung, feuert aktuell nichts.
+    Notification-Feedback-Kanal (§7.3): Lens-Info (#LPC1, nur Iris) ist über
+    `start_lens_feedback()`/`stop_lens_feedback()` implementiert, siehe dort.
+    Update-Notifications für andere Ereignisse (`OAW`, `OWS` etc., §7.3.1)
+    laufen technisch über denselben Kanal, werden hier aber (noch) nicht
+    ausgewertet -- `_handle_notification()` reagiert nur auf `lPI`-Payloads.
     """
 
     # Kamera-Feature-Buttons (Spec §9a: Button-2/3-Aktionen kommen aus der
@@ -120,6 +165,10 @@ class PanasonicAWDriver(CameraDriver):
         self._connected = False
         self._client: httpx.AsyncClient | None = None
         self._callbacks: list[Callable[[dict], None]] = []
+        self._notify_server: asyncio.Server | None = None
+        self._notify_port: int | None = None
+        self._notify_heartbeat_task: asyncio.Task[None] | None = None
+        self._last_notification_at: float = 0.0
 
     # --- Lifecycle -----------------------------------------------------
 
@@ -131,10 +180,92 @@ class PanasonicAWDriver(CameraDriver):
         self._connected = self.model is not None
 
     async def disconnect(self) -> None:
+        await self.stop_lens_feedback()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
         self._connected = False
+
+    # --- Lens-Info-Feedback (§7.3, Iris-Aenderungen durch andere Quellen) --
+    # Nicht Teil der CameraDriver-ABC (wie BUTTON_FEATURES, §9a) -- die
+    # Anwendungsschicht prueft per hasattr(), ob ein Treiber das anbietet.
+
+    async def start_lens_feedback(self) -> None:
+        """Registriert den Update-Notification-Kanal und aktiviert Lens-Info
+        (#LPC1). Primaere Quelle fuer Iris-Feedback bei extern (z. B.
+        Kamera-eigenes Web-UI) ausgeloesten Aenderungen, da `#AXI` laut Spec
+        kein Update-Notification-Flag hat (§7.3.2)."""
+        if self._client is None:
+            raise CameraCommandError("not connected", command="event?connect=start")
+        server = await asyncio.start_server(self._handle_notification, "0.0.0.0", 0)
+        self._notify_server = server
+        self._notify_port = server.sockets[0].getsockname()[1]
+        await self._notify_request("start")
+        await self._request("aw_ptz", "#LPC1")
+        self._last_notification_at = time.monotonic()
+        self._notify_heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def stop_lens_feedback(self) -> None:
+        if self._notify_heartbeat_task is not None:
+            self._notify_heartbeat_task.cancel()
+            try:
+                await self._notify_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._notify_heartbeat_task = None
+        if self._notify_server is not None:
+            try:
+                await self._request("aw_ptz", "#LPC0")
+            except CameraCommandError:
+                pass
+            try:
+                await self._notify_request("stop")
+            except httpx.HTTPError:
+                pass
+            self._notify_server.close()
+            await self._notify_server.wait_closed()
+            self._notify_server = None
+            self._notify_port = None
+
+    async def _notify_request(self, action: str) -> None:
+        assert self._client is not None
+        url = f"/cgi-bin/event?connect={action}&my_port={self._notify_port}&uid=0"
+        await self._client.get(url)
+
+    async def _handle_notification(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Jede Notification kommt als eigene, kurzlebige TCP-Verbindung mit
+        genau einem Frame (live gegen die reale Kamera verifiziert)."""
+        try:
+            frame = await reader.read(65536)
+        finally:
+            writer.close()
+        self._last_notification_at = time.monotonic()
+        body = _parse_notification_payload(frame)
+        if body is None:
+            return
+        iris = _parse_lens_info_iris(body)
+        if iris is not None:
+            for callback in self._callbacks:
+                callback({"type": "iris_changed", "value": iris})
+
+    async def _heartbeat_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(30)
+                if time.monotonic() - self._last_notification_at > _NOTIFY_HEARTBEAT_TIMEOUT:
+                    await self._reregister_lens_feedback()
+        except asyncio.CancelledError:
+            raise
+
+    async def _reregister_lens_feedback(self) -> None:
+        if self._notify_server is not None:
+            self._notify_server.close()
+            await self._notify_server.wait_closed()
+        server = await asyncio.start_server(self._handle_notification, "0.0.0.0", 0)
+        self._notify_server = server
+        self._notify_port = server.sockets[0].getsockname()[1]
+        await self._notify_request("start")
+        self._last_notification_at = time.monotonic()
 
     @property
     def connected(self) -> bool:
