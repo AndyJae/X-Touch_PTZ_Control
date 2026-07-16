@@ -6,17 +6,20 @@ Primäre Quelle der Wahrheit für Verhalten und Scope ist
 nur, wie der Code aktuell strukturiert ist.
 
 **Aktueller Stand:** Iris-Steuerung läuft Ende-zu-Ende über das Web-UI
-(Setup verbindet Kamera, Übersicht steuert Iris live). Kameras werden nicht
-mehr extern in `config.yaml` eingetragen, sondern über den "Connect
+(Setup verbindet Kamera, Control-Seite steuert Iris live). Kameras werden
+nicht mehr extern in `config.yaml` eingetragen, sondern über den "Connect
 Camera"-Button pro Kanal auf der Setup-Seite (Name/IP/Port) registriert —
-die App persistiert das selbst. Kamera-Feature-Buttons (Spec §9a, z. B.
-DRS/Knee/Auto-Iris für AW-UE160) sind Button 2/3 pro Kanal zuweisbar
-(ebenfalls Setup-Seite) und über die Übersicht auslösbar. Der
-SELECT-Button pro Kanal löst optional einen Bitfocus-Companion-Button fern
-aus (v3 HTTP-API, `core/companion.py`) — bewusste Erweiterung über v1
-hinaus, siehe Spec §9. Der X-Touch-Extender-Pfad (`midi/`) ist als Scaffold
-vorhanden, aber noch nicht verdrahtet — MIDI ist als zweite Event-Quelle
-vorgesehen, siehe Architektur unten.
+die App persistiert das selbst; erneutes Klicken bei bereits verbundener
+Kamera trennt sie wieder (Registrierung bleibt erhalten), Umbenennen läuft
+über ein eigenes, vom Verbindungsstatus unabhängiges Feld. Kamera-Feature-
+Buttons (Spec §9a, z. B. DRS/Knee/Auto-Iris für AW-UE160) sind Button 2/3
+pro Kanal zuweisbar (ebenfalls Setup-Seite) und über die Control-Seite
+auslösbar. Der SELECT-Button pro Kanal löst optional einen
+Bitfocus-Companion-Button fern aus (v3 HTTP-API, `core/companion.py`) —
+bewusste Erweiterung über v1 hinaus, siehe Spec §9. Kopfzeile trägt auf
+allen Seiten ein Logo (`web/static/images/`). Der X-Touch-Extender-Pfad
+(`midi/`) ist als Scaffold vorhanden, aber noch nicht verdrahtet — MIDI ist
+als zweite Event-Quelle vorgesehen, siehe Architektur unten.
 
 ## Stack
 
@@ -58,6 +61,7 @@ Domain/Core       core/config.py        Typisiertes Config-Schema (pydantic v2)
                   core/mapping.py       Kanal->Kamera-Zuordnung
                   core/ratelimit.py     Token-Bucket + Delta-Filter
                   core/state.py         StateStore (Kamera-/Kanal-Zustand)
+                  core/companion.py     Bitfocus-Companion-HTTP-Trigger
 
 Treiber           drivers/base.py       CameraDriver-Interface (ABC)
                   drivers/panasonic_aw.py  AW-UE160-Referenzimplementierung
@@ -104,7 +108,8 @@ python -m pytest tests/
 `TestClient`; `tests/test_application.py` prüft dieselbe Steuerungslogik
 direkt gegen `core/application.py`, ohne FastAPI. Beide nutzen
 `tests/fakes.py`s `FakeCameraDriver` statt echtem HTTP. `tests/test_panasonic.py`
-prüft das Wire-Format des AW-UE160-Treibers gegen `httpx.MockTransport`.
+prüft das Wire-Format des AW-UE160-Treibers, `tests/test_companion.py` das
+von `core/companion.py`, beide gegen `httpx.MockTransport`.
 
 ## Dev-Werkzeug
 

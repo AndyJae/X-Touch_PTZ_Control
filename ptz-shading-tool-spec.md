@@ -83,33 +83,45 @@ Keine Datenbank. Zustand lebt im Prozess; Config auf Disk.
    → Touch-Detection, siehe §5.4)
 4. Web-UI erhält dasselbe Event via WebSocket
 
-**Verzeichnisstruktur:**
+**Verzeichnisstruktur** (Stand: siehe README.md „Architektur" für den
+tagesaktuellen Code-Stand; hier nur die grobe, spec-seitige Einordnung.
+`midi/transport.py` und `tests/test_mackie.py` sind noch nicht angelegt --
+das X-Touch-MIDI-Layer selbst ist weiterhin nicht verdrahtet, siehe §14):
 ```
-ptz-shading/
-├── main.py                  # Entry: Config laden, Komponenten starten, uvicorn
+PTZ_Control/
+├── main.py                  # Entry: Config laden, uvicorn starten
 ├── config.yaml              # User-Config
 ├── core/
-│   ├── bus.py               # Async EventBus (pub/sub, asyncio)
-│   ├── state.py             # StateStore: Soll-/Ist-Werte pro Kamera
-│   ├── mapping.py           # Mapping-Engine (MIDI-Element ↔ Kamera/Funktion)
-│   └── ratelimit.py         # Rate-Limiter pro Kamera
+│   ├── config.py            # Typisiertes Config-Schema (pydantic v2, §4)
+│   ├── bus.py                # Async EventBus (pub/sub, asyncio)
+│   ├── state.py              # CameraState/StateStore: Ist-Werte pro Kamera
+│   ├── mapping.py            # Mapping-Engine (Kanal ↔ Kamera/Funktion)
+│   ├── ratelimit.py          # Rate-Limiter pro Kamera
+│   ├── companion.py          # Bitfocus-Companion-HTTP-Trigger (Erweiterung
+│   │                          #   über v1 hinaus, siehe §9)
+│   └── application.py        # Anwendungsschicht: AppState + alle Use-Cases
 ├── midi/
-│   ├── transport.py         # Port-Auswahl, Open/Close, Reconnect
-│   ├── mackie.py            # MC-Protokoll: Encode/Decode Fader, Buttons,
-│   │                        #   Encoder, LEDs, Scribble Strips (SysEx)
-│   └── surface.py           # Logische Sicht: "Fader 3", "Button Mute 5" …
+│   ├── mackie.py             # MC-Protokoll-Grundgerüst (noch nicht verdrahtet)
+│   └── surface.py            # Logische Sicht, Scaffold (noch nicht verdrahtet)
 ├── drivers/
-│   ├── base.py              # Abstrakte Driver-Basis (Interface §6)
-│   └── panasonic_aw.py      # AW-UE160 u. a. (CGI + Update-Notifications)
+│   ├── base.py                # Abstrakte Driver-Basis (Interface §6)
+│   └── panasonic_aw.py        # AW-UE160-Referenzimplementierung (§7)
 ├── web/
-│   ├── app.py               # FastAPI-App, Routen, WebSocket
-│   ├── templates/           # HTMX-Templates
-│   └── static/
+│   ├── app.py                 # FastAPI-App, Routen, WebSocket (Interface-Schicht)
+│   ├── templates/              # Jinja2-Templates
+│   └── static/                 # app.css/app.js, images/ (Logo)
+├── tools/
+│   └── panasonic_emulator.py  # Lokaler AW-UE160-CGI-Emulator (Dev-Werkzeug)
 └── tests/
-    ├── test_mackie.py       # MC-Encode/Decode gegen bekannte Byte-Folgen
+    ├── test_application.py
+    ├── test_bus.py
+    ├── test_companion.py
+    ├── test_config.py
     ├── test_mapping.py
+    ├── test_panasonic.py       # Gegen Mock-HTTP-Server
     ├── test_ratelimit.py
-    └── test_panasonic.py    # Gegen Mock-HTTP-Server
+    ├── test_web_app.py
+    └── fakes.py                 # Gemeinsame Test-Doubles
 ```
 
 ---
