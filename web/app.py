@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     for driver in state.drivers.values():
         await driver.disconnect()
+    await state.companion_client.aclose()
 
 
 app = FastAPI(title="PTZ Control", lifespan=lifespan)

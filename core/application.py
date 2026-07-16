@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+import httpx
 from fastapi import WebSocket
 
 from core.bus import EventBus
-from core.companion import press_button
+from core.companion import build_client, press_button
 from core.config import (
     AppConfig,
     BankChannelConfig,
@@ -60,6 +61,7 @@ class AppState:
     rate_limiters: dict[str, RateLimiter]
     config_path: str = "config.yaml"
     ws_clients: set[WebSocket] = field(default_factory=set)
+    companion_client: httpx.AsyncClient = field(default_factory=build_client)
 
     async def broadcast(self, payload: dict) -> None:
         stale: list[WebSocket] = []
@@ -257,7 +259,12 @@ async def trigger_companion_select(state: AppState, channel_index: int) -> None:
     if target is None:
         return
     await press_button(
-        state.config.companion.host, state.config.companion.port, target.page, target.row, target.column
+        state.companion_client,
+        state.config.companion.host,
+        state.config.companion.port,
+        target.page,
+        target.row,
+        target.column,
     )
 
 

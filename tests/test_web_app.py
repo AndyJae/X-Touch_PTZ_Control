@@ -176,7 +176,7 @@ def test_trigger_companion_select_endpoint_success(client, monkeypatch) -> None:
     client.post("/api/channels/1/companion", json={"page": 1, "row": 0, "column": 2})
     calls = []
 
-    async def fake_press_button(host, port, page, row, column):
+    async def fake_press_button(client, host, port, page, row, column):
         calls.append((host, port, page, row, column))
 
     monkeypatch.setattr(core_application, "press_button", fake_press_button)
@@ -191,7 +191,7 @@ def test_trigger_companion_select_endpoint_error_returns_502(client, monkeypatch
     client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
     client.post("/api/channels/1/companion", json={"page": 1, "row": 0, "column": 2})
 
-    async def failing_press_button(host, port, page, row, column):
+    async def failing_press_button(client, host, port, page, row, column):
         raise CompanionError("boom")
 
     monkeypatch.setattr(core_application, "press_button", failing_press_button)

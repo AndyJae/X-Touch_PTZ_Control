@@ -29,11 +29,20 @@ class CompanionError(Exception):
     """Companion-Button-Trigger fehlgeschlagen (Verbindung oder Non-2xx-Antwort)."""
 
 
-async def press_button(host: str, port: int, page: int, row: int, column: int) -> None:
+def build_client() -> httpx.AsyncClient:
+    """Ein wiederverwendeter Client statt einem neuen pro Trigger -- ein
+    frischer `httpx.AsyncClient` pro Aufruf baut jedes Mal eine neue
+    Verbindung auf und hat den SELECT-Trigger spuerbar verzoegert (gemessen:
+    ~400ms zusaetzlich pro Klick durch den Verbindungsaufbau)."""
+    return httpx.AsyncClient(timeout=_REQUEST_TIMEOUT)
+
+
+async def press_button(
+    client: httpx.AsyncClient, host: str, port: int, page: int, row: int, column: int
+) -> None:
     url = f"http://{host}:{port}/api/location/{page}/{row}/{column}/press"
     try:
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            response = await client.post(url)
+        response = await client.post(url)
     except httpx.HTTPError as exc:
         raise CompanionError(f"Companion nicht erreichbar ({url}): {exc}") from exc
     if response.status_code >= 400:

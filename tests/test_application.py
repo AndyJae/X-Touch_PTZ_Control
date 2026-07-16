@@ -345,7 +345,7 @@ def test_trigger_companion_select_calls_press_button(monkeypatch, tmp_path) -> N
 
     calls = []
 
-    async def fake_press_button(host, port, page, row, column):
+    async def fake_press_button(client, host, port, page, row, column):
         calls.append((host, port, page, row, column))
 
     monkeypatch.setattr(core_application, "press_button", fake_press_button)
@@ -361,7 +361,7 @@ def test_trigger_companion_select_without_target_is_noop(monkeypatch, tmp_path) 
 
     calls = []
 
-    async def fake_press_button(host, port, page, row, column):
+    async def fake_press_button(client, host, port, page, row, column):
         calls.append((host, port, page, row, column))
 
     monkeypatch.setattr(core_application, "press_button", fake_press_button)
@@ -377,7 +377,7 @@ def test_trigger_companion_select_propagates_companion_error(monkeypatch, tmp_pa
     _run(configure_companion(state, "192.168.0.50", 8000))
     _run(assign_channel_companion_target(state, 1, 1, 0, 2))
 
-    async def failing_press_button(host, port, page, row, column):
+    async def failing_press_button(client, host, port, page, row, column):
         raise CompanionError("boom")
 
     monkeypatch.setattr(core_application, "press_button", failing_press_button)
