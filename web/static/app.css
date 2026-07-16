@@ -9,10 +9,6 @@ html {
 
 :root {
     color-scheme: dark;
-    --bg: #050816;
-    --panel: #0b1220;
-    --panel-2: #111b2f;
-    --panel-3: #17233b;
     --text: #e8edf7;
     --muted: #9ba9c2;
     --accent: #58d0ff;
@@ -281,21 +277,6 @@ button:last-child {
     box-shadow: 0 6px 18px rgba(240, 152, 50, 0.26);
 }
 
-.status-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: 10px;
-}
-
-.status-list li {
-    padding: 10px 12px;
-    border-radius: 10px;
-    background: rgba(16, 28, 47, 0.75);
-    border: 1px solid rgba(88, 208, 255, 0.18);
-}
-
 .assign-table-wrap {
     overflow-x: auto;
 }
@@ -552,29 +533,6 @@ button:last-child {
     gap: 6px;
     align-items: flex-end;
     height: 200px;
-}
-
-.level-meter {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    width: 8px;
-    height: 100%;
-}
-
-.meter-seg {
-    flex: 1;
-    border-radius: 1px;
-    background: #161a1f;
-}
-
-.meter-seg.is-lit {
-    background: linear-gradient(90deg, #58d0ff, #2bb3e5);
-}
-
-.meter-seg.is-lit.is-clip {
-    background: linear-gradient(90deg, #ff8383, #e23e3e);
-    box-shadow: 0 0 6px rgba(255, 80, 80, 0.7);
 }
 
 .fader-track {

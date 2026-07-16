@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from fastapi import WebSocket
 
 from core.bus import EventBus
-from core.companion import CompanionError, press_button
+from core.companion import press_button
 from core.config import (
     AppConfig,
     BankChannelConfig,

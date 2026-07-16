@@ -9,7 +9,6 @@
     <div class="chassis">
         {% for ch in channels %}
         {% set fill = ((ch.iris * 100) | round) if ch.iris is not none else 0 %}
-        {% set lit_seg = (fill // 10) + 1 %}
         <article class="surface-channel {{ 'is-unassigned' if not ch.connected }}"
                  data-channel="{{ ch.index }}" data-has-camera="{{ 'true' if ch.connected else 'false' }}">
             <div class="channel-index">{{ ch.index }}</div>
@@ -19,7 +18,7 @@
                 <div class="encoder-cap"></div>
             </div>
 
-            <div class="encoder-display" data-encoder-display>
+            <div class="encoder-display">
                 <span class="encoder-display-fn" data-encoder-fn>GAIN</span>
                 <span class="encoder-display-val" data-encoder-val>{{ (ch.gain_db ~ ' dB') if ch.gain_db is not none else '—' }}</span>
             </div>
@@ -52,11 +51,6 @@
             </div>
 
             <div class="meter-fader-row">
-                <div class="level-meter">
-                    {% for seg in range(10, 0, -1) %}
-                    <span class="meter-seg {{ 'is-lit' if seg <= lit_seg }} {{ 'is-clip' if seg == 10 }}"></span>
-                    {% endfor %}
-                </div>
                 <div class="fader-track" data-fader-track>
                     <div class="fader-fill" data-fader-fill style="height: {{ fill }}%"></div>
                     <div class="fader-handle" data-fader-handle style="bottom: {{ fill }}%"></div>
