@@ -18,7 +18,15 @@ from dataclasses import dataclass, field
 from fastapi import WebSocket
 
 from core.bus import EventBus
-from core.config import AppConfig, BankChannelConfig, BankConfig, CameraConfig, save_config
+from core.companion import CompanionError, press_button
+from core.config import (
+    AppConfig,
+    BankChannelConfig,
+    BankConfig,
+    CameraConfig,
+    CompanionTarget,
+    save_config,
+)
 from core.mapping import MappingEngine, build_mapping_from_config
 from core.ratelimit import RateLimiter
 from core.state import StateStore
@@ -210,6 +218,49 @@ async def rename_camera(state: AppState, channel_index: int, name: str) -> None:
     await state.event_bus.publish("config_changed", {"channel_index": channel_index})
 
 
+async def configure_companion(state: AppState, host: str, port: int) -> None:
+    """Speichert die globale Bitfocus-Companion-Instanz (eine für alle
+    Kanäle, Nutzerentscheid) -- Setup-Seite, Panel an der Stelle des
+    ehemaligen "Camera Status"-Blocks."""
+    state.config.companion.host = host.strip()
+    state.config.companion.port = port
+    save_config(state.config_path, state.config)
+    await state.event_bus.publish("config_changed", {})
+
+
+async def assign_channel_companion_target(
+    state: AppState, channel_index: int, page: int | None, row: int | None, column: int | None
+) -> None:
+    """Speichert das SELECT-Button-Ziel (Companion Page/Row/Column) eines
+    Kanals dauerhaft. `page/row/column=None` löscht die Zuordnung wieder
+    (Muster: assign_channel_button)."""
+    channel_cfg = _channel_config(state, channel_index)
+    if channel_cfg is None:
+        raise ValueError(f"Kanal {channel_index} hat keine Kamera zugewiesen")
+    if page is None or row is None or column is None:
+        channel_cfg.companion = None
+    else:
+        channel_cfg.companion = CompanionTarget(page=page, row=row, column=column)
+    save_config(state.config_path, state.config)
+    await state.event_bus.publish("config_changed", {"channel_index": channel_index})
+
+
+async def trigger_companion_select(state: AppState, channel_index: int) -> None:
+    """Löst das SELECT-Button-Ziel eines Kanals in Companion aus (Spec §9,
+    bewusste Erweiterung über v1 hinaus -- siehe Modul-Docstring
+    core/companion.py). Kein Effekt ohne zugewiesenes Ziel. Wirft
+    `CompanionError` bei Verbindungsfehler/Non-2xx weiter, damit die Route
+    das dem Nutzer zurückmelden kann -- kein persistenter Fehlerzustand im
+    Snapshot, SELECT ist eine einmalige Aktion ohne Dauerzustand."""
+    channel_cfg = _channel_config(state, channel_index)
+    target = channel_cfg.companion if channel_cfg else None
+    if target is None:
+        return
+    await press_button(
+        state.config.companion.host, state.config.companion.port, target.page, target.row, target.column
+    )
+
+
 async def apply_iris(state: AppState, channel_index: int, value: float, *, final: bool) -> None:
     """Datenfluss Fader -> Kamera, Spec §3: Mapping -> Rate-Limiter -> Driver."""
     entry = state.mapping.get_channel("fader", channel_index)
@@ -331,9 +382,18 @@ def channel_snapshot(state: AppState) -> list[dict]:
                 "auto_iris": cam_state.auto_iris if cam_state else None,
                 "error": cam_state.error if cam_state else None,
                 "buttons": _channel_button_snapshot(state, index, driver, cam_state),
+                "companion": _channel_companion_snapshot(state, index),
             }
         )
     return channels
+
+
+def _channel_companion_snapshot(state: AppState, index: int) -> dict | None:
+    channel_cfg = _channel_config(state, index)
+    target = channel_cfg.companion if channel_cfg else None
+    if target is None:
+        return None
+    return {"page": target.page, "row": target.row, "column": target.column}
 
 
 def _channel_button_snapshot(state: AppState, index: int, driver, cam_state) -> dict:

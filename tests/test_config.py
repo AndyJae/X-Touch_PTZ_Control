@@ -97,3 +97,34 @@ def test_save_config_roundtrips(tmp_path) -> None:
     assert reloaded.global_.web_port == 9100
     assert reloaded.banks[0].channels[0].buttons == {"button2": "drs"}
     assert reloaded.banks[0].channels[1] is None
+
+
+def test_companion_config_defaults() -> None:
+    config = AppConfig.model_validate({})
+
+    assert config.companion.host == ""
+    assert config.companion.port == 8000
+
+
+def test_channel_companion_target_roundtrips(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    config = AppConfig.model_validate(
+        {
+            "companion": {"host": "192.168.0.50", "port": 8000},
+            "banks": [{"name": "Bank A", "channels": [{"camera": "cam1", "companion": {"page": 1, "row": 0, "column": 2}}]}],
+        }
+    )
+
+    save_config(path, config)
+    reloaded = load_config(path)
+
+    assert reloaded.companion.host == "192.168.0.50"
+    assert reloaded.banks[0].channels[0].companion.page == 1
+    assert reloaded.banks[0].channels[0].companion.row == 0
+    assert reloaded.banks[0].channels[0].companion.column == 2
+
+
+def test_channel_without_companion_target_is_none() -> None:
+    config = AppConfig.model_validate({"banks": [{"name": "Bank A", "channels": [{"camera": "cam1"}]}]})
+
+    assert config.banks[0].channels[0].companion is None

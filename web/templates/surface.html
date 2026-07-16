@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}PTZ Control Surface{% endblock %}
-{% block badge %}Surface{% endblock %}
+{% block title %}PTZ Control{% endblock %}
+{% block badge %}Control{% endblock %}
 
 {% block content %}
 <section class="panel chassis-panel">
@@ -10,8 +10,8 @@
         {% for ch in channels %}
         {% set fill = ((ch.iris * 100) | round) if ch.iris is not none else 0 %}
         {% set lit_seg = (fill // 10) + 1 %}
-        <article class="surface-channel {{ 'is-unassigned' if not ch.camera_id }}"
-                 data-channel="{{ ch.index }}" data-has-camera="{{ 'true' if ch.camera_id else 'false' }}">
+        <article class="surface-channel {{ 'is-unassigned' if not ch.connected }}"
+                 data-channel="{{ ch.index }}" data-has-camera="{{ 'true' if ch.connected else 'false' }}">
             <div class="channel-index">{{ ch.index }}</div>
 
             <div class="encoder" style="--enc-pos: {{ (ch.index * 37) % 100 }}%">
@@ -29,7 +29,7 @@
                 {# F-Nummer-Dekodierung ist laut Spec §14 Punkt 10 nicht vollstaendig definiert,
                    daher hier bewusst Iris-Prozent statt einer erfundenen F-Zahl. #}
                 <span class="scribble-line scribble-sub" data-iris-readout>
-                    {{ (fill ~ '%') if ch.camera_id else '—' }}
+                    {{ (fill ~ '%') if ch.connected else '—' }}
                 </span>
             </div>
 
@@ -44,7 +44,11 @@
                     {{ assigned.label if assigned else ('Button ' ~ (loop.index + 1)) }}
                 </button>
                 {% endfor %}
-                <button type="button" class="surf-btn btn-select {{ 'is-on' if ch.index == 1 }}">SELECT</button>
+                <button type="button" class="surf-btn btn-select" data-select-btn data-channel-index="{{ ch.index }}"
+                        {{ "disabled" if not ch.companion }}
+                        title="{{ 'Companion Page ' ~ ch.companion.page ~ '/Row ' ~ ch.companion.row ~ '/Col ' ~ ch.companion.column if ch.companion else 'kein Companion-Ziel zugewiesen (Setup-Seite)' }}">
+                    SELECT
+                </button>
             </div>
 
             <div class="meter-fader-row">

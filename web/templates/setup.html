@@ -4,16 +4,32 @@
 {% block badge %}Setup{% endblock %}
 
 {% block content %}
-<section class="panel">
-    <h2>MIDI</h2>
-    <label for="midi-port">Port</label>
-    <select id="midi-port">
-        <option>System MIDI Port</option>
-        <option>USB MIDI-Controller</option>
-    </select>
-    <div class="button-row">
-        <button type="button">Resync Surface</button>
-        <button type="button">Reconnect</button>
+<section class="grid-2">
+    <div class="panel">
+        <h2>MIDI</h2>
+        <label for="midi-port">Port</label>
+        <select id="midi-port">
+            <option>System MIDI Port</option>
+            <option>USB MIDI-Controller</option>
+        </select>
+        <div class="button-row">
+            <button type="button">Resync Surface</button>
+            <button type="button">Reconnect</button>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Companion</h2>
+        {# Bewusste Erweiterung über v1 hinaus (Spec §9): SELECT-Button löst
+           einen Bitfocus-Companion-Button fern aus. Eine Instanz global für
+           alle Kanäle (Nutzerentscheid). #}
+        <label for="companion-host">Host</label>
+        <input type="text" id="companion-host" data-companion-host value="{{ companion.host }}" placeholder="192.168.0.50" />
+        <label for="companion-port">Port</label>
+        <input type="text" id="companion-port" data-companion-port value="{{ companion.port }}" placeholder="8000" />
+        <div class="button-row">
+            <button type="button" data-companion-save>Speichern</button>
+        </div>
     </div>
 </section>
 
@@ -32,6 +48,7 @@
                     <th>Button 1</th>
                     <th>Button 2</th>
                     <th>Button 3</th>
+                    <th>Select (Companion)</th>
                 </tr>
             </thead>
             <tbody>
@@ -66,10 +83,18 @@
                         </select>
                     </td>
                     {% endfor %}
+                    <td class="companion-cell">
+                        <input type="number" class="input-companion" data-companion-page data-channel-index="{{ index }}"
+                               value="{{ ch.companion.page if ch.companion else '' }}" placeholder="Page" title="Page" />
+                        <input type="number" class="input-companion" data-companion-row data-channel-index="{{ index }}"
+                               value="{{ ch.companion.row if ch.companion else '' }}" placeholder="Row" title="Row" />
+                        <input type="number" class="input-companion" data-companion-column data-channel-index="{{ index }}"
+                               value="{{ ch.companion.column if ch.companion else '' }}" placeholder="Col" title="Column" />
+                    </td>
                 </tr>
                 <tr class="camera-type-row">
                     <td></td>
-                    <td colspan="8" class="camera-type-cell">Connected to: <span data-camera-type>{{ ch.model or '—' }}</span></td>
+                    <td colspan="9" class="camera-type-cell">Connected to: <span data-camera-type>{{ ch.model or '—' }}</span></td>
                 </tr>
                 {% endfor %}
             </tbody>

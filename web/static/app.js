@@ -101,6 +101,63 @@ function initCameraNameInputs() {
     });
 }
 
+// Setup-Seite: globale Bitfocus-Companion-Instanz (Host/Port), Panel an der
+// Stelle des ehemaligen "Camera Status"-Blocks. Bewusste Erweiterung über
+// v1 hinaus (Spec §9) -- eine Instanz für alle Kanäle (Nutzerentscheid).
+function initCompanionConfigForm() {
+    const button = document.querySelector("[data-companion-save]");
+    const hostInput = document.querySelector("[data-companion-host]");
+    const portInput = document.querySelector("[data-companion-port]");
+    if (!button || !hostInput) return;
+
+    const originalLabel = button.textContent;
+
+    button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+            const res = await fetch("/api/companion/config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    host: hostInput.value.trim(),
+                    port: portInput ? portInput.value.trim() : "",
+                }),
+            });
+            button.textContent = res.ok ? "Gespeichert" : "Fehler";
+        } catch (err) {
+            button.textContent = "Verbindungsfehler";
+        } finally {
+            setTimeout(() => { button.textContent = originalLabel; }, 1500);
+            button.disabled = false;
+        }
+    });
+}
+
+// Setup-Seite: SELECT-Ziel (Companion Page/Row/Column) pro Kanal. Alle drei
+// Felder einer Zeile werden zusammen gespeichert -- fehlt eines, wertet der
+// Server das als "keine Zuordnung" (siehe assign_channel_companion_target).
+function initCompanionTargetInputs() {
+    document.querySelectorAll("[data-companion-page], [data-companion-row], [data-companion-column]").forEach((input) => {
+        input.addEventListener("change", () => {
+            const row = input.closest("[data-camera-row]");
+            const channelIndex = row ? row.dataset.channelIndex : null;
+            if (!channelIndex) return;
+            const page = row.querySelector("[data-companion-page]");
+            const rowField = row.querySelector("[data-companion-row]");
+            const column = row.querySelector("[data-companion-column]");
+            fetch(`/api/channels/${channelIndex}/companion`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    page: page ? page.value.trim() : "",
+                    row: rowField ? rowField.value.trim() : "",
+                    column: column ? column.value.trim() : "",
+                }),
+            });
+        });
+    });
+}
+
 // Setup-Seite: Button-2/3-Zuordnung pro Kanal (Spec §9a) -- persistiert
 // echt über POST /api/channels/{index}/buttons/{slot}.
 function initButtonAssignmentSelects() {
@@ -142,6 +199,34 @@ function initFeatureButtons() {
     });
 }
 
+// Übersicht-Seite: SELECT löst das auf der Setup-Seite zugewiesene
+// Companion-Ziel fern aus (Spec §9, bewusste Erweiterung über v1 hinaus).
+// Anders als die Feature-Buttons hat SELECT keinen Dauerzustand -- bei
+// Fehlschlag zeigt der Button kurz die Fehlermeldung statt eines
+// persistenten Fehler-Icons.
+function initSelectButtons() {
+    document.querySelectorAll("[data-select-btn]").forEach((button) => {
+        const originalLabel = button.textContent;
+        button.addEventListener("click", async () => {
+            const channelIndex = button.dataset.channelIndex;
+            button.disabled = true;
+            try {
+                const res = await fetch(`/api/channels/${channelIndex}/companion/trigger`, { method: "POST" });
+                if (!res.ok) {
+                    const data = await res.json();
+                    button.textContent = data.error || "Fehler";
+                    setTimeout(() => { button.textContent = originalLabel; }, 2000);
+                }
+            } catch (err) {
+                button.textContent = "Verbindungsfehler";
+                setTimeout(() => { button.textContent = originalLabel; }, 2000);
+            } finally {
+                button.disabled = false;
+            }
+        });
+    });
+}
+
 // Übersicht-Seite (surface.html): Live-Zustand per WebSocket + Iris-Fader
 // per Zeigen/Ziehen steuerbar. Datenfluss Fader -> Kamera folgt Spec §3.
 function connectSurfaceSocket() {
@@ -170,6 +255,13 @@ function applySurfaceSnapshot(channels) {
         const article = document.querySelector(`.surface-channel[data-channel="${ch.index}"]`);
         if (!article) return;
 
+        // Nur eine tatsaechlich verbundene Kamera macht den Kanalzug aktiv --
+        // eine registrierte, aber getrennte Kamera (Setup-Seite "Connect
+        // Camera" erneut geklickt) soll wie ein unbelegter Kanal wirken,
+        // nicht wie ein aktiver mit veralteten Werten.
+        article.classList.toggle("is-unassigned", !ch.connected);
+        article.dataset.hasCamera = ch.connected ? "true" : "false";
+
         const pct = ch.iris != null ? Math.round(ch.iris * 100) : 0;
         const fill = article.querySelector("[data-fader-fill]");
         const handle = article.querySelector("[data-fader-handle]");
@@ -177,7 +269,7 @@ function applySurfaceSnapshot(channels) {
         if (handle) handle.style.bottom = pct + "%";
 
         const irisReadout = article.querySelector("[data-iris-readout]");
-        if (irisReadout) irisReadout.textContent = ch.camera_id ? pct + "%" : "—";
+        if (irisReadout) irisReadout.textContent = ch.connected ? pct + "%" : "—";
 
         const gainVal = article.querySelector("[data-encoder-val]");
         if (gainVal) gainVal.textContent = ch.gain_db != null ? ch.gain_db + " dB" : "—";
@@ -204,12 +296,19 @@ function applySurfaceSnapshot(channels) {
 }
 
 function initFaderDrag(ws) {
-    document.querySelectorAll(".surface-channel[data-has-camera='true']").forEach((article) => {
+    // Auf allen Kanalzuegen anhaengen (nicht nur den beim Laden verbundenen)
+    // -- ob ein Zug reagiert, wird bei jedem Event live anhand von
+    // data-has-camera geprueft, das applySurfaceSnapshot() aktuell haelt.
+    // Sonst wuerde ein Fader nach dem Trennen der Kamera weiter reagieren,
+    // weil die Listener schon beim Laden fest gebunden wurden.
+    document.querySelectorAll(".surface-channel").forEach((article) => {
         const channelIndex = Number(article.dataset.channel);
         const track = article.querySelector("[data-fader-track]");
         const fill = article.querySelector("[data-fader-fill]");
         const handle = article.querySelector("[data-fader-handle]");
         if (!track || !fill || !handle) return;
+
+        const isActive = () => article.dataset.hasCamera === "true";
 
         const valueFromEvent = (evt) => {
             const rect = track.getBoundingClientRect();
@@ -230,6 +329,7 @@ function initFaderDrag(ws) {
         let dragging = false;
 
         track.addEventListener("pointerdown", (evt) => {
+            if (!isActive()) return;
             dragging = true;
             track.setPointerCapture(evt.pointerId);
             const value = valueFromEvent(evt);
@@ -261,10 +361,13 @@ document.addEventListener("DOMContentLoaded", () => {
     initCameraConnectButtons();
     initCameraNameInputs();
     initButtonAssignmentSelects();
+    initCompanionConfigForm();
+    initCompanionTargetInputs();
 
     if (document.querySelector(".surface-channel")) {
         const ws = connectSurfaceSocket();
         initFaderDrag(ws);
         initFeatureButtons();
+        initSelectButtons();
     }
 });

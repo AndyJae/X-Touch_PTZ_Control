@@ -17,14 +17,18 @@ from core.application import (
     apply_button_action,
     apply_iris,
     assign_channel_button,
+    assign_channel_companion_target,
     available_button_features,
     build_app_state,
     channel_snapshot,
+    configure_companion,
     connect_camera,
     disconnect_camera,
     register_camera,
     rename_camera,
+    trigger_companion_select,
 )
+from core.companion import CompanionError
 from core.config import AppConfig, load_config
 from tests.fakes import FakeCameraDriver
 
@@ -291,6 +295,95 @@ def _empty_state(monkeypatch, tmp_path):
         lambda camera: FakeCameraDriver(camera.host, camera.port),
     )
     return build_app_state(AppConfig.model_validate({}), config_path=str(tmp_path / "config.yaml"))
+
+
+def test_configure_companion_persists(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+
+    _run(configure_companion(state, "192.168.0.50", 8000))
+
+    assert state.config.companion.host == "192.168.0.50"
+    reloaded = load_config(state.config_path)
+    assert reloaded.companion.host == "192.168.0.50"
+    assert reloaded.companion.port == 8000
+
+
+def test_assign_channel_companion_target_persists(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+
+    _run(assign_channel_companion_target(state, 1, 1, 0, 2))
+
+    target = state.config.banks[0].channels[0].companion
+    assert target.page == 1 and target.row == 0 and target.column == 2
+    reloaded = load_config(state.config_path)
+    assert reloaded.banks[0].channels[0].companion.column == 2
+
+
+def test_assign_channel_companion_target_clears_with_none(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+    _run(assign_channel_companion_target(state, 1, 1, 0, 2))
+
+    _run(assign_channel_companion_target(state, 1, None, None, None))
+
+    assert state.config.banks[0].channels[0].companion is None
+
+
+def test_assign_channel_companion_target_without_camera_raises(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+
+    with pytest.raises(ValueError):
+        _run(assign_channel_companion_target(state, 1, 1, 0, 2))
+
+
+def test_trigger_companion_select_calls_press_button(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+    _run(configure_companion(state, "192.168.0.50", 8000))
+    _run(assign_channel_companion_target(state, 1, 1, 0, 2))
+
+    calls = []
+
+    async def fake_press_button(host, port, page, row, column):
+        calls.append((host, port, page, row, column))
+
+    monkeypatch.setattr(core_application, "press_button", fake_press_button)
+
+    _run(trigger_companion_select(state, 1))
+
+    assert calls == [("192.168.0.50", 8000, 1, 0, 2)]
+
+
+def test_trigger_companion_select_without_target_is_noop(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+
+    calls = []
+
+    async def fake_press_button(host, port, page, row, column):
+        calls.append((host, port, page, row, column))
+
+    monkeypatch.setattr(core_application, "press_button", fake_press_button)
+
+    _run(trigger_companion_select(state, 1))
+
+    assert calls == []
+
+
+def test_trigger_companion_select_propagates_companion_error(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))
+    _run(configure_companion(state, "192.168.0.50", 8000))
+    _run(assign_channel_companion_target(state, 1, 1, 0, 2))
+
+    async def failing_press_button(host, port, page, row, column):
+        raise CompanionError("boom")
+
+    monkeypatch.setattr(core_application, "press_button", failing_press_button)
+
+    with pytest.raises(CompanionError):
+        _run(trigger_companion_select(state, 1))
 
 
 def test_register_camera_creates_camera_and_binds_channel(monkeypatch, tmp_path) -> None:

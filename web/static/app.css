@@ -1,5 +1,10 @@
 html {
     font-size: 14px;
+    /* Vertikale Scrollleiste reserviert immer Platz, auch wenn der Inhalt
+       (z. B. Config/Logs) nicht scrollt -- sonst springt die verfuegbare
+       Breite je nach Seite (Setup/Uebersicht scrollen fast immer, Config/
+       Logs meist nicht). */
+    scrollbar-gutter: stable;
 }
 
 :root {
@@ -68,6 +73,7 @@ body::before {
     align-items: center;
     gap: 14px;
 }
+
 
 .topnav {
     display: flex;

@@ -423,6 +423,22 @@ Pro Kamera eine Instanz. Regeln:
   erfolgt — Verwendung noch offen (siehe §14).
 - Select-Button: markiert Kamera als "aktiv" für die Web-UI-Detailansicht.
 
+**Bewusste Erweiterung über v1 hinaus (Nutzerentscheid):** Der SELECT-Button
+löst zusätzlich einen Bitfocus-Companion-Button (v3, Location-Adressierung
+Page/Row/Column) fern aus, z. B. für eine Kreuzschienen-Schaltung. Eine
+Companion-Instanz gilt global für alle Kanäle (Host/Port, Setup-Seite, an
+der Stelle des ehemaligen "Camera Status"-Blocks); pro Kanal wird optional
+ein Page/Row/Column-Ziel hinterlegt (Setup-Tabelle, Spalte "Select
+(Companion)"). Endpunkt verifiziert gegen die offizielle Companion-Doku
+(`companion.free/user-guide/v5.0/remote-control/http-remote-control`,
+aktuellste verfügbare Version -- eine archivierte v3-Seite war nicht
+erreichbar, aber das Location-Schema wurde laut Doku mit v3 eingeführt und
+löste das dortige "legacy"-Bank-Nummern-Schema ab, gilt also unverändert ab
+v3): `POST http://<host>:<port>/api/location/<page>/<row>/<column>/press`.
+PTZ_Control kennt den eigentlichen Companion-Befehl (z. B. die
+Kreuzschiene) nicht, nur die Adresse -- die Aktion selbst ist in Companion
+konfiguriert. Implementierung: `core/companion.py`.
+
 ---
 
 ## 9a. Button-Funktionsquelle: Kamera-Modell-Erkennung (extern: smart-reset-browser)

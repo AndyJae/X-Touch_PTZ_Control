@@ -12,9 +12,11 @@ Camera"-Button pro Kanal auf der Setup-Seite (Name/IP/Port) registriert —
 die App persistiert das selbst. Kamera-Feature-Buttons (Spec §9a, z. B.
 DRS/Knee/Auto-Iris für AW-UE160) sind Button 2/3 pro Kanal zuweisbar
 (ebenfalls Setup-Seite) und über die Übersicht auslösbar. Der
-X-Touch-Extender-Pfad (`midi/`) ist als Scaffold vorhanden, aber noch nicht
-verdrahtet — MIDI ist als zweite Event-Quelle vorgesehen, siehe Architektur
-unten.
+SELECT-Button pro Kanal löst optional einen Bitfocus-Companion-Button fern
+aus (v3 HTTP-API, `core/companion.py`) — bewusste Erweiterung über v1
+hinaus, siehe Spec §9. Der X-Touch-Extender-Pfad (`midi/`) ist als Scaffold
+vorhanden, aber noch nicht verdrahtet — MIDI ist als zweite Event-Quelle
+vorgesehen, siehe Architektur unten.
 
 ## Stack
 
@@ -86,6 +88,11 @@ Treiber           drivers/base.py       CameraDriver-Interface (ABC)
   Stelle, die `AppState.cameras/drivers/rate_limiters/mapping` zur Laufzeit
   erweitert (alle anderen Use-Cases arbeiten nur mit dem beim Start
   gebauten Zustand). Kamera-ID ist deterministisch `cam{Kanalnummer}`.
+- **Bitfocus Companion** (`core/companion.py`): eigenständige Funktion, kein
+  `drivers/`-Treiber (Companion ist keine Kamera). Eine globale Instanz
+  (Host/Port) für alle Kanäle, pro Kanal optional ein Page/Row/Column-Ziel.
+  Kein Dauerzustand -- SELECT ist eine einmalige Aktion, Fehler werden nur
+  als HTTP-Antwort zurückgegeben, nicht im Snapshot gespeichert.
 
 ## Tests
 

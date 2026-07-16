@@ -22,14 +22,18 @@ from core.application import (
     apply_button_action,
     apply_iris,
     assign_channel_button,
+    assign_channel_companion_target,
     available_button_features,
     build_app_state,
     channel_snapshot,
+    configure_companion,
     connect_camera,
     disconnect_camera,
     register_camera,
     rename_camera,
+    trigger_companion_select,
 )
+from core.companion import CompanionError
 from core.config import load_config
 
 LOGGER = logging.getLogger("ptz_control.web")
@@ -89,6 +93,7 @@ async def setup_page(request: Request) -> HTMLResponse:
             "active_page": "setup",
             "channels": channel_snapshot(state),
             "button_features": button_features,
+            "companion": state.config.companion,
         },
     )
 
@@ -171,6 +176,58 @@ async def api_trigger_channel_button(channel_index: int, button_slot: str, reque
         await apply_button_action(state, channel_index, button_slot)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/companion/config")
+async def api_configure_companion(request: Request) -> JSONResponse:
+    """Globale Bitfocus-Companion-Instanz (eine für alle Kanäle,
+    Nutzerentscheid) -- Setup-Panel an der Stelle des ehemaligen "Camera
+    Status"-Blocks."""
+    state = _ptz_state(request)
+    body = await request.json()
+    host = str(body.get("host") or "").strip()
+    port_raw = body.get("port")
+    try:
+        port = int(port_raw) if port_raw not in (None, "") else 8000
+    except (TypeError, ValueError):
+        return JSONResponse({"error": f"ungültiger Port: {port_raw!r}"}, status_code=400)
+    await configure_companion(state, host, port)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/channels/{channel_index}/companion")
+async def api_assign_channel_companion(channel_index: int, request: Request) -> JSONResponse:
+    """SELECT-Button-Ziel (Companion Page/Row/Column) eines Kanals, siehe
+    assign_channel_companion_target(). Leere Werte löschen die Zuordnung."""
+    state = _ptz_state(request)
+    body = await request.json()
+
+    def _to_int(value: object) -> int | None:
+        if value in (None, ""):
+            return None
+        return int(value)  # type: ignore[arg-type]
+
+    try:
+        page = _to_int(body.get("page"))
+        row = _to_int(body.get("row"))
+        column = _to_int(body.get("column"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "Page/Row/Column müssen Zahlen sein"}, status_code=400)
+    try:
+        await assign_channel_companion_target(state, channel_index, page, row, column)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/channels/{channel_index}/companion/trigger")
+async def api_trigger_companion_select(channel_index: int, request: Request) -> JSONResponse:
+    state = _ptz_state(request)
+    try:
+        await trigger_companion_select(state, channel_index)
+    except CompanionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
     return JSONResponse({"ok": True})
 
 

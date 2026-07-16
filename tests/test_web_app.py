@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 import core.application as core_application
 import web.app as web_app
+from core.companion import CompanionError
 from core.config import AppConfig
 from tests.fakes import FakeCameraDriver
 
@@ -147,6 +148,57 @@ def test_rename_camera_endpoint_updates_name_without_disconnecting(client) -> No
 
     assert response.status_code == 200
     assert web_app.app.state.ptz.cameras["cam1"].name == "Studio Weit"
+
+
+def test_companion_config_endpoint_persists(client) -> None:
+    response = client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
+
+    assert response.status_code == 200
+    assert web_app.app.state.ptz.config.companion.host == "192.168.0.50"
+
+
+def test_assign_channel_companion_endpoint_persists(client) -> None:
+    response = client.post("/api/channels/1/companion", json={"page": 1, "row": 0, "column": 2})
+
+    assert response.status_code == 200
+    target = web_app.app.state.ptz.config.banks[0].channels[0].companion
+    assert target.page == 1 and target.row == 0 and target.column == 2
+
+
+def test_assign_channel_companion_endpoint_unmapped_channel_returns_400(client) -> None:
+    response = client.post("/api/channels/2/companion", json={"page": 1, "row": 0, "column": 2})
+
+    assert response.status_code == 400
+
+
+def test_trigger_companion_select_endpoint_success(client, monkeypatch) -> None:
+    client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
+    client.post("/api/channels/1/companion", json={"page": 1, "row": 0, "column": 2})
+    calls = []
+
+    async def fake_press_button(host, port, page, row, column):
+        calls.append((host, port, page, row, column))
+
+    monkeypatch.setattr(core_application, "press_button", fake_press_button)
+
+    response = client.post("/api/channels/1/companion/trigger")
+
+    assert response.status_code == 200
+    assert calls == [("192.168.0.50", 8000, 1, 0, 2)]
+
+
+def test_trigger_companion_select_endpoint_error_returns_502(client, monkeypatch) -> None:
+    client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
+    client.post("/api/channels/1/companion", json={"page": 1, "row": 0, "column": 2})
+
+    async def failing_press_button(host, port, page, row, column):
+        raise CompanionError("boom")
+
+    monkeypatch.setattr(core_application, "press_button", failing_press_button)
+
+    response = client.post("/api/channels/1/companion/trigger")
+
+    assert response.status_code == 502
     assert web_app.app.state.ptz.drivers["cam1"].connected is True
 
 

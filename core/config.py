@@ -41,6 +41,29 @@ class CameraConfig(BaseModel):
     feedback: CameraFeedbackConfig = Field(default_factory=CameraFeedbackConfig)
 
 
+class CompanionTarget(BaseModel):
+    """Bitfocus-Companion-Button-Adresse (Page/Row/Column, v3-Location-Schema),
+    für den SELECT-Button eines Kanals -- bewusste Erweiterung über den
+    ursprünglichen v1-Scope hinaus (Spec §9 Kommentar), nicht Teil des
+    Kamera-Domänenmodells."""
+
+    page: int
+    row: int
+    column: int
+
+
+class CompanionConfig(BaseModel):
+    """Globale Bitfocus-Companion-Instanz (eine für alle Kanäle,
+    Nutzerentscheid). `port` ist eine Vorbelegung/Platzhalter (Companions
+    eigene Doku nennt keinen fest verifizierten Default-Port -- er läuft auf
+    demselben Host/Port wie die Companion-Weboberfläche, dort typischerweise
+    8000, aber in Companion selbst konfigurierbar), kein behaupteter
+    verifizierter Wert."""
+
+    host: str = ""
+    port: int = 8000
+
+
 class BankChannelConfig(BaseModel):
     camera: str
     # Feature-Button-Zuordnung pro Kanal (Spec §9a): Schlüssel nur "button2"/
@@ -50,6 +73,9 @@ class BankChannelConfig(BaseModel):
     # geprüft, da gültige Keys vom erkannten Kameramodell abhängen (gleiches
     # Muster wie `camera` oben, das auch nicht gegen `cameras` geprüft wird).
     buttons: dict[str, str] = Field(default_factory=dict)
+    # SELECT-Button-Ziel in Bitfocus Companion (siehe CompanionTarget) --
+    # optional, kein Kanal ist standardmäßig zugeordnet.
+    companion: CompanionTarget | None = None
 
     @model_validator(mode="after")
     def _check_button_slots(self) -> "BankChannelConfig":
@@ -96,6 +122,7 @@ class AppConfig(BaseModel):
     cameras: list[CameraConfig] = Field(default_factory=list)
     banks: list[BankConfig] = Field(default_factory=list)
     channel_defaults: ChannelDefaultsConfig = Field(default_factory=ChannelDefaultsConfig)
+    companion: CompanionConfig = Field(default_factory=CompanionConfig)
     global_: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
 
     @model_validator(mode="after")
