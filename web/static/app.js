@@ -106,6 +106,7 @@ function initCameraNameInputs() {
 // v1 hinaus (Spec §9) -- eine Instanz für alle Kanäle (Nutzerentscheid).
 function initCompanionConfigForm() {
     const button = document.querySelector("[data-companion-save]");
+    const disconnectButton = document.querySelector("[data-companion-disconnect]");
     const hostInput = document.querySelector("[data-companion-host]");
     const portInput = document.querySelector("[data-companion-port]");
     if (!button || !hostInput) return;
@@ -123,7 +124,11 @@ function initCompanionConfigForm() {
                     port: portInput ? portInput.value.trim() : "",
                 }),
             });
-            button.textContent = res.ok ? "Saved" : "Error";
+            if (res.ok) {
+                location.reload();
+                return;
+            }
+            button.textContent = "Error";
         } catch (err) {
             button.textContent = "Connection error";
         } finally {
@@ -131,6 +136,28 @@ function initCompanionConfigForm() {
             button.disabled = false;
         }
     });
+
+    if (disconnectButton) {
+        disconnectButton.addEventListener("click", async () => {
+            disconnectButton.disabled = true;
+            try {
+                const res = await fetch("/api/companion/config", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ host: "", port: portInput ? portInput.value.trim() : "" }),
+                });
+                if (res.ok) {
+                    location.reload();
+                    return;
+                }
+                disconnectButton.textContent = "Error";
+            } catch (err) {
+                disconnectButton.textContent = "Connection error";
+            } finally {
+                disconnectButton.disabled = false;
+            }
+        });
+    }
 }
 
 // Setup-Seite: SELECT-Ziel (Companion Page/Row/Column) pro Kanal. Alle drei

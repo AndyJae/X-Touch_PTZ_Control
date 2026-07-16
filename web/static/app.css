@@ -383,6 +383,11 @@ button:last-child {
     box-shadow: 0 4px 12px rgba(47, 191, 106, 0.3);
 }
 
+[data-companion-save].is-connected {
+    background: linear-gradient(180deg, #7ce8a0, #2fbf6a);
+    box-shadow: 0 4px 12px rgba(47, 191, 106, 0.3);
+}
+
 /* --- Hardware-nahe Surface-Ansicht (MIDI-Kanalzug) --- */
 
 .chassis {
