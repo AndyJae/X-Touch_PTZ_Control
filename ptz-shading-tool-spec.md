@@ -576,8 +576,13 @@ MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
 
 ## 14. Offene Punkte (vor/bei Implementierung klären)
 
-1. Reale Note-/CC-Belegung des X-Touch Extender im MC-Mode am Gerät
-   verifizieren (§5.2) — `--midi-monitor` zuerst bauen.
+1. ~~Reale Note-/CC-Belegung des X-Touch Extender im MC-Mode am Gerät
+   verifizieren (§5.2) — `--midi-monitor` zuerst bauen.~~ **Verifiziert**
+   (Kanal 1, echtes Gerät, via `tools/midi_monitor.py`): Pitchbend Kanal 1 =
+   Fader 1, Note 104 = Fader-Touch 1, CC 16 = Encoder 1 drehen (relativ +),
+   Note 32 = Encoder-Push 1, Note 0/8/16/24 = Rec/Solo/Mute/Select Kanal 1 —
+   exakt wie oben angenommen, keine Abweichung. Kanäle 2–8 nicht einzeln
+   geprüft (gleiches Offset-Schema angenommen, nicht verifiziert).
 2. ~~`QGU`-Query-Kommando für Gain-Ist-Wert gegen Gerät prüfen~~ **Bestätigt durch
    Herstellerdoku** (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, Tabelle „GAIN", S. 47):
    `Request: QGU` → `Response: OGU:[Data]`, gleiche Kodierung wie Control-Befehl. Auch in
@@ -590,9 +595,13 @@ MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
    **Geprüft, weiterhin offen:** Weder AW-UE160_InterfaceSpecification_E.pdf noch
    die Multi-Modell-Spec (HDIntegratedCamera_InterfaceSpecifications-E.pdf) dokumentieren
    dieses Verhalten. Bleibt ein Punkt, der nur per echtem Gerätetest zu klären ist.
-4. Scribble-Strip-Offsets beim Extender identisch zum X-Touch? (Extender ist
+4. ~~Scribble-Strip-Offsets beim Extender identisch zum X-Touch? (Extender ist
    in MC-Welt "Extender-Gerät", ggf. eigene Device-ID im SysEx-Header: 0x15
-   statt 0x14 testen.)
+   statt 0x14 testen.)~~ **Verifiziert**: Device-ID ist `0x15` (nicht `0x14`,
+   das ist der reguläre X-Touch) — mit `0x14` blieb das Display leer, mit
+   `0x15` erschien der Text (`F0 00 00 66 15 12 <offset> <text> F7`).
+   Offsets (0x00–0x37 obere Zeile, 0x38–0x6F untere Zeile, je 7 Zeichen ×
+   8 Strips) unverändert bestätigt. Siehe `midi/fader.py`.
 5. Integrationsmechanismus für die Button-Funktionsquelle aus `smart-reset-browser`
    (§9a) — Abhängigkeit/Import der `camera_plugins`-Module vs. eigene Kopie/Adapter;
    noch nicht festgelegt.
@@ -615,8 +624,9 @@ MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
     gestuft (0Eh→1Ch und 1Ch→38h verdoppeln den Hex-Wert je 1 Blendenstufe, 38h→A0h aber nur
     ~2,86× für 3 Blendenstufen) — eine Interpolation zwischen den Ankerpunkten wäre also
     keine verlässliche Berechnung, sondern eine Annahme. **In der Spezifikation nicht
-    definiert; bis zur genaueren Analyse (z. B. Messung gegen eine echte Kamera) bleibt die
-    Web-UI bei einer Iris-Prozentanzeige statt einer erfundenen F-Zahl.**
+    definiert; bis zur genaueren Analyse (z. B. Messung gegen eine echte Kamera) bleiben
+    Web-UI und Scribble-Strip-Zeile 2 (`midi/fader.py`) bei einer Iris-Prozentanzeige statt
+    einer erfundenen F-Zahl.**
     `drivers/panasonic_aw.py` gibt den Rohwert unverändert zurück, dekodiert nicht.
 11. ~~Shutter-Speed-Wertetabelle (`OSJ:06:[Data]`, 0001h–07D0h, §7.2)~~ **Bestätigt für
     AW-UE160/AW-UE150** (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, S. 50, „SHUTTER

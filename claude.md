@@ -87,15 +87,32 @@ Alle Implementierungs- und Änderungsentscheidungen müssen sich auf diese Spezi
 ## Offene Punkte
 
 Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verbindliche Grenze zu behandeln:
-- reale MC-Belegung des X-Touch Extender verifizieren
-- `QGU`-Abfrage gegen Gerät prüfen
+- ~~reale MC-Belegung des X-Touch Extender verifizieren~~ **Verifiziert** (Kanal 1, echtes
+  Gerät): Pitchbend Kanal 1 = Fader 1, Note 104 = Fader-Touch 1, CC 16 = Encoder 1 drehen,
+  Note 32 = Encoder-Push 1, Note 0/8/16/24 = Rec/Solo/Mute/Select 1 — exakt wie Spec §5.2
+  angenommen. Kanäle 2–8 nicht einzeln geprüft (gleiches Offset-Schema angenommen).
+- `QGU`-Abfrage gegen Gerät prüfen (weiterhin nur Dokumentenbeleg, siehe Spec §14 Punkt 2)
 - Verhalten von `#AXI` bei aktivem Auto-Iris testen
-- Scribble-Strip-Offsets / Device-ID des Extenders verifizieren
+- ~~Scribble-Strip-Offsets / Device-ID des Extenders verifizieren~~ **Verifiziert**: Device-ID
+  `0x15` (nicht `0x14` wie beim regulären X-Touch) — mit `0x14` blieb das Display leer, mit
+  `0x15` erscheint der Text. Offsets (0x00–0x37 obere Zeile, 0x38–0x6F untere Zeile) bestätigt.
 - Integrationsmechanismus für die Button-Funktionsquelle aus `smart-reset-browser` (§9a) —
   für AW-UE160 über das Web-UI umgesetzt (siehe Spec §9a); physische Auslösung über den
-  X-Touch Extender bleibt offen, da MIDI weiterhin nicht angeschlossen ist
+  X-Touch Extender ist für den Fader/Iris-Pfad jetzt verdrahtet (`midi/fader.py`), aber
+  Rec/Solo/Mute/Select/Encoder sind nur Rx-seitig verifiziert und noch nicht an
+  `apply_button_action`/`trigger_companion_select` angebunden (siehe unten)
 - Verhalten bei erkanntem Kameramodell ohne `smart-reset-browser`-Plugin-Modul (§9a)
 - Umfang etwaiger PTZ-Control-eigener Zusatzfunktionen über `smart-reset-browser` hinaus (§9a)
+- Encoder-Funktion (Gain/Pedestal, §9) hat noch keine Anwendungslogik in
+  `core/application.py`/`core/mapping.py` — nur `fader`->Iris ist gemappt
+- MIDI-Buttons (Rec/Solo/Mute/Select) sind Rx-seitig verifiziert (siehe oben), aber nicht mit
+  Kamera-Feature-Aktionen bzw. Companion-SELECT verdrahtet
+- Hotplug/Reconnect für den MIDI-Port (Spec §5.5) nicht implementiert
+- Web-UI-Port-Auswahl für MIDI (Setup-Seite) ist weiterhin ein statisches Mockup, nicht mit
+  echten `mido`-Ports verbunden — Port kommt aktuell nur aus `config.yaml`
+- Update-Notifications für andere Ereignisse als Iris (`OAW`, `OWS` etc., Spec §7.3.1) laufen
+  technisch über denselben neuen Notification-Kanal, werden aber nicht ausgewertet
+  (`PanasonicAWDriver._handle_notification` reagiert nur auf `lPI`)
 
 ## Abschlussregel
 
