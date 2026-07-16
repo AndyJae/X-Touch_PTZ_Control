@@ -5,7 +5,7 @@
 
 {% block content %}
 <section class="panel chassis-panel">
-    <h2>Übersicht — 8 Kanalzüge (Iris live über WebSocket)</h2>
+    <h2>Overview — 8 Channels (Iris live via WebSocket)</h2>
     <div class="chassis">
         {% for ch in channels %}
         {% set fill = ((ch.iris * 100) | round) if ch.iris is not none else 0 %}
@@ -40,13 +40,13 @@
                 <button type="button" class="surf-btn {{ 'is-on' if assigned and assigned.state }}"
                         data-feature-btn data-channel-index="{{ ch.index }}" data-button-slot="{{ slot }}"
                         {{ "disabled" if not assigned }}
-                        title="{{ assigned.label if assigned else 'keine Funktion zugewiesen (Setup-Seite)' }}">
+                        title="{{ assigned.label if assigned else 'no function assigned (Setup page)' }}">
                     {{ assigned.label if assigned else ('Button ' ~ (loop.index + 1)) }}
                 </button>
                 {% endfor %}
                 <button type="button" class="surf-btn btn-select" data-select-btn data-channel-index="{{ ch.index }}"
                         {{ "disabled" if not ch.companion }}
-                        title="{{ 'Companion Page ' ~ ch.companion.page ~ '/Row ' ~ ch.companion.row ~ '/Col ' ~ ch.companion.column if ch.companion else 'kein Companion-Ziel zugewiesen (Setup-Seite)' }}">
+                        title="{{ 'Companion Page ' ~ ch.companion.page ~ '/Row ' ~ ch.companion.row ~ '/Col ' ~ ch.companion.column if ch.companion else 'no Companion target assigned (Setup page)' }}">
                     SELECT
                 </button>
             </div>

@@ -359,7 +359,19 @@ button:last-child {
 }
 
 .assign-table .port-cell {
-    width: 64px;
+    width: 90px;
+}
+
+.assign-table .companion-cell {
+    display: flex;
+    gap: 4px;
+    width: 150px;
+}
+
+.assign-table .input-companion {
+    width: 46px;
+    padding: 7px 4px;
+    text-align: center;
 }
 
 .status-dot {

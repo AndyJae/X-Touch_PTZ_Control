@@ -52,7 +52,7 @@ function initCameraConnectButtons() {
         button.addEventListener("click", async () => {
             const isConnected = button.classList.contains("is-connected");
             button.disabled = true;
-            button.textContent = isConnected ? "Trenne…" : "Verbinde…";
+            button.textContent = isConnected ? "Disconnecting…" : "Connecting…";
             try {
                 const res = isConnected
                     ? await fetch(`/api/channels/${channelIndex}/camera/disconnect`, { method: "POST" })
@@ -70,9 +70,9 @@ function initCameraConnectButtons() {
                     return;
                 }
                 const data = await res.json();
-                button.textContent = data.error || "Fehler";
+                button.textContent = data.error || "Error";
             } catch (err) {
-                button.textContent = "Verbindungsfehler";
+                button.textContent = "Connection error";
             } finally {
                 button.disabled = false;
             }
@@ -123,9 +123,9 @@ function initCompanionConfigForm() {
                     port: portInput ? portInput.value.trim() : "",
                 }),
             });
-            button.textContent = res.ok ? "Gespeichert" : "Fehler";
+            button.textContent = res.ok ? "Saved" : "Error";
         } catch (err) {
-            button.textContent = "Verbindungsfehler";
+            button.textContent = "Connection error";
         } finally {
             setTimeout(() => { button.textContent = originalLabel; }, 1500);
             button.disabled = false;
@@ -214,11 +214,11 @@ function initSelectButtons() {
                 const res = await fetch(`/api/channels/${channelIndex}/companion/trigger`, { method: "POST" });
                 if (!res.ok) {
                     const data = await res.json();
-                    button.textContent = data.error || "Fehler";
+                    button.textContent = data.error || "Error";
                     setTimeout(() => { button.textContent = originalLabel; }, 2000);
                 }
             } catch (err) {
-                button.textContent = "Verbindungsfehler";
+                button.textContent = "Connection error";
                 setTimeout(() => { button.textContent = originalLabel; }, 2000);
             } finally {
                 button.disabled = false;

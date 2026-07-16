@@ -19,32 +19,32 @@
     </div>
 
     <div class="panel">
-        <h2>Companion</h2>
+        <h2>Companion Config</h2>
         {# Bewusste Erweiterung über v1 hinaus (Spec §9): SELECT-Button löst
            einen Bitfocus-Companion-Button fern aus. Eine Instanz global für
            alle Kanäle (Nutzerentscheid). #}
-        <label for="companion-host">Host</label>
+        <label for="companion-host">Host IP</label>
         <input type="text" id="companion-host" data-companion-host value="{{ companion.host }}" placeholder="192.168.0.50" />
         <label for="companion-port">Port</label>
         <input type="text" id="companion-port" data-companion-port value="{{ companion.port }}" placeholder="8000" />
         <div class="button-row">
-            <button type="button" data-companion-save>Speichern</button>
+            <button type="button" data-companion-save>Save</button>
         </div>
     </div>
 </section>
 
 <section class="panel">
-    <h2>Kamera- &amp; Tastenbelegung</h2>
+    <h2>Camera &amp; Button Assignment</h2>
     <div class="assign-table-wrap">
         <table class="assign-table">
             <thead>
                 <tr>
                     <th>Status</th>
-                    <th>Kanal</th>
-                    <th>Kameraname</th>
-                    <th>Kamera-IP</th>
+                    <th>Channel</th>
+                    <th>Camera Name</th>
+                    <th>Camera IP</th>
                     <th>Port</th>
-                    <th>Verbindung</th>
+                    <th>Connection</th>
                     <th>Button 1</th>
                     <th>Button 2</th>
                     <th>Button 3</th>
@@ -62,8 +62,8 @@
                     <td class="port-cell"><input type="text" class="input-port" data-port-input value="{{ ch.port or '' }}" placeholder="80" /></td>
                     <td><button type="button" class="connect-btn {{ 'is-connected' if ch.connected }}" data-connect-btn data-channel-index="{{ index }}">{{ 'Connected' if ch.connected else 'Connect Camera' }}</button></td>
                     <td>
-                        <select disabled title="Button 1 ist fest für die Encoder-Funktionsauswahl reserviert (Spec §9)">
-                            <option>Encoder-Auswahl</option>
+                        <select disabled title="Button 1 is reserved for encoder function selection (Spec §9)">
+                            <option>Encoder Select</option>
                         </select>
                     </td>
                     {% for slot in ["button2", "button3"] %}
