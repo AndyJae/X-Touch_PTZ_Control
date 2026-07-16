@@ -12,6 +12,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import mido
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,10 +36,21 @@ from core.application import (
 )
 from core.companion import CompanionError
 from core.config import load_config
+from midi.fader import XTouchFader
 
 LOGGER = logging.getLogger("ptz_control.web")
 
 _CONFIG_PATH = "config.yaml"
+
+
+def _find_midi_port(names: list[str], substring: str) -> str | None:
+    """Spec §5.5: Substring-Match gegen die verfuegbaren Ports."""
+    matches = [name for name in names if substring.lower() in name.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        LOGGER.warning("MIDI-Port %r ist mehrdeutig (%s), verbinde nicht", substring, matches)
+    return None
 
 
 @asynccontextmanager
@@ -55,10 +67,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             LOGGER.warning("Kamera %s: Connect fehlgeschlagen: %s", camera_id, exc)
             state.state_store.get_camera(camera_id).error = str(exc)
     LOGGER.info("PTZ Control Web-UI bereit: %d Kamera(s) konfiguriert", len(state.drivers))
+
+    midi_fader: XTouchFader | None = None
+    # Spec §5.5: ohne konfigurierten Port wartet das Tool (UI-Auswahl folgt in
+    # einem spaeteren Schritt) -- kein Auto-Connect ohne explizite Config.
+    if config.midi.input_port:
+        input_port_name = _find_midi_port(mido.get_input_names(), config.midi.input_port)
+        if input_port_name is not None:
+            output_port_name = (
+                _find_midi_port(mido.get_output_names(), config.midi.output_port)
+                if config.midi.output_port
+                else None
+            )
+            midi_fader = XTouchFader(state, input_port_name, output_port_name)
+            await midi_fader.start()
+        else:
+            LOGGER.warning("MIDI-Eingangsport %r nicht gefunden", config.midi.input_port)
+
     yield
     for driver in state.drivers.values():
         await driver.disconnect()
     await state.companion_client.aclose()
+    if midi_fader is not None:
+        await midi_fader.stop()
 
 
 app = FastAPI(title="PTZ Control", lifespan=lifespan)

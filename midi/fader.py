@@ -1,0 +1,232 @@
+"""midi/fader.py -- Bidirektionale X-Touch-Extender-Faderanbindung (Spec §5,
+aktueller Umfang: Fader/Touch <-> Iris (§5.2/§5.4) und Scribble Strips
+(§5.3). Buttons/Encoder/Resync-bei-Hotplug (§5.5) folgen in weiteren
+Schritten -- bewusst nicht Teil dieser Verdrahtung.
+
+Note-/CC-Belegung gegen den realen X-Touch Extender verifiziert (Kanal 1:
+Pitchbend Kanal 1 = Fader 1, Note 104 = Fader-Touch 1); ebenso die
+Scribble-Strip-Device-ID (0x15, siehe unten), siehe Offene Punkte in
+CLAUDE.md.
+
+Rx: Polling statt mido-Callback-Thread -- `tools/midi_monitor.py` nutzt
+denselben Ansatz und wurde bereits live gegen das Geraet verifiziert; ein
+rtmidi-Callback laeuft aus einem eigenen C-Thread und muesste erst
+umstaendlich an den asyncio-Loop zurueckgereicht werden.
+
+Tx Fader: reagiert auf `iris_changed` auf demselben EventBus, den auch der
+WebSocket-Broadcast abonniert (siehe core/bus.py-Docstring: MIDI und Web-UI
+sind gleichwertige Publisher/Subscriber). Ohne dieses Tx bleibt der
+Motorfader auf der zuletzt bekannten Position stehen und federt dorthin
+zurueck, sobald man loslaesst -- deshalb Teil dieser ersten Verdrahtung und
+nicht erst der spaeteren Resync/Hotplug-Stufe.
+
+Tx Scribble Strips: Vollabzug aller 8 Strips bei `connection_changed`/
+`feature_changed`/`config_changed`. `iris_changed` aktualisiert dagegen
+gezielt nur die eine betroffene Zeile 2 (kein Vollabzug bei jedem Iris-Tick,
+sonst unnoetiger SysEx-Traffic waehrend des Fader-Ziehens). Zeile 2 zeigt
+laut Spec §5.3 eigentlich die F-Nummer -- die Hex->F-Nummer-Tabelle ist laut
+Spec aber nicht vollstaendig dokumentiert (siehe Kommentar an
+PanasonicAWDriver._query_f_number), daher als Platzhalter die Iris-% bis
+diese Umrechnung nachgeruestet wird."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+import mido
+
+from core.application import AppState, apply_iris, channel_snapshot
+from midi.mackie import MackieControlProtocol
+
+LOGGER = logging.getLogger("ptz_control.midi")
+
+_FADER_TOUCH_NOTE_BASE = 104  # 0x68, Note 104-111 -> Fader-Touch 1-8 (Spec §5.2)
+_POLL_INTERVAL = 0.01
+
+# --- Scribble Strips (Spec §5.3) ---
+_SCRIBBLE_STRIP_CHARS = 7
+_SCRIBBLE_UPPER_BASE = 0x00  # obere Zeile: 0x00-0x37, 7 Zeichen x 8 Strips
+_SCRIBBLE_LOWER_BASE = 0x38  # untere Zeile: 0x38-0x6F
+
+
+def _scribble_text(text: str) -> str:
+    return (text or "")[:_SCRIBBLE_STRIP_CHARS].ljust(_SCRIBBLE_STRIP_CHARS)
+
+
+def _iris_percent_text(value: float | None) -> str:
+    """Platzhalter fuer Zeile 2 (Spec §5.3 nennt F-Nummer, die Hex->F-Nummer-
+    Tabelle ist laut Spec aber nicht vollstaendig dokumentiert, siehe
+    Modul-Docstring) -- Iris in Prozent, bis die Umrechnung nachgeruestet
+    wird."""
+    if value is None:
+        return ""
+    return f"{round(value * 100)}%"
+
+
+_SCRIBBLE_DEVICE_ID = 0x15  # X-Touch Extender -- 0x14 waere der reguläre X-Touch (live verifiziert:
+# 0x14 blieb auf dem Extender-Display leer, 0x15 zeigt Text an). Bestaetigt den in
+# CLAUDE.md offen markierten Punkt "Device-ID des Extenders verifizieren".
+
+
+def _scribble_message(offset: int, text: str) -> mido.Message:
+    payload = _scribble_text(text)
+    data = (0x00, 0x00, 0x66, _SCRIBBLE_DEVICE_ID, 0x12, offset, *(ord(c) for c in payload))
+    return mido.Message("sysex", data=data)
+
+
+class XTouchFader:
+    """Rx: Pitchbend/Touch -> `core.application.apply_iris` (Spec §3
+    Datenfluss Fader -> Mapping -> Rate-Limiter -> Driver). Tx: `iris_changed`
+    -> Motorfader-Position, ausser waehrend aktivem Touch (Spec §5.4)."""
+
+    def __init__(self, state: AppState, input_port_name: str, output_port_name: str | None) -> None:
+        self._state = state
+        self._input_port_name = input_port_name
+        self._output_port_name = output_port_name
+        self._protocol = MackieControlProtocol()
+        self._in_port: mido.ports.BaseInput | None = None
+        self._out_port: mido.ports.BaseOutput | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._touch_active: dict[int, bool] = {}
+        self._last_value: dict[int, float] = {}
+
+    async def start(self) -> None:
+        self._in_port = mido.open_input(self._input_port_name)
+        self._task = asyncio.create_task(self._poll_loop())
+        LOGGER.info("MIDI-Eingang verbunden: %s", self._input_port_name)
+        if self._output_port_name is not None:
+            self._out_port = mido.open_output(self._output_port_name)
+            self._state.event_bus.subscribe("iris_changed", self._on_iris_changed)
+            for topic in ("connection_changed", "feature_changed", "config_changed"):
+                self._state.event_bus.subscribe(topic, self._on_scribble_relevant_event)
+            LOGGER.info("MIDI-Ausgang verbunden: %s", self._output_port_name)
+            await self._resync_from_state()
+            self._refresh_scribble_strips()
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        if self._in_port is not None:
+            self._in_port.close()
+            self._in_port = None
+        if self._out_port is not None:
+            self._out_port.close()
+            self._out_port = None
+
+    # --- Rx: Fader/Touch -> Iris ---------------------------------------
+
+    async def _poll_loop(self) -> None:
+        assert self._in_port is not None
+        while True:
+            # Innerhalb eines Polling-Takts nur die jeweils juengste
+            # Pitchbend-Nachricht pro Kanal verarbeiten (Rate-Limiter-Vertrag
+            # "Latest-wins", siehe core/ratelimit.py) -- sonst arbeitet der
+            # Loop bei einer schnellen Fader-Bewegung eine Warteschlange aus
+            # laengst ueberholten Zwischenwerten ab, waehrend der reale
+            # Kamera-Request auf ein langsames Netzwerk wartet (beobachteter
+            # Nachlauf/"hackt" beim Live-Test).
+            latest_pitch: dict[int, mido.Message] = {}
+            other_messages: list[mido.Message] = []
+            for msg in self._in_port.iter_pending():
+                if msg.type == "pitchwheel":
+                    latest_pitch[msg.channel] = msg
+                else:
+                    other_messages.append(msg)
+            for msg in other_messages:
+                await self._handle(msg)
+            for msg in latest_pitch.values():
+                await self._handle(msg)
+            await asyncio.sleep(_POLL_INTERVAL)
+
+    async def _handle(self, msg: mido.Message) -> None:
+        if msg.type == "pitchwheel":
+            channel_index = msg.channel + 1
+            value = self._protocol.pitchbend_to_normalized(msg.pitch + 8192)
+            self._last_value[channel_index] = value
+            # Laufende Bewegung geht immer durch den Rate-Limiter (Spec §8);
+            # nur der Touch-Release unten erzwingt einen finalen Sendevorgang
+            # (Spec §5.4).
+            await apply_iris(self._state, channel_index, value, final=False)
+        elif msg.type == "note_on" and _FADER_TOUCH_NOTE_BASE <= msg.note < _FADER_TOUCH_NOTE_BASE + 8:
+            channel_index = msg.note - _FADER_TOUCH_NOTE_BASE + 1
+            touched = msg.velocity > 0
+            was_touched = self._touch_active.get(channel_index, False)
+            self._touch_active[channel_index] = touched
+            if was_touched and not touched and channel_index in self._last_value:
+                # Touch-Release: letzten Soll-Wert final senden (Spec §5.4)
+                await apply_iris(self._state, channel_index, self._last_value[channel_index], final=True)
+
+    # --- Tx: Iris -> Motorfader ------------------------------------------
+
+    async def _resync_from_state(self) -> None:
+        """Einmalig beim Verbinden: aktuell bekannte Iris-Position jedes
+        gemappten Kanals an den Motorfader senden, sonst haelt der Motor die
+        zuletzt gesendete Position (z. B. von einem frueheren Test)."""
+        for channel_index, mapping in self._state.mapping.channels_for_type("fader").items():
+            cam_state = self._state.state_store.get_camera(mapping.camera_id)
+            if cam_state.iris is not None:
+                self._send_fader_position(channel_index, cam_state.iris)
+
+    async def _on_iris_changed(self, payload: dict) -> None:
+        channel_index = self._channel_for_camera(payload["camera_id"])
+        if channel_index is None:
+            return
+        if not self._touch_active.get(channel_index, False):
+            # Spec §5.4: waehrend Touch nicht gegen den Finger schreiben --
+            # gilt nur fuer den Motor, nicht fuer die Strip-Anzeige unten.
+            self._send_fader_position(channel_index, payload["value"])
+        self._send_iris_percent_line(channel_index, payload["value"])
+
+    def _channel_for_camera(self, camera_id: str) -> int | None:
+        for channel_index, mapping in self._state.mapping.channels_for_type("fader").items():
+            if mapping.camera_id == camera_id:
+                return channel_index
+        return None
+
+    def _send_fader_position(self, channel_index: int, value: float) -> None:
+        if self._out_port is None:
+            return
+        pitch = self._protocol.normalized_to_pitchbend(value) - 8192
+        self._out_port.send(mido.Message("pitchwheel", channel=channel_index - 1, pitch=pitch))
+
+    # --- Tx: Scribble Strips (Spec §5.3) ---------------------------------
+
+    async def _on_scribble_relevant_event(self, _payload: dict) -> None:
+        self._refresh_scribble_strips()
+
+    def _refresh_scribble_strips(self) -> None:
+        """Vollabzug aller 8 Strips (wie channel_snapshot() selbst, kein
+        inkrementelles Diffing) -- ausgeloest durch die seltenen Events
+        (Connect/Disconnect, Feature-Toggle, Config-Aenderung). Zeile 2 zeigt
+        aktuell die Iris-% (Platzhalter, bis eine Hex->F-Nummer-Tabelle
+        verfuegbar ist, siehe Modul-Docstring), bei laufendem Fader-Ziehen
+        aktualisiert `_on_iris_changed()` nur die eine betroffene Zeile
+        gezielt (kein Vollabzug bei jedem Iris-Tick)."""
+        for ch in channel_snapshot(self._state):
+            if ch["camera_id"] is None:
+                upper, lower = "", "----"
+            elif not ch["connected"]:
+                upper, lower = ch["name"] or "", "NC"
+            else:
+                upper, lower = ch["name"] or "", _iris_percent_text(ch["iris"])
+            self._send_scribble_strip(ch["index"], upper, lower)
+
+    def _send_iris_percent_line(self, channel_index: int, value: float) -> None:
+        if self._out_port is None:
+            return
+        strip = channel_index - 1
+        offset = _SCRIBBLE_LOWER_BASE + strip * _SCRIBBLE_STRIP_CHARS
+        self._out_port.send(_scribble_message(offset, _iris_percent_text(value)))
+
+    def _send_scribble_strip(self, channel_index: int, upper: str, lower: str) -> None:
+        if self._out_port is None:
+            return
+        strip = channel_index - 1
+        self._out_port.send(_scribble_message(_SCRIBBLE_UPPER_BASE + strip * _SCRIBBLE_STRIP_CHARS, upper))
+        self._out_port.send(_scribble_message(_SCRIBBLE_LOWER_BASE + strip * _SCRIBBLE_STRIP_CHARS, lower))
