@@ -10,16 +10,27 @@ von tests/test_application.py (Anwendungsschicht, direkt) verwendet.
 from __future__ import annotations
 
 from core.state import CameraState
-from drivers.panasonic_aw import PanasonicAWDriver
+from drivers.panasonic_models import aw_ue160 as _aw_ue160_model
+
+# Wiederverwendet den echten AW-UE160-Katalog (Spec §9a, `connect()` meldet
+# unten immer "AW-UE160") statt einen zweiten, parallelen Test-Katalog zu
+# erfinden, der davon abweichen koennte -- Sinn dieses Fakes ist nur, kein
+# echtes HTTP zu senden, nicht eine andere Feature-Liste zu simulieren.
+# `PanasonicAWDriver.BUTTON_FEATURES` ist seit dem Modell-Registry-Umbau kein
+# fester Klassenkatalog mehr (siehe dortiger Kommentar), daher hier direkt
+# aus dem Modell-Modul statt von der Treiberklasse.
 
 
 class FakeCameraDriver:
-    # Wiederverwendet den echten Katalog (Spec §9a) statt einen zweiten,
-    # parallelen Test-Katalog zu erfinden, der von PanasonicAWDriver
-    # abweichen könnte -- Sinn dieses Fakes ist nur, kein echtes HTTP zu
-    # senden, nicht eine andere Feature-Liste zu simulieren.
-    BUTTON_FEATURES = PanasonicAWDriver.BUTTON_FEATURES
-    BUTTON_FEATURE_LABELS = PanasonicAWDriver.BUTTON_FEATURE_LABELS
+    BUTTON_FEATURES = _aw_ue160_model.BUTTON_FEATURES
+    BUTTON_FEATURE_LABELS = _aw_ue160_model.BUTTON_FEATURE_LABELS
+    # Gain-/Pedestal-Wertebereich (siehe core/application.py::_encoder_value_range()),
+    # ebenfalls aus dem echten AW-UE160-Modul statt einem zweiten Test-Katalog.
+    gain_min_db = _aw_ue160_model.GAIN_MIN_DB
+    gain_max_db = _aw_ue160_model.GAIN_MAX_DB
+    gain_step_db = _aw_ue160_model.GAIN_STEP_DB
+    pedestal_min = _aw_ue160_model.PEDESTAL_MIN
+    pedestal_max = _aw_ue160_model.PEDESTAL_MAX
 
     def __init__(self, host: str, port: int = 80) -> None:
         self.host = host
@@ -77,9 +88,6 @@ class FakeCameraDriver:
 
     async def cycle_nd(self) -> int:
         return 0
-
-    async def set_shutter(self, mode: str, value: int | None) -> None:
-        pass
 
     async def trigger_awb(self) -> None:
         pass

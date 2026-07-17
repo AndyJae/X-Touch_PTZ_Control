@@ -46,7 +46,6 @@
                     <th>Camera IP</th>
                     <th>Port</th>
                     <th>Connection</th>
-                    <th>Button 1</th>
                     <th>Button 2</th>
                     <th>Button 3</th>
                     <th>Select (Companion)</th>
@@ -62,11 +61,6 @@
                     <td class="ip-cell"><input type="text" class="input-ip" data-host-input value="{{ ch.host or '' }}" placeholder="192.168.0.1{{ 9 + index }}" /></td>
                     <td class="port-cell"><input type="text" class="input-port" data-port-input value="{{ ch.port or '' }}" placeholder="80" /></td>
                     <td><button type="button" class="connect-btn {{ 'is-connected' if ch.connected }}" data-connect-btn data-channel-index="{{ index }}">{{ 'Connected' if ch.connected else 'Connect Camera' }}</button></td>
-                    <td>
-                        <select disabled title="Button 1 is reserved for encoder function selection (Spec §9)">
-                            <option>Encoder Select</option>
-                        </select>
-                    </td>
                     {% for slot in ["button2", "button3"] %}
                     {% set features = button_features.get(ch.camera_id, {}) if ch.camera_id else {} %}
                     {% set assigned = ch.buttons[slot] %}
@@ -95,7 +89,7 @@
                 </tr>
                 <tr class="camera-type-row">
                     <td></td>
-                    <td colspan="9" class="camera-type-cell">Connected to: <span data-camera-type>{{ ch.model or '—' }}</span></td>
+                    <td colspan="8" class="camera-type-cell">Connected to: <span data-camera-type>{{ ch.model or '—' }}</span></td>
                 </tr>
                 {% endfor %}
             </tbody>

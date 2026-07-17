@@ -8,28 +8,25 @@ import httpx
 
 from core.state import CameraState
 from drivers.base import CameraCommandError, CameraDriver
+from drivers.panasonic_models.registry import resolve_model
 
 # --- Iris (#AXI / #GI, §7.2): normalisiert 0.0-1.0 <-> 555h-FFFh, linear (Spec-Formel) ---
 _IRIS_DATA_MIN = 0x555
 _IRIS_DATA_MAX = 0xFFF
 
-# --- Gain (OGU/QGU, §7.2): 02h(-6dB)-08h(0dB)-14h(+12dB) -> Data = 0x08 + db (aus den
-# drei gegebenen Ankerpunkten linear hergeleitet: 08-02=6, 14-08=0C=12, je 1 Hex-Step = 1 dB) ---
+# --- Gain (OGU/QGU): Data = 0x08 + db, 0x80 = AGC/Auto -- diese Anker sind laut
+# AW-UE160_InterfaceSpecification_E.pdf UND HDIntegratedCamera_InterfaceSpecifications-E.pdf
+# (§3.2.6) fuer JEDES dort dokumentierte Modell identisch, nur Bereich/Schrittweite
+# unterscheiden sich -- deshalb hier als geteilte Konstante, waehrend
+# GAIN_MIN_DB/GAIN_MAX_DB/GAIN_STEP_DB (die tatsaechlich camera-spezifischen Werte)
+# aus dem per Modell-Registry aufgeloesten Modul kommen (siehe _apply_model_catalog()).
 _GAIN_ZERO_DB_DATA = 0x08
-_GAIN_MIN_DB = -6
-_GAIN_MAX_DB = 12
 _GAIN_AGC_DATA = 0x80
-
-# --- Master Pedestal (OSJ:0F, §7.2): 738h(-200)-800h(0)-8C8h(+200) -> Data = 0x800 + value ---
-_PEDESTAL_CENTER_DATA = 0x800
-_PEDESTAL_MIN = -200
-_PEDESTAL_MAX = 200
 
 # --- R/B Gain Preset (OSL:36/38, §7.2): 418h(-1000)-800h(0)-BE8h(+1000) -> Data = 0x800 + value ---
 _RB_GAIN_CENTER_DATA = 0x800
 
 _ND_INDICES = (0, 1, 2, 3)  # THROUGH, 1/4, 1/16, 1/64 (OFT:[0-3], §7.2)
-_SHUTTER_MODES = {"off": 0, "step": 1, "synchro": 2, "elc": 3}  # OSJ:03:[0-3], §7.2
 
 _ERROR_PREFIXES_CAM = ("ER1:", "ER2:", "ER3:")
 _ERROR_PREFIXES_PTZ = ("eR1", "eR2", "eR3")
@@ -105,17 +102,46 @@ class PanasonicAWDriver(CameraDriver):
     Update-Notifications für andere Ereignisse (`OAW`, `OWS` etc., §7.3.1)
     laufen technisch über denselben Kanal, werden hier aber (noch) nicht
     ausgewertet -- `_handle_notification()` reagiert nur auf `lPI`-Payloads.
+
+    **Scope-Grenze nach dem Modell-Registry-Umbau (§9a):** `BUTTON_FEATURES`/
+    `BUTTON_FEATURE_LABELS` sowie Gain/Pedestal-Bereich/-Kommando (siehe
+    `_apply_model_catalog()`) sind modellabhaengig und werden aus dem per
+    `QID` erkannten Modell (`drivers/panasonic_models`) aufgeloest. Iris
+    bleibt weiterhin NUR fuer AW-UE160 verifiziert (`_IRIS_DATA_MIN/MAX`) --
+    fuer andere Modelle ist die Iris-Formel in der Spec nicht bestaetigt,
+    das ist ein separater, noch offener Punkt (siehe CLAUDE.md).
+
+    Gain-Encoding (Data = 0x08 + db, 0x80 = AGC) ist laut beiden lokalen
+    Referenz-PDFs modellUNabhaengig identisch -- nur Bereich/Schrittweite
+    (`gain_min_db`/`gain_max_db`/`gain_step_db`) variieren und kommen aus dem
+    Modell-Modul. Pedestal hat dagegen laut
+    `HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.14 DREI
+    unterschiedliche Kommandofamilien je nach Modell (`OSJ:0F` Master
+    Pedestal bei AW-UE150/AW-UE160, `OTP`/`QTP` bei AW-HE50/60/120/130/HR140/
+    HE40/UE70/HE42, `OSG:4A` bei AK-UB300) -- deshalb kommen Kommando,
+    Zentraldatenwert, Skalierung und Hex-Breite hier vollstaendig aus dem
+    Modell-Modul (`pedestal_command` u. ae., siehe `_apply_model_catalog()`).
+    Modelle ohne Eintrag in einer der beiden PDFs (z. B. AW-UE100/UE80/
+    UE30/40/50/UE145) haben bewusst KEINE Gain-/Pedestal-Werte -- Encoder
+    zeigt fuer diese dann keinen Wertebereich (kein erfundener Fallback).
     """
 
     # Kamera-Feature-Buttons (Spec §9a: Button-2/3-Aktionen kommen aus der
-    # pro Kameramodell verifizierten UI_BUTTONS/UI_BUTTON_LABELS-Definition
-    # des externen Referenzprojekts smart-reset-browser, nicht aus einer
-    # festen Liste in diesem Tool). Wörtlich portiert aus
-    # C:\smart-reset-browser\camera_plugins\panasonic\aw_ue160.py
-    # (UI_BUTTONS/UI_BUTTON_LABELS), dort laut deren CLAUDE.md gegen reale
-    # Panasonic-Interface-Specs verifiziert. NICHT unabhängig gegen die
-    # lokalen PDF-Referenzen (docs/specs/) nachverifiziert — PDF-Rendering
-    # (poppler/pdftoppm) war in dieser Umgebung nicht verfügbar.
+    # pro Kameramodell verifizierten BUTTON_FEATURES/BUTTON_FEATURE_LABELS-
+    # Definition, portiert aus dem externen Referenzprojekt
+    # C:\smart_reset_work\camera_plugins\panasonic\*.py (dort UI_BUTTONS/
+    # UI_BUTTON_LABELS, laut deren CLAUDE.md gegen reale Panasonic-Interface-
+    # Specs verifiziert). NICHT unabhängig gegen die lokalen PDF-Referenzen
+    # (docs/specs/) nachverifiziert — PDF-Rendering (poppler/pdftoppm) war in
+    # dieser Umgebung nicht verfügbar.
+    #
+    # Seit dem Modell-Registry-Umbau (§9a, Nutzerentscheid) sind das keine
+    # festen Klassenattribute mehr, sondern Instanzattribute, die `connect()`
+    # anhand des per `QID` erkannten Modells aus `drivers/panasonic_models`
+    # auflöst (siehe `_apply_model_catalog()`) -- ein Treiber kann so je nach
+    # verbundenem Modell einen anderen Katalog zeigen, statt fest auf
+    # AW-UE160 zu stehen. Unbekanntes Modell -> leere Kataloge (kein
+    # erfundener Fallback).
     #
     # "toggle": on/off-Kommando, kein Query verfügbar (auch in der
     #   Referenzquelle nicht — Zustand wird dort wie hier nur lokal
@@ -123,42 +149,8 @@ class PanasonicAWDriver(CameraDriver):
     # "trigger": ein einmaliges Kommando, kein Ein/Aus-Zustand.
     # "cycle": mehrere benannte Schritte, jeder Schritt kann mehrere
     #   Kommandos umfassen (z. B. "knee").
-    BUTTON_FEATURES: dict[str, dict] = {
-        "auto_focus":    {"kind": "toggle", "on": "OAF:1", "off": "OAF:0"},
-        "auto_iris":     {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
-        "awb_black":     {"kind": "trigger", "cmd": "OAS"},
-        "aww_white":     {"kind": "trigger", "cmd": "OWS"},
-        "drs":           {"kind": "toggle", "on": "OSA:0D:1", "off": "OSA:0D:0"},
-        "flare":         {"kind": "toggle", "on": "OSA:11:1", "off": "OSA:11:0"},
-        "gamma":         {"kind": "toggle", "on": "OSA:0A:1", "off": "OSA:0A:0"},
-        "knee": {
-            "kind": "cycle",
-            "cycle": [
-                {"label": "OFF", "cmd": ["OSL:45:0"]},
-                {"label": "Manual", "cmd": ["OSL:45:1", "OSA:2D:1"]},
-                {"label": "Auto", "cmd": ["OSL:45:1", "OSA:2D:2"]},
-            ],
-        },
-        "linear_matrix": {"kind": "toggle", "on": "OSL:6C:1", "off": "OSL:6C:0"},
-        "matrix":        {"kind": "toggle", "on": "OSA:84:1", "off": "OSA:84:0"},
-        "osd":           {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
-        "white_clip":    {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
-    }
-
-    BUTTON_FEATURE_LABELS: dict[str, str] = {
-        "auto_focus": "Auto Focus",
-        "auto_iris": "Auto Iris",
-        "drs": "DRS",
-        "flare": "Flare",
-        "gamma": "Gamma",
-        "knee": "Knee",
-        "linear_matrix": "Linear Matrix",
-        "matrix": "Matrix",
-        "osd": "OSD",
-        "white_clip": "White Clip",
-        "awb_black": "ABB (Black)",
-        "aww_white": "AWW (White)",
-    }
+    BUTTON_FEATURES: dict[str, dict] = {}
+    BUTTON_FEATURE_LABELS: dict[str, str] = {}
 
     def __init__(self, host: str, port: int = 80) -> None:
         self.host = host
@@ -171,6 +163,23 @@ class PanasonicAWDriver(CameraDriver):
         self._notify_port: int | None = None
         self._notify_heartbeat_task: asyncio.Task[None] | None = None
         self._last_notification_at: float = 0.0
+        # Instanzattribute (siehe Kommentar oben) -- ueberschreiben die leeren
+        # Klassenattribute nach connect() anhand des erkannten Modells.
+        self.BUTTON_FEATURES: dict[str, dict] = {}
+        self.BUTTON_FEATURE_LABELS: dict[str, str] = {}
+        # Gain/Pedestal-Modelldaten (siehe _apply_model_catalog()) -- `None`
+        # heisst "kein Modell erkannt" oder "in keiner der beiden Referenz-
+        # PDFs dokumentiert", kein erfundener Fallback.
+        self.gain_min_db: int | None = None
+        self.gain_max_db: int | None = None
+        self.gain_step_db: int | None = None
+        self.pedestal_command: str | None = None
+        self.pedestal_query_command: str | None = None
+        self.pedestal_min: int | None = None
+        self.pedestal_max: int | None = None
+        self.pedestal_center_data: int | None = None
+        self.pedestal_scale: int | None = None
+        self.pedestal_data_width: int | None = None
 
     # --- Lifecycle -----------------------------------------------------
 
@@ -180,6 +189,28 @@ class PanasonicAWDriver(CameraDriver):
         )
         self.model = await self._query_model()
         self._connected = self.model is not None
+        self._apply_model_catalog()
+
+    def _apply_model_catalog(self) -> None:
+        """Setzt BUTTON_FEATURES/BUTTON_FEATURE_LABELS sowie Gain-/Pedestal-
+        Modelldaten anhand des per `QID` erkannten Modells (siehe
+        Klassen-Docstring/§9a). Unbekanntes oder (noch) nicht verbundenes
+        Modell -> leere Kataloge/`None`-Werte, kein erfundener Fallback --
+        `available_button_features()` sowie `step_gain()`/`step_pedestal()`
+        behandeln das bereits korrekt als "keine Optionen verfuegbar"."""
+        module = resolve_model(self.model)
+        self.BUTTON_FEATURES = dict(getattr(module, "BUTTON_FEATURES", {})) if module else {}
+        self.BUTTON_FEATURE_LABELS = dict(getattr(module, "BUTTON_FEATURE_LABELS", {})) if module else {}
+        self.gain_min_db = getattr(module, "GAIN_MIN_DB", None) if module else None
+        self.gain_max_db = getattr(module, "GAIN_MAX_DB", None) if module else None
+        self.gain_step_db = getattr(module, "GAIN_STEP_DB", None) if module else None
+        self.pedestal_command = getattr(module, "PEDESTAL_COMMAND", None) if module else None
+        self.pedestal_query_command = getattr(module, "PEDESTAL_QUERY_COMMAND", None) if module else None
+        self.pedestal_min = getattr(module, "PEDESTAL_MIN", None) if module else None
+        self.pedestal_max = getattr(module, "PEDESTAL_MAX", None) if module else None
+        self.pedestal_center_data = getattr(module, "PEDESTAL_CENTER_DATA", None) if module else None
+        self.pedestal_scale = getattr(module, "PEDESTAL_SCALE", None) if module else None
+        self.pedestal_data_width = getattr(module, "PEDESTAL_DATA_WIDTH", None) if module else None
 
     async def disconnect(self) -> None:
         await self.stop_lens_feedback()
@@ -295,21 +326,40 @@ class PanasonicAWDriver(CameraDriver):
                 "gain step ignored: AGC active or gain unreadable",
                 command="OGU",
             )
-        new_db = max(_GAIN_MIN_DB, min(_GAIN_MAX_DB, current + delta_db))
+        if self.gain_min_db is None or self.gain_max_db is None:
+            raise CameraCommandError(
+                "gain step ignored: no gain range known for this model", command="OGU"
+            )
+        new_db = max(self.gain_min_db, min(self.gain_max_db, current + delta_db))
         await self.set_gain_db(new_db)
         return new_db
 
     async def set_pedestal(self, value: int) -> None:
-        data = _PEDESTAL_CENTER_DATA + value
-        await self._request("aw_cam", f"OSJ:0F:{data:03X}")
+        if (
+            self.pedestal_command is None
+            or self.pedestal_center_data is None
+            or self.pedestal_scale is None
+            or self.pedestal_data_width is None
+        ):
+            raise CameraCommandError(
+                "pedestal not supported for this model", command="pedestal"
+            )
+        data = self.pedestal_center_data + value * self.pedestal_scale
+        await self._request("aw_cam", f"{self.pedestal_command}:{data:0{self.pedestal_data_width}X}")
 
     async def step_pedestal(self, delta: int) -> int:
         current = await self._query_pedestal()
         if current is None:
             raise CameraCommandError(
-                "pedestal step ignored: pedestal unreadable", command="OSJ:0F"
+                "pedestal step ignored: pedestal unreadable",
+                command=self.pedestal_command or "pedestal",
             )
-        new_value = max(_PEDESTAL_MIN, min(_PEDESTAL_MAX, current + delta))
+        if self.pedestal_min is None or self.pedestal_max is None:
+            raise CameraCommandError(
+                "pedestal step ignored: no pedestal range known for this model",
+                command=self.pedestal_command or "pedestal",
+            )
+        new_value = max(self.pedestal_min, min(self.pedestal_max, current + delta))
         await self.set_pedestal(new_value)
         return new_value
 
@@ -331,20 +381,6 @@ class PanasonicAWDriver(CameraDriver):
         new_index = ((current + 1) % 4) if current is not None else 0
         await self.set_nd(new_index)
         return new_index
-
-    async def set_shutter(self, mode: str, value: int | None) -> None:
-        mode_key = mode.lower()
-        if mode_key not in _SHUTTER_MODES:
-            raise ValueError(f"unknown shutter mode: {mode}")
-        await self._request("aw_cam", f"OSJ:03:{_SHUTTER_MODES[mode_key]}")
-        if value is not None:
-            # Data = Verschlusszeit-Nenner direkt als Hex (z.B. 0x3C=60 -> 1/60), bestaetigt
-            # in AW-UE160_InterfaceSpecification_E.pdf Kap.9 "SHUTTER SPEED" (S.50). Nur
-            # bestimmte Nenner je aktivem Videoformat zulaessig (sonst ER3) -- siehe Spec
-            # §14 Punkt 11; keine Format-abhaengige Validierung hier. Diese OSJ:03/OSJ:06
-            # Kodierung gilt nur fuer die UE160/UE150-Befehlsfamilie, nicht fuer andere
-            # AW-Modelle (die nutzen OSH bzw. OSG:5D mit eigener Enum-Tabelle).
-            await self._request("aw_cam", f"OSJ:06:{value:04X}")
 
     async def trigger_awb(self) -> None:
         await self._request("aw_cam", "OWS")
@@ -407,7 +443,6 @@ class PanasonicAWDriver(CameraDriver):
             gain_db=await self._query_gain_db(),
             pedestal=await self._query_pedestal(),
             nd_index=await self._query_nd(),
-            shutter=None,  # Query-Response-Format fuer Shutter-Status nicht in Spec definiert
             bars=None,  # QBR-Response-Format nicht in Spec definiert (nur Query-Name, §11)
             error=await self._query_error(),
         )
@@ -464,12 +499,20 @@ class PanasonicAWDriver(CameraDriver):
         return data - _GAIN_ZERO_DB_DATA
 
     async def _query_pedestal(self) -> int | None:
-        # QSJ:0F als Query-Kommando fuer Master Pedestal ist Dokumentenbeleg aus
-        # AW-UE160_InterfaceSpecification_E.pdf Kap.9 "MASTER PEDESTAL"
-        # (Request QSJ:0F -> Response OSJ:0F:[Data]), nicht live am Geraet
-        # verifiziert (analog zu QGU, siehe CLAUDE.md Offene Punkte).
+        # Abfrage-Kommando kommt aus dem per Modell-Registry aufgeloesten
+        # Modul (siehe _apply_model_catalog()) -- QSJ:0F fuer AW-UE150/
+        # AW-UE160, QTP fuer AW-HE50/60/120/130/HR140/HE40/UE70/HE42, QSG:4A
+        # fuer AK-UB300 (Dokumentenbeleg aus den beiden lokalen Referenz-PDFs,
+        # nicht live am Geraet verifiziert, analog zu QGU, siehe CLAUDE.md
+        # Offene Punkte). Unbekanntes/undokumentiertes Modell -> kein Query.
+        if (
+            self.pedestal_query_command is None
+            or self.pedestal_center_data is None
+            or self.pedestal_scale is None
+        ):
+            return None
         try:
-            body = await self._request("aw_cam", "QSJ:0F")
+            body = await self._request("aw_cam", self.pedestal_query_command)
         except CameraCommandError:
             return None
         value = _extract_value(body)
@@ -479,7 +522,7 @@ class PanasonicAWDriver(CameraDriver):
             data = int(value, 16)
         except ValueError:
             return None
-        return data - _PEDESTAL_CENTER_DATA
+        return (data - self.pedestal_center_data) // self.pedestal_scale
 
     async def _query_nd(self) -> int | None:
         try:

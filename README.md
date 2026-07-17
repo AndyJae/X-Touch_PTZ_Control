@@ -19,28 +19,43 @@ Bitfocus-Companion-Button fern aus (v3 HTTP-API, `core/companion.py`) —
 bewusste Erweiterung über v1 hinaus, siehe Spec §9. Kopfzeile trägt auf
 allen Seiten ein Logo (`web/static/images/`).
 
-Der X-Touch-Extender ist für den Fader/Iris-Pfad verdrahtet (`midi/fader.py`):
-physisches Fader-Ziehen steuert die Iris live (Rx, Note-/CC-Belegung gegen
-das reale Gerät verifiziert, siehe CLAUDE.md), und der Motorfader folgt
-Iris-Änderungen aus **jeder** Quelle zurück (Tx) — inklusive Änderungen, die
-nicht von PTZ_Control selbst ausgelöst wurden (z. B. Kamera-eigenes Web-UI),
-über das neu implementierte Lens-Info-Feedback (`#LPC1`, Spec §7.3) in
-`drivers/panasonic_aw.py`. Die Scribble-Strip-Displays zeigen pro Kanal
-Kameraname (Zeile 1) und Iris-% (Zeile 2, Platzhalter bis zur Klärung der
-F-Nummer-Tabelle, siehe Spec §14 Punkt 10) oder `NC`/`----`. Solo/Mute/
-Select-Buttons sind Rx-seitig verifiziert, aber noch nicht an Kamera-Aktionen/
-Companion-SELECT angebunden (siehe CLAUDE.md, Offene Punkte). Rec + Encoder
-steuern live Gain/Pedestal: Drehen ändert nur einen lokalen Vorschauwert
-(geclampt auf den in der AW-UE160-Spec bestätigten Bereich, Gain -6…+12dB,
-Pedestal -200…+200), erst Encoder-Push sendet den aufgelaufenen Wert als
-Kamerabefehl (`core/application.py` `apply_encoder_turn`/
-`commit_encoder_value`).
+Der X-Touch-Extender ist für den Fader/Iris-Pfad und für Rec+Encoder
+verdrahtet (`midi/fader.py`): physisches Fader-Ziehen steuert die Iris live
+(Rx, Note-/CC-Belegung gegen das reale Gerät verifiziert, siehe CLAUDE.md),
+und der Motorfader folgt Iris-Änderungen aus **jeder** Quelle zurück (Tx) —
+inklusive Änderungen, die nicht von PTZ_Control selbst ausgelöst wurden (z. B.
+Kamera-eigenes Web-UI), über das Lens-Info-Feedback (`#LPC1`, Spec §7.3) in
+`drivers/panasonic_aw.py`.
+
+Rec (Button 1) schaltet pro Kanal fest durch drei Encoder-Funktionen:
+**Gain → Pedestal → Camera Status** (nicht mehr über `config.yaml`
+konfigurierbar, siehe `core/application.py._ENCODER_FUNCTIONS`). Drehen
+sendet bei Gain/Pedestal **sofort live** einen Kamerabefehl (über eine eigene
+Rate-Limiter-Instanz je Kamera, `apply_encoder_turn` in `core/application.py`,
+geclampt auf den Bereich des verbundenen Kameramodells, siehe
+`drivers/panasonic_models/*.py` und Spec §7.2 — z. B. AW-UE160 -6…+12dB/
+-200…+200, AW-HE50 0…18dB/-10…+10) — Encoder-Push sendet seitdem nichts mehr an die Kamera,
+sondern markiert den Wert nur noch visuell als "gespeichert" (rote Anzeige in
+der Web-UI, bis zum nächsten Dreh-Tick).
+
+Es gibt pro Kanal genau **eine** Anzeige (Web-UI und physisches Scribble-
+Strip zeigen exakt denselben Text, `channel_line1_text()`/
+`channel_display_text()` in `core/application.py`): bei `camera_status`
+Zeile 1 Kameraname + Zeile 2 Iris-% (Platzhalter bis zur Klärung der
+F-Nummer-Tabelle, siehe Spec §14 Punkt 10); bei Gain/Pedestal zeigt Zeile 1
+stattdessen den Funktionsnamen (GAIN/PEDESTAL) und Zeile 2 den unitlosen
+Rohwert (z. B. Pedestal `-45`, kein Prozentwert, kein zusätzliches
+Funktions-Präfix — das übernimmt jetzt Zeile 1). Nicht verbundene Kanäle
+zeigen `NC`/`----`. Solo/Mute/Select-Buttons sind Rx-seitig
+verifiziert, aber noch nicht an Kamera-Aktionen/Companion-SELECT angebunden
+(siehe CLAUDE.md, Offene Punkte).
 
 ## Stack
 
 - Python 3.11+
-- mido + python-rtmidi (MIDI-Layer — Fader/Touch/Scribble-Strips verdrahtet,
-  siehe `midi/fader.py`; Buttons/Encoder noch nicht)
+- mido + python-rtmidi (MIDI-Layer — Fader/Touch/Scribble-Strips sowie
+  Rec+Encoder (Gain/Pedestal) verdrahtet, siehe `midi/fader.py`; Solo/Mute/
+  Select noch nicht)
 - httpx (Kamera-HTTP)
 - FastAPI + Jinja2 + WebSocket (Web-UI)
 - pydantic v2 + YAML (Config)
@@ -90,6 +105,8 @@ Domain/Core       core/config.py        Typisiertes Config-Schema (pydantic v2)
 
 Treiber           drivers/base.py       CameraDriver-Interface (ABC)
                   drivers/panasonic_aw.py  AW-UE160-Referenzimplementierung
+                  drivers/panasonic_models/  Button-Feature-Katalog je Modell
+                                         (17 Panasonic-Modelle) + Registry
 ```
 
 - **Config**: `config.yaml` wird strikt über `core/config.py`s pydantic-Modelle
@@ -129,10 +146,20 @@ Treiber           drivers/base.py       CameraDriver-Interface (ABC)
   `BUTTON_FEATURES`) — ein Treiber ohne Unterstützung liefert einfach keine
   externen Iris-Updates.
 - **Kamera-Feature-Buttons** (Spec §9a): Katalog (`BUTTON_FEATURES`/
-  `BUTTON_FEATURE_LABELS`) lebt treiberspezifisch auf `PanasonicAWDriver`,
-  nicht in der `CameraDriver`-ABC — ein Treiber ohne Katalog bietet einfach
-  keine Optionen an. Zustand wird nur lokal getrackt (kein Kamera-Query für
-  diese Kommandos verfügbar, siehe Kommentar dort).
+  `BUTTON_FEATURE_LABELS`) lebt nicht mehr fest auf `PanasonicAWDriver`,
+  sondern in `drivers/panasonic_models/` — eine Datei pro Kameramodell
+  (17 Panasonic-Modelle, portiert aus `C:\smart_reset_work`s
+  `camera_plugins/panasonic/*.py`), aufgelöst über eine kleine Registry
+  (`drivers/panasonic_models/registry.py`) anhand des per `QID` erkannten
+  Modells (`PanasonicAWDriver.connect()` → `_apply_model_catalog()`). Nicht
+  Teil der `CameraDriver`-ABC — ein nicht erkanntes Modell bietet einfach
+  keine Optionen an (leere Kataloge, kein erfundener Fallback). Zustand wird
+  nur lokal getrackt (kein Kamera-Query für diese Kommandos verfügbar, siehe
+  Kommentar dort). Gain-/Pedestal-Bereich und -Kommando werden über dieselbe
+  Registry mitaufgelöst (`GAIN_MIN_DB`/`GAIN_MAX_DB`/`GAIN_STEP_DB`,
+  `PEDESTAL_COMMAND` u. ä. je Modell-Datei, siehe Spec §7.2) — nur Iris
+  bleibt weiterhin modellunabhängig nur für AW-UE160 verifiziert (siehe
+  `drivers/panasonic_aw.py`-Klassendocstring).
 - **Kamera-Registrierung** (`core/application.py::register_camera`): einzige
   Stelle, die `AppState.cameras/drivers/rate_limiters/mapping` zur Laufzeit
   erweitert (alle anderen Use-Cases arbeiten nur mit dem beim Start

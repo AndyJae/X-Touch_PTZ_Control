@@ -11,7 +11,6 @@ class CameraState:
     gain_db: int | None = None
     pedestal: int | None = None
     nd_index: int | None = None
-    shutter: str | None = None
     bars: bool | None = None
     error: str | None = None
     # Feature-Button-Zustand (Spec §9a), Schlüssel = Feature-Key aus

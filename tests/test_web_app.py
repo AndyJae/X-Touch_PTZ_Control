@@ -15,7 +15,7 @@ TEST_CONFIG = AppConfig.model_validate(
             {"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9999},
         ],
         "banks": [{"name": "Bank A", "channels": [{"camera": "cam1"}]}],
-        "channel_defaults": {"fader": "iris", "encoder": {"functions": ["gain", "pedestal"]}},
+        "channel_defaults": {"fader": "iris"},
         "global": {"rate_limit_hz": 15, "web_port": 8600},
     }
 )
@@ -136,21 +136,26 @@ def test_encoder_select_endpoint_advances_function(client) -> None:
     assert response.json()["function"] == "gain"
 
 
-def test_encoder_turn_over_websocket_updates_pending_preview(client) -> None:
+def test_encoder_turn_over_websocket_sends_live_to_driver(client) -> None:
+    # Nutzerentscheid: Drehen sendet gain/pedestal sofort live (ueber den
+    # Rate-Limiter), nicht erst nach dem Encoder-Push.
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()  # initial snapshot
         ws.send_json({"type": "encoder_turn", "channel": 1, "delta": 1})
         data = ws.receive_json()
 
     channel1 = next(c for c in data["channels"] if c["index"] == 1)
-    assert channel1["encoder"]["pending"] is True
     assert channel1["encoder"]["value"] == 1
+    assert channel1["encoder"]["saved"] is False
 
     driver = web_app.app.state.ptz.drivers["cam1"]
-    assert driver.step_gain_calls == []  # kein Kamerabefehl vor dem Commit
+    assert driver.step_gain_calls == [1]
 
 
-def test_encoder_commit_over_websocket_sends_to_driver(client) -> None:
+def test_encoder_commit_over_websocket_only_sets_saved_flag(client) -> None:
+    # Encoder-Push sendet seit Nutzerentscheid keinen Kamerabefehl mehr --
+    # der Wert ist durch das Drehen bereits live aktuell, Push ist rein
+    # visuelles "gespeichert"-Feedback.
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()  # initial snapshot
         ws.send_json({"type": "encoder_turn", "channel": 1, "delta": 1})
@@ -159,11 +164,11 @@ def test_encoder_commit_over_websocket_sends_to_driver(client) -> None:
         data = ws.receive_json()
 
     channel1 = next(c for c in data["channels"] if c["index"] == 1)
-    assert channel1["encoder"]["pending"] is False
+    assert channel1["encoder"]["saved"] is True
     assert channel1["encoder"]["value"] == 1
 
     driver = web_app.app.state.ptz.drivers["cam1"]
-    assert driver.step_gain_calls == [1]
+    assert driver.step_gain_calls == [1]  # weiterhin nur der eine Dreh-Tick, kein Push-Befehl
 
 
 def test_disconnect_camera_endpoint_marks_disconnected(client) -> None:

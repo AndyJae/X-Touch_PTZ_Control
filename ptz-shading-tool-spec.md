@@ -18,8 +18,8 @@ Interface Specification Dec. 2023).
   dargestellt, da frei belegbar) — verfügbare Aktionen werden nach
   Kamera-Modell-Erkennung dynamisch bereitgestellt, siehe §9a.
 - Encoder pro Kanal steuert die Funktion, die aktuell über Button 1 desselben
-  Kanals ausgewählt ist (zyklisches Durchschalten einer konfigurierten Liste,
-  z. B. Gain, Shutter, Master Black — konkrete Liste vorläufig, siehe §9 und §14).
+  Kanals ausgewählt ist (zyklisches Durchschalten einer festen Liste: Gain,
+  Pedestal, Camera Status, siehe §9 und §14 Punkt 8).
 - Scribble Strips zeigen Kameraname (Zeile 1) und F-Nummer (Zeile 2).
 - Motorfader-Feedback: Iris-Änderungen von außen (Auto-Iris, Web-UI der Kamera,
   anderer Controller) fahren den Fader nach.
@@ -168,9 +168,10 @@ banks:
 
 channel_defaults:            # gilt für jeden Kanalzug, überschreibbar pro Kanal
   fader: iris                # v1 fix: iris, ausschließlich Blende — keine andere Funktion
-  encoder:
-    functions: [gain, shutter, master_black]   # Liste vorläufig, siehe §14;
-                                                 # Button 1 (rec) schaltet zyklisch durch, siehe §9
+  # Encoder-Funktionsliste (gain/pedestal/camera_status, in dieser Reihenfolge)
+  # ist per Nutzerentscheid fest im Code verdrahtet (core/application.py.
+  # _ENCODER_FUNCTIONS) und daher hier kein Konfigurationsfeld mehr — Button 1
+  # (rec) schaltet zyklisch durch, siehe §9.
   buttons:
     # rec (Button 1) hat in v1 keine frei belegbare Aktion mehr —
     # fest reserviert für Encoder-Funktionsauswahl, siehe §9
@@ -265,7 +266,6 @@ class CameraDriver(ABC):
     async def set_rb_gain(self, r: int | None, b: int | None) -> None: ...
     async def set_nd(self, index: int) -> None: ...        # 0..3
     async def cycle_nd(self) -> int: ...
-    async def set_shutter(self, mode: str, value: int | None) -> None: ...
     async def trigger_awb(self) -> None: ...
     async def set_bars(self, on: bool) -> None: ...
     async def recall_preset(self, number: int) -> None: ...
@@ -281,7 +281,6 @@ class CameraState:
     auto_iris: bool | None
     gain_db: int | None
     nd_index: int | None
-    shutter: str | None
     bars: bool | None
     error: str | None             # letzter Kamerafehler (rER/OER)
 ```
@@ -312,8 +311,6 @@ Alle Befehle per HTTP GET. Kein Keep-Alive möglich (Kamera trennt pro Request) 
 | Auto-Iris | `ORS:[0/1]` (oder `#D3`) | 0=off, 1=on | aw_cam |
 | Gain | `OGU:[Data]` | 02h(−6dB)–08h(0dB)–14h(+12dB), 80h=AGC | aw_cam |
 | ND-Filter | `OFT:[0–3]` | THROUGH, 1/4, 1/16, 1/64 | aw_cam |
-| Shutter-Mode | `OSJ:03:[0–3]` | OFF/STEP/SYNCHRO/ELC | aw_cam |
-| Shutter-Speed | `OSJ:06:[Data]` | 0001h–07D0h (1/1–1/2000, siehe Spec-Tabelle) | aw_cam |
 | AWB auslösen | `OWS` | Ergebnis kommt als Notification `OWS` | aw_cam |
 | ABB auslösen | `OAS` | Notification `OAS` | aw_cam |
 | Bars | `DCB:[0/1]` | 0=off, 1=on | aw_cam |
@@ -331,18 +328,47 @@ Alle Befehle per HTTP GET. Kein Keep-Alive möglich (Kamera trennt pro Request) 
 **Achtung `OGU` bei AGC:** Wenn AGC aktiv (Antwortwert 80h), Gain-Steps ignorieren
 und Solo-LED blinken lassen (UI-Hinweis "AGC aktiv").
 
-**Modell-Geltungsbereich (Kreuzprüfung gegen `HDIntegratedCamera_InterfaceSpecifications-E.pdf`,
-Panasonic Multi-Modell-Spec):** Die oben gelisteten Shutter- (`OSJ:03`/`OSJ:06`) und
-Gain-Befehle (`OGU`/`QGU`) sind gegen die dedizierte AW-UE160-Spec verifiziert; die
-Multi-Modell-Spec bestätigt dasselbe Befehlsschema unabhängig für AW-UE150 (Kap. 3.2.4/3.2.6).
-Andere AW-Modelle weichen jedoch ab — dieser Treiber ist laut CLAUDE.md ausschließlich für
-AW-UE160 spezifiziert, die Tabelle gilt NICHT automatisch für andere Modelle:
-- **Shutter:** AW-HE50/HE60/HE130/HR140/HE40/UE70/HE42 nutzen den Einzelbefehl `OSH:[Data]`
-  (fester Enum-Wert pro Framerate, z. B. `6h=1/500`) statt `OSJ:03`+`OSJ:06`. AK-UB300 nutzt
-  `OSG:59`(An/Aus)/`OSG:5A`(Modus)/`OSG:5D`(eigene Enum-Tabelle) — ebenfalls kein roher
-  Hex-Nenner.
-- **Gain:** AK-UB300 hat kein `OGU`/`QGU` — stattdessen `OGS` (Gain-Auswahl LOW/MID/HIGH/
-  S.GAIN1-3) + `OSA:50`/`OSA:51`/`OSA:52` (dB-Werte je Bereich, −6…+36dB).
+**Modellabhängige Gain-/Pedestal-Daten (`drivers/panasonic_models/*.py`,
+Quelle: `HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/§3.2.14,
+für AW-UE160 zusätzlich `AW-UE160_InterfaceSpecification_E.pdf` Kap. 9):**
+Die obige Tabelle zeigt nur AW-UE160. `OGU`/`QGU` selbst (Data = 0x08 + dB,
+80h = AGC) ist laut beiden PDFs modellübergreifend identisch — nur Bereich/
+Schrittweite variieren und kommen per Modell-Registry aus `GAIN_MIN_DB`/
+`GAIN_MAX_DB`/`GAIN_STEP_DB`:
+
+| Modell(e) | Gain-Bereich | Schrittweite |
+|---|---|---|
+| AW-UE160 | −6…+12dB | 1dB (kontinuierlich) |
+| AW-HE50/AW-HE60 | 0…18dB | 3dB (nur diskrete Stufen) |
+| AW-HE120 | 0…18dB | 1dB |
+| AW-HE130 | 0…36dB | 1dB |
+| AW-HR140/AW-UE150(A) | 0…42dB | 1dB |
+| AW-HE40/AW-UE70/AW-HE42 | 0…48dB | 3dB (nur diskrete Stufen) |
+| AK-UB300 | — | kein `OGU` (siehe unten) |
+| AW-UE100/UE80/UE30/40/50/UE145 | — | in keiner der beiden PDFs dokumentiert |
+
+Pedestal ist dagegen NICHT dasselbe Kommando für alle Modelle — drei
+Kommandofamilien (`PEDESTAL_COMMAND`/`PEDESTAL_QUERY_COMMAND` je Modell-Datei):
+
+| Kommando | Modell(e) | Bereich | Data-Formel |
+|---|---|---|---|
+| `OSJ:0F`/`QSJ:0F` (Master Pedestal) | AW-UE160, AW-UE150(A) | −200…+200 | 0x800 + Wert |
+| `OTP`/`QTP` | AW-HE50/HE60/HE40/UE70/HE42 | −10…+10 | 0x96 + Wert×15 |
+| `OTP`/`QTP` | AW-HE120/HE130/HR140 | −150…+150 | 0x96 + Wert |
+| `OSG:4A`/`QSG:4A` | AK-UB300 | −99…+99 | 0x80 + Wert |
+
+`PanasonicAWDriver.set_pedestal()`/`step_pedestal()`/`_query_pedestal()`
+lesen Kommando, Zentraldatenwert, Skalierung und Hex-Breite aus dem per
+Modell-Registry aufgelösten Modul (`_apply_model_catalog()`) statt fest
+`OSJ:0F` zu verwenden. Modelle ohne Eintrag in einer der beiden PDFs haben
+weder Gain- noch Pedestal-Konstanten — Encoder zeigt dafür keinen
+Wertebereich (kein erfundener Fallback).
+
+**Gain-Sonderfall AK-UB300:** hat kein `OGU`/`QGU` — stattdessen `OGS`
+(Gain-Auswahl LOW/MID/HIGH/S.GAIN1-3) + `OSA:50`/`OSA:51`/`OSA:52` (dB-Werte
+je Bereich, −6…+36dB), strukturell inkompatibel mit `set_gain_db(db)`/
+`step_gain(delta)` — bewusst nicht implementiert (kein Encoder-Gain für
+dieses Modell). Pedestal (`OSG:4A`) ist davon unabhängig und implementiert.
 
 ### 7.3 Feedback-Kanal
 1. **Update-Notifications (bevorzugt):**
@@ -410,38 +436,56 @@ Pro Kamera eine Instanz. Regeln:
 | `bars_toggle` | `set_bars(!state)` | = Zustand |
 | `auto_iris_toggle` | `set_auto_iris(!state)`; bei ON Fader-Feedback weiter aktiv | = Zustand |
 | `preset_recall` | `recall_preset(n)`; LED blinkt bis `q`-Notification | blink→aus |
-| `shutter_cycle` | Shutter-Modes durchschalten | an wenn ≠ OFF |
 
 ### Encoder-Funktionsauswahl über Button 1
 
 - Der Encoder eines Kanals steuert immer die Funktion, die aktuell über Button 1
   (physisch Rec) desselben Kanals ausgewählt ist. Ein Druck auf Button 1 sendet
   keinen Kamerabefehl, sondern schaltet nur lokal um, welche Funktion der Encoder
-  als Nächstes steuert.
-- Jeder Druck auf Button 1 schaltet die aktive Encoder-Funktion zyklisch durch die
-  in `channel_defaults.encoder.functions` konfigurierte Liste (§4).
-- Die vollständige Funktionsliste ist noch nicht final festgelegt (siehe §14);
-  bisher benannt: Gain, Shutter, Master Black. Die genaue Zuordnung zu
-  Treiber-Methoden (`set_gain_db`/`step_gain`, `set_shutter`, ggf. `set_pedestal`
-  für Master Black — Panasonic-Terminologie "Master Pedestal", §7.2) ist noch zu
-  bestätigen.
-- Encoder v1 (per Nutzerentscheid als Preview/Commit umgesetzt, siehe
-  `apply_encoder_turn`/`commit_encoder_value`/`encoder_preview` in
-  `core/application.py`): Drehen ändert nur einen lokalen Pending-Wert, es
-  wird dabei **kein** Kamerabefehl gesendet. `gain`/`pedestal`: ±1 Klick =
-  ±1 Digit, Beschleunigung ×5 nach >3 Klicks/100 ms (implementiert). Shutter
-  (§14 Punkt 8) hat weiterhin keine Treiber-Methode/Skalierung. Der
-  Pending-Wert wird beim Drehen auf denselben Bereich geclampt, der auch
-  fürs UI-Display gilt (`_ENCODER_RANGES` in `core/application.py`; Gain
-  -6…+12dB, Pedestal -200…+200 lt. `AW-UE160_InterfaceSpecification_E.pdf`
-  Kap. 9 `OSL:25`/`OSJ:0F`) — **Bugfix 2026-07-17:** ohne dieses Clamping lief
-  der noch nicht committete Vorschauwert unbegrenzt weiter (Anzeige zeigte
-  z. B. "+239dB"). LED-Ring zeigt Position innerhalb der Range (Modus "Fan").
+  als Nächstes steuert. Button 1 zeigt (Web-UI) den Namen der aktiven Funktion
+  an, statt eines statischen Labels — es gibt daher auch kein eigenes
+  Konfigurations-UI für Button 1 auf der Setup-Seite (Nutzerentscheid).
+- Jeder Druck auf Button 1 schaltet die aktive Encoder-Funktion zyklisch durch
+  eine **feste** Liste (Nutzerentscheid, nicht mehr über `config.yaml`
+  konfigurierbar, siehe `core/application.py._ENCODER_FUNCTIONS`): **Gain →
+  Pedestal → Camera Status → (wrap)**.
+  Treiber-Methoden: `gain`→`step_gain`, `pedestal`→`step_pedestal` (Panasonic-
+  Terminologie "Master Pedestal", §7.2); `camera_status` ist ein reiner
+  Anzeige-Eintrag ohne Kamera-Aktion (zeigt Kameraname + Iris-%).
+- Encoder v1, relativer Modus, **Nutzerentscheid (Live-Senden statt
+  Preview/Commit)**: Drehen sendet bei `gain`/`pedestal` SOFORT einen
+  Kamerabefehl (`apply_encoder_turn` in `core/application.py`) — ±1 Klick =
+  ±1 Digit, Beschleunigung ×5 nach >3 Klicks/100 ms. Das läuft über eine
+  eigene Rate-Limiter-Instanz je Kamera (dieselbe Idee wie beim Iris-Fader,
+  §8), damit nicht jeder MIDI-Tick einen eigenen HTTP-Request auslöst; ein
+  vom Limiter zurückgehaltener Tick geht nicht verloren, sondern sammelt sich
+  auf und wird beim nächsten erlaubten Tick als Gesamt-Delta nachgereicht.
+  Der vorgeschlagene Wert wird dabei auf den bestätigten Gerätebereich
+  geclampt (`_encoder_value_range()` in `core/application.py`, liest
+  `gain_min_db`/`gain_max_db` bzw. `pedestal_min`/`pedestal_max` vom
+  verbundenen Treiber — modellabhängig seit dem Umbau in §9a, siehe §7.2 für
+  die Werte je Modell) — **Bugfix 2026-07-17:** vor diesem Clamping lief ein
+  noch nicht gesendeter Vorschauwert unbegrenzt weiter (Anzeige zeigte z. B.
+  "+239dB"). LED-Ring zeigt Position innerhalb der Range (Modus "Fan").
 - Encoder-Push (physischer Druckknopf des Encoders, Note 32–39, §5.2) sendet
-  den seit der letzten Funktionsauswahl aufgelaufenen Pending-Wert als eine
-  einzelne Kamera-Änderung (`commit_encoder_value()`) — nicht mehr ungenutzt,
-  siehe §14 Punkt 9.
+  seit der Umstellung auf Live-Senden **keinen** Kamerabefehl mehr — der Wert
+  ist zu diesem Zeitpunkt bereits aktuell. Er markiert den Kanal nur visuell
+  als "gespeichert" (`commit_encoder_value()`): die Anzeige wird rot, bis der
+  nächste Dreh-Tick sie zurücksetzt (Nutzerentscheid, Web-UI-only — keine
+  verifizierte Hintergrundfarben-Ansteuerung für das physische Scribble-Strip).
 - Select-Button: markiert Kamera als "aktiv" für die Web-UI-Detailansicht.
+
+**EINE Kanal-Anzeige (Nutzerentscheid, Abkehr von der ursprünglichen
+"2 Displays in der Web-UI"-Entscheidung):** Das physische Scribble-Strip und
+die Web-UI zeigen exakt denselben Text über dieselben Funktionen
+(`channel_line1_text()`/`channel_display_text()` in `core/application.py`).
+Bei `camera_status`: Zeile 1 Kameraname, Zeile 2 Iris-% (Platzhalter bis zur
+F-Nummer-Tabelle, §14 Punkt 10). Bei `gain`/`pedestal` (Nutzerentscheid):
+Zeile 1 zeigt stattdessen den Funktionsnamen (GAIN/PEDESTAL) statt des
+Kameranamens, Zeile 2 den unitlosen Rohwert im bestätigten Gerätebereich
+(Pedestal z. B. `-45`, **kein** Prozentwert und kein zusätzliches
+Funktions-Präfix mehr — das übernimmt Zeile 1). Die Web-UI ergänzt nur das
+rote "gespeichert"-Feedback, das es auf dem physischen Gerät nicht gibt.
 
 **Bewusste Erweiterung über v1 hinaus (Nutzerentscheid):** Der SELECT-Button
 löst zusätzlich einen Bitfocus-Companion-Button (v3, Location-Adressierung
@@ -461,51 +505,91 @@ konfiguriert. Implementierung: `core/companion.py`.
 
 ---
 
-## 9a. Button-Funktionsquelle: Kamera-Modell-Erkennung (extern: smart-reset-browser)
+## 9a. Button-Funktionsquelle: Kamera-Modell-Erkennung (extern: `C:\smart_reset_work`)
 
-**Status: Für AW-UE160 über das Web-UI umgesetzt. Integrationsmechanismus
-für weitere Modelle sowie physische X-Touch-Auslösung noch offen (siehe §14).**
+**Status: Modell-Registry mit 17 Panasonic-Modellen umgesetzt (Nutzerentscheid).
+Physische X-Touch-Auslösung für Button 2/3 (Solo/Mute) weiterhin offen (siehe §14).**
 
-Umsetzung (`drivers/panasonic_aw.py::PanasonicAWDriver.BUTTON_FEATURES`/
-`BUTTON_FEATURE_LABELS`): der Katalog wurde wörtlich aus
-`smart-reset-browser`s `UI_BUTTONS`/`UI_BUTTON_LABELS` für AW-UE160 in dieses
-Repo portiert — kein Cross-Repo-Import zur Laufzeit (gleiches Muster wie
-`tools/panasonic_emulator.py`). Die Zuordnung Button 2/3 → Feature-Key ist
-pro Kanal in `config.yaml` persistiert (`banks[].channels[].buttons`, §4),
-über die Setup-Seite editierbar. Ausgelöst wird die Aktion aktuell **nur**
-über die schon vorhandenen Button-2/3-Elemente der Übersicht-Seite (Web-UI) —
-**nicht** über den physischen X-Touch Extender, dessen MIDI-Anbindung
-weiterhin nicht implementiert ist (siehe Roadmap/offene Punkte). Zustand
-(an/aus bzw. Cycle-Stufe) wird wie in der Referenzquelle nur lokal getrackt,
-nicht durch Kamera-Rückfrage verifiziert — für die genutzten Kommandos
-existiert kein Query-Gegenstück.
+Externe Referenzquelle: `C:\smart_reset_work\camera_plugins\panasonic\*.py`
+(`UI_BUTTONS`/`UI_BUTTON_LABELS` pro Kameramodell, dort gegen reale
+Panasonic-Interface-Specs verifiziert, siehe deren eigene `CLAUDE.md`, Regel
+„Do not invent camera API commands or response formats"). `C:\smart_reset_work`
+ist die aktiv gepflegte Arbeitsversion des Nutzers (maßgeblich für künftige
+Ports); `C:\smart-reset-browser` ist nur die veröffentlichte, seltener
+aktualisierte Public-Version desselben Projekts — für Portierungen aus dieser
+Quelle gilt daher `C:\smart_reset_work`, nicht `C:\smart-reset-browser`.
 
-Beim Verbinden einer Kamera wird das Kameramodell erkannt (Teil des bestehenden
-`QID`-Schritts in der Startup-Sequenz, §11). Erkennung analog zu
-`smart-reset-browser` (`camera_plugins/panasonic/transport.py::query_camera_id()`):
-CGI-Query `QID` → Modell-Regex `(?:AW|AK)-[A-Z0-9]+` auf die Antwort.
+**Umsetzung — Modell-Registry (`drivers/panasonic_models/`):** jedes
+Kameramodell ist eine eigene Datei (`CAMERA_ID`, optional
+`CAMERA_ID_ALIASES`, `BUTTON_FEATURES`, `BUTTON_FEATURE_LABELS`) — wörtlich
+aus der jeweiligen `UI_BUTTONS`/`UI_BUTTON_LABELS`-Definition der Referenz-
+quelle portiert (Toggle-Struktur `{"on"/"off"}` → `{"kind":"toggle",
+"on"/"off"}`, Trigger `{"cmd"}` → `{"kind":"trigger","cmd"}`, Cycle
+`{"cycle"}` → `{"kind":"cycle","cycle"}`, analog zur bisherigen AW-UE160-
+Portierung). `RESET_COMMANDS`/`UI_LAYOUT`/`UI_DROPDOWNS` aus der Quelle
+gehören zu deren eigenem Reset-Tool und haben in PTZ_Control keine
+Entsprechung — Button 2/3 sind hier frei aus dem Katalog zuweisbar, kein
+fester Grid-/Dropdown-Aufbau. Alias-Modelle (z. B. AW-HE60 zu AW-HE50)
+re-exportieren `BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS` vom Basismodell,
+genau wie in der Quelle.
 
-Die für die frei belegbaren Buttons (physisch Solo/Mute, UI: „Button 2/3" — Button 1
-ist davon ausgenommen, siehe §9) angebotenen Aktionen werden **nicht** aus einer
-festen Liste in diesem Tool bezogen,
-sondern aus der pro Kameramodell verifizierten `UI_BUTTONS`/`UI_BUTTON_LABELS`-
-Definition des externen Referenzprojekts `smart-reset-browser`
-(lokal: `C:\smart-reset-browser\camera_plugins\panasonic\<modell>.py`). Diese
-Definitionen sind dort gegen reale Panasonic-Interface-Specs verifiziert
-(Toggle-, Trigger- und Cycle-Buttons; siehe `smart-reset-browser`s eigene
-`CLAUDE.md`, Regel „Do not invent camera API commands or response formats").
+Eine kleine Registry (`drivers/panasonic_models/registry.py`, angelehnt an
+`C:\smart_reset_work\core\registry.py`s `PluginRegistry`, aber ohne dessen
+Transport-Registry-Hälfte — PTZ_Control hat nur einen Treiber für alle diese
+Modelle) lädt alle Modell-Dateien beim ersten Zugriff per `pkgutil` und
+indiziert sie nach `CAMERA_ID` (inkl. Aliases). Kein Cross-Repo-Import zur
+Laufzeit — die Modell-Dateien sind eine eigene Kopie in diesem Repo (gleiches
+Muster wie `tools/panasonic_emulator.py`).
 
-Beispiel AW-UE160 (`camera_plugins/panasonic/aw_ue160.py`): Auto Focus, Auto Iris,
-ABB (Black), AWW (White), DRS, Flare, Gamma, Knee (Cycle: Off/Manual/Auto),
-Linear Matrix, Matrix, OSD, White Clip.
+Beim Verbinden einer Kamera wird das Kameramodell per `QID` erkannt (Teil des
+bestehenden Schritts in der Startup-Sequenz, §11); `PanasonicAWDriver.
+connect()` löst danach über die Registry den passenden Katalog auf
+(`_apply_model_catalog()`) und setzt ihn als Instanzattribute
+`BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS` — nicht mehr fest auf AW-UE160
+hartkodierte Klassenattribute wie vor diesem Umbau. Die Zuordnung Button 2/3
+→ Feature-Key ist weiterhin pro Kanal in `config.yaml` persistiert
+(`banks[].channels[].buttons`, §4), über die Setup-Seite editierbar.
+Ausgelöst wird die Aktion aktuell **nur** über die Button-2/3-Elemente der
+Übersicht-Seite (Web-UI) — **nicht** über den physischen X-Touch Extender
+(Solo/Mute sind laut CLAUDE.md nur Rx-seitig verifiziert, nicht an
+`apply_button_action` angebunden). Zustand (an/aus bzw. Cycle-Stufe) wird wie
+in der Referenzquelle nur lokal getrackt, nicht durch Kamera-Rückfrage
+verifiziert — für die genutzten Kommandos existiert kein Query-Gegenstück.
 
-Wird ein Kameramodell erkannt, für das `smart-reset-browser` kein Plugin-Modul
-besitzt, ist für diesen Kanal aktuell keine Button-Belegung verfügbar — das genaue
-Verhalten in diesem Fall ist noch nicht spezifiziert (§14).
+**Scope-Grenze:** Der Modell-Registry-Umbau deckt inzwischen sowohl den
+Button-2/3-Katalog als auch Gain/Pedestal ab (`GAIN_MIN_DB`/`GAIN_MAX_DB`/
+`GAIN_STEP_DB`/`PEDESTAL_COMMAND` u. ä. je Modell-Datei, siehe §7.2 für die
+Werte) — `_apply_model_catalog()` löst beides gemeinsam auf. Nur Iris
+(`_IRIS_DATA_MIN/MAX` in `drivers/panasonic_aw.py`) bleibt unabhängig vom
+erkannten Modell weiterhin nur für AW-UE160 verifiziert, das ist ein
+separater, noch offener Punkt (§14).
 
-Zusätzliche, PTZ-Control-eigene Funktionen über den `smart-reset-browser`-Katalog
-hinaus (z. B. aus der bisherigen Aktionsliste in §9) sind möglich, aber Umfang und
-Auswahl sind noch nicht festgelegt (§14).
+Portierte Modelle (`drivers/panasonic_models/`, CAMERA_ID — Aliases in
+Klammern): AW-UE160; AW-HE50 (AW-HE50H/E/S); AW-HE60 (AW-HE60H/E/S, Katalog
+= AW-HE50); AW-HE40 (viele Aliases, u. a. AW-HE65/70, AW-HN38/40/65/70);
+AW-HE42 (AW-HE75/68, Katalog = AW-HE40); AW-UE70 (AW-UN70, AW-UE65/63,
+Katalog = AW-HE40); AW-HE120 (AW-HE125, AW-HE120W/K); AW-HE130 (AW-HE135,
+AW-HE130W/K); AW-HR140 (AW-HR140E/N); AW-UE100 (keine Aliases); AW-UE150A
+(AW-UE150, AW-UE155, AW-UN145 — CAMERA_ID ist bewusst "AW-UE150A", "AW-UE150"
+ist dort nur ein Alias, kein Tippfehler); AW-UE145 (AW-UE150HE/145, Katalog =
+AW-UE150A); AW-UE80 (keine Aliases); AW-UE30/UE40/UE50 (je Katalog =
+AW-UE80); AK-UB300 (AK-UB300GJ/EJ — AK-Serie, nicht AW; weicht beim
+Gain-Befehl ab, siehe §7.2, betrifft aber nicht diesen Katalog).
+
+Beispiel AW-UE160 (`drivers/panasonic_models/aw_ue160.py`): Auto Focus, Auto
+Iris, ABB (Black), AWW (White), DRS, Flare, Gamma, Knee (Cycle:
+Off/Manual/Auto), Linear Matrix, Matrix, OSD, White Clip.
+
+Wird ein Kameramodell erkannt, für das keine Datei registriert ist, liefert
+`_apply_model_catalog()` leere `BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS` und
+keine Gain-/Pedestal-Werte (kein erfundener Fallback) — die Kamera bleibt
+trotzdem verbunden (Iris ist modellunabhängig verdrahtet), Button 2/3 zeigen
+für diesen Kanal einfach keine zuweisbaren Optionen und der Encoder zeigt für
+Gain/Pedestal keinen Wertebereich.
+
+Zusätzliche, PTZ-Control-eigene Funktionen über den portierten Katalog
+hinaus (z. B. aus der bisherigen Aktionsliste in §9) sind möglich, aber
+Umfang und Auswahl sind noch nicht festgelegt (§14).
 
 ---
 
@@ -610,28 +694,35 @@ MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
    `0x15` erschien der Text (`F0 00 00 66 15 12 <offset> <text> F7`).
    Offsets (0x00–0x37 obere Zeile, 0x38–0x6F untere Zeile, je 7 Zeichen ×
    8 Strips) unverändert bestätigt. Siehe `midi/fader.py`.
-5. Integrationsmechanismus für die Button-Funktionsquelle aus `smart-reset-browser`
-   (§9a) — Abhängigkeit/Import der `camera_plugins`-Module vs. eigene Kopie/Adapter;
-   noch nicht festgelegt.
-6. Verhalten wenn ein erkanntes Kameramodell kein `smart-reset-browser`-Plugin-Modul
-   besitzt (§9a) — noch nicht spezifiziert.
+5. ~~Integrationsmechanismus für die Button-Funktionsquelle aus der externen
+   Referenzquelle (§9a) — Abhängigkeit/Import der Modell-Module vs. eigene
+   Kopie/Adapter; noch nicht festgelegt.~~ **Umgesetzt (Nutzerentscheid):**
+   eigene Kopie (`drivers/panasonic_models/*.py`, 17 Modelle), kein Import
+   der externen Quelle zur Laufzeit; Registry laedt/indiziert per `pkgutil`
+   nach `CAMERA_ID` (siehe §9a).
+6. ~~Verhalten wenn ein erkanntes Kameramodell kein Plugin-Modul besitzt
+   (§9a) — noch nicht spezifiziert.~~ **Umgesetzt:** leere
+   `BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS`, kein erfundener Fallback,
+   Verbindung bleibt bestehen (siehe §9a).
 7. Umfang etwaiger PTZ-Control-eigener Zusatzfunktionen über den
-   `smart-reset-browser`-Katalog hinaus (§9a) — auf später verschoben.
+   portierten Katalog hinaus (§9a) — auf später verschoben.
 8. ~~Vollständige Liste der über Button 1 wählbaren Encoder-Funktionen (v1
    vorläufig: Gain, Shutter, Master Black, siehe §9) — inkl. verbindlicher
    Zuordnung zu Treiber-Methoden und Encoder-Skalierung/Beschleunigung pro
-   Funktion.~~ **Teilweise umgesetzt**: `gain`→`step_gain`, `pedestal`
-   (Master Black/Pedestal)→`step_pedestal` sind verdrahtet (`core/
-   application.py`, `channel_defaults.encoder.functions` in `config.yaml`),
-   Skalierung ±1 Digit/Klick mit ×5-Beschleunigung >3 Klicks/100 ms
-   implementiert. Shutter hat weiterhin keine Treiber-Methode/Zuordnung —
-   bleibt offen.
+   Funktion.~~ **Final festgelegt (Nutzerentscheid):** feste Liste Gain →
+   Pedestal → Camera Status, nicht mehr konfigurierbar (`core/application.py.
+   _ENCODER_FUNCTIONS`). `gain`→`step_gain`, `pedestal`→`step_pedestal` sind
+   verdrahtet, Skalierung ±1 Digit/Klick mit ×5-Beschleunigung >3 Klicks/100 ms
+   implementiert. Shutter ist per Nutzerentscheid (2026-07-17) komplett aus
+   dem Scope entfernt — kein Treiber-Code (`set_shutter`), kein Config-Feld,
+   kein Encoder-Eintrag mehr.
 9. ~~Verwendung des Encoder-Push (Note 32–39, §5.2), nachdem die
    Funktionsauswahl auf Button 1 verlagert wurde — aktuell ungenutzt.~~
-   **Umgesetzt**: Encoder-Push committet den seit der letzten
-   Funktionsauswahl aufgelaufenen Pending-Wert als eine Kamera-Änderung
-   (`commit_encoder_value()` in `core/application.py`, verdrahtet in
-   `midi/fader.py`).
+   **Umgesetzt, dann per Nutzerentscheid am 2026-07-17 geändert:** Encoder-
+   Push sendet keinen Kamerabefehl mehr (Gain/Pedestal senden seit diesem
+   Datum schon beim Drehen live, siehe §9) — er markiert den Kanal nur noch
+   visuell als "gespeichert" (`commit_encoder_value()` in
+   `core/application.py`, verdrahtet in `midi/fader.py`).
 10. F-Nummer-Dekodiertabelle (`QIF`/`OIF:[Data]`, §7.2): **Geprüft, weiterhin offen —
     genauere Analyse nötig, bevor eine echte F-Zahl (z. B. „F 4.0") angezeigt werden kann.**
     AW-UE160_InterfaceSpecification_E.pdf (Kap. 9, S. 67, „REQUEST IRIS F NO.") nennt für
@@ -646,23 +737,9 @@ MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
     Web-UI und Scribble-Strip-Zeile 2 (`midi/fader.py`) bei einer Iris-Prozentanzeige statt
     einer erfundenen F-Zahl.**
     `drivers/panasonic_aw.py` gibt den Rohwert unverändert zurück, dekodiert nicht.
-11. ~~Shutter-Speed-Wertetabelle (`OSJ:06:[Data]`, 0001h–07D0h, §7.2)~~ **Bestätigt für
-    AW-UE160/AW-UE150** (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, S. 50, „SHUTTER
-    SPEED"): `[Data]` (hex) entspricht direkt dem Verschlusszeit-Nenner (Dezimal), z. B.
-    `OSJ:06:003C` = 0x3C = 60 = 1/60. Zulässig sind nur bestimmte Nenner je aktivem
-    Videoformat (z. B. 59.94p: 1/100,1/120,1/125,1/250,1/500,1/1000,1/1500,1/2000 — andere
-    Werte liefern `ER3`). `drivers/panasonic_aw.py` reicht den Wert bereits korrekt als
-    4-stelligen Hex durch (bislang zufällig richtig); Treiber-Kommentar dazu wird korrigiert.
-    **Nicht auf andere Modelle übertragbar:** laut Multi-Modell-Spec (HDIntegratedCamera,
-    Kap. 3.2.4) nutzen AW-HE50/HE60/HE130/HR140/HE40/UE70/HE42 stattdessen `OSH:[Data]`
-    (fester Enum-Wert je Framerate) und AK-UB300 `OSG:5D` (eigene Enum-Tabelle) — jeweils
-    kein roher Hex-Nenner. Die je-Format zulässigen Nenner-Listen sind noch nicht im
-    Treiber als Validierung hinterlegt (aktuell keine Prüfung vor dem Senden).
-12. ~~Response-Format von `QBR` (Bars-Status) und Shutter-Status-Query~~ **Bestätigt:**
-    `QBR` → `OBR:[Data]` (0=Off, 1=On), identisch zur Control-Kodierung von `DCB`
+11. ~~Response-Format von `QBR` (Bars-Status)~~ **Bestätigt:** `QBR` → `OBR:[Data]`
+    (0=Off, 1=On), identisch zur Control-Kodierung von `DCB`
     (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, S. 34, „BAR"); laut Multi-Modell-Spec
-    konsistent über die gesamte AW-Familie (HDIntegratedCamera, Kap. 3.2.2). Shutter-Status
-    `QSJ:03` → `OSJ:03:[Data]` ebenfalls bestätigt (AW-UE160-Spec, Kap. 9, S. 49f.) — gilt
-    aber nur für die UE160/UE150-Befehlsfamilie, siehe Punkt 11. `get_state()` liefert für
-    beide Werte weiterhin `None`, bis sie im Treiber implementiert werden (kein Code-Änderung
-    in diesem Schritt).
+    konsistent über die gesamte AW-Familie (HDIntegratedCamera, Kap. 3.2.2). `get_state()`
+    liefert den Wert weiterhin `None`, bis er im Treiber implementiert wird (kein
+    Code-Änderung in diesem Schritt).

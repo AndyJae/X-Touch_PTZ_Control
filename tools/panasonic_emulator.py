@@ -51,8 +51,8 @@ class CameraState:
         self.iris_data = 0xAAA  # Mitte von 555h-FFFh
         self.auto_iris = False
         self.gain_data = 0x08  # 0dB (Anker aus AW-UE160-Spec Kap.9 "GAIN")
+        self.pedestal_data = 0x800  # 0 (Mitte von 738h-8C8h, AW-UE160-Spec Kap.9 "MASTER PEDESTAL")
         self.nd_index = 0  # THROUGH
-        self.shutter_mode = 0  # OFF
         self.bars_on = False
         self.log: list[str] = []
 
@@ -103,13 +103,11 @@ def _handle_cam(cmd: str) -> str:
     if cmd.startswith("DCB:"):
         state.bars_on = cmd.split(":", 1)[1] == "1"
         return cmd
-    if cmd == "QSJ:03":
-        return f"OSJ:03:{state.shutter_mode}"
-    if cmd.startswith("OSJ:03:"):
-        state.shutter_mode = int(cmd.rsplit(":", 1)[1])
+    if cmd == "QSJ:0F":
+        return f"OSJ:0F:{state.pedestal_data:03X}"
+    if cmd.startswith("OSJ:0F:"):
+        state.pedestal_data = int(cmd.split(":", 2)[2], 16)
         return cmd
-    if cmd.startswith("OSJ:06:") or cmd.startswith("OSJ:0F:"):
-        return cmd  # Shutter-Speed / Master Pedestal: nur echoen, kein Folgezustand simuliert
     if cmd.startswith("OSL:36:") or cmd.startswith("OSL:38:"):
         return cmd  # R/B Gain Preset: nur echoen
     if cmd in ("OWS", "OAS"):
@@ -260,8 +258,8 @@ _LOG_STATE_BLOCK = """<h2>Letzte Befehle</h2>
 <tr><td>Iris (hex)</td><td>{iris:03X}</td></tr>
 <tr><td>Auto-Iris</td><td>{auto_iris}</td></tr>
 <tr><td>Gain (hex)</td><td>{gain:02X}</td></tr>
+<tr><td>Pedestal (hex)</td><td>{pedestal:03X}</td></tr>
 <tr><td>ND-Index</td><td>{nd}</td></tr>
-<tr><td>Shutter-Mode</td><td>{shutter}</td></tr>
 <tr><td>Bars</td><td>{bars}</td></tr>
 </table>
 <p><a href="/">Aktualisieren</a></p>"""
@@ -279,8 +277,8 @@ def _render() -> str:
             iris=state.iris_data,
             auto_iris=state.auto_iris,
             gain=state.gain_data,
+            pedestal=state.pedestal_data,
             nd=state.nd_index,
-            shutter=state.shutter_mode,
             bars=state.bars_on,
         )
     else:

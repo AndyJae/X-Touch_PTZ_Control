@@ -98,13 +98,11 @@ class ButtonActionConfig(BaseModel):
     step_db: int | None = None
 
 
-class EncoderDefaultsConfig(BaseModel):
-    functions: list[str] = Field(default_factory=list)
-
-
 class ChannelDefaultsConfig(BaseModel):
     fader: str = "iris"
-    encoder: EncoderDefaultsConfig = Field(default_factory=EncoderDefaultsConfig)
+    # Encoder-Funktionsliste ist seit Spec-Nutzerentscheid fest im Code
+    # verdrahtet (core/application.py._ENCODER_FUNCTIONS: gain/pedestal/
+    # camera_status) statt konfigurierbar -- kein Feld hier mehr noetig.
     buttons: dict[str, ButtonActionConfig] = Field(default_factory=dict)
 
 

@@ -14,33 +14,32 @@
             <div class="channel-index">{{ ch.index }}</div>
 
             {% set enc = ch.encoder %}
-            {% set enc_pos = (((enc.value - enc.min) / (enc.max - enc.min) * 100) | round | int) if enc and enc.value is not none and enc.min is not none and enc.max is not none else 0 %}
+            {% set enc_pos = (((enc.value - enc.min) / (enc.max - enc.min) * 100) | round | int) if enc.value is not none and enc.min is not none and enc.max is not none else 0 %}
             <div class="encoder" data-encoder data-channel-index="{{ ch.index }}" style="--enc-pos: {{ enc_pos }}%"
-                 title="Ziehen/Scrollen = drehen, Klick = uebernehmen">
+                 title="Ziehen/Scrollen = drehen, Klick = speichern (visuelles Feedback)">
                 <div class="encoder-ring"></div>
                 <div class="encoder-cap"></div>
             </div>
 
-            <div class="encoder-display {{ 'is-pending' if enc and enc.pending }}">
-                <span class="encoder-display-fn" data-encoder-fn>{{ (enc.function | replace('_', ' ') | upper) if enc else '—' }}</span>
-                <span class="encoder-display-val" data-encoder-val>
-                    {%- if enc and enc.value is not none -%}
-                        {{ "%+d"|format(enc.value) }}{{ 'dB' if enc.function == 'gain' else '' }}
-                    {%- else -%}—{%- endif -%}
+            {# EINE Kanal-Anzeige (Nutzerentscheid), verdrahtet mit demselben
+               Text wie das physische Scribble-Strip (channel_line1_text()/
+               channel_display_text() in core/application.py): Zeile 1
+               Kameraname bei camera_status, sonst der Funktionsname
+               (GAIN/PEDESTAL); Zeile 2 Iris-% bei camera_status, sonst der
+               aktive Encoder-Wert. Rot ("is-saved"), solange der per
+               Encoder-Push gespeicherte Wert seit dem letzten Dreh-Tick
+               unveraendert ist. #}
+            <div class="scribble-strip {{ 'is-saved' if enc.saved }}">
+                <span class="scribble-line" data-display-line1>
+                    {{ ch.display_line1 if ch.connected else (ch.name or ('CAM ' ~ ch.index)) }}
                 </span>
-            </div>
-
-            <div class="scribble-strip">
-                <span class="scribble-line">{{ ch.name or ('CAM ' ~ ch.index) }}</span>
-                {# F-Nummer-Dekodierung ist laut Spec §14 Punkt 10 nicht vollstaendig definiert,
-                   daher hier bewusst Iris-Prozent statt einer erfundenen F-Zahl. #}
-                <span class="scribble-line scribble-sub" data-iris-readout>
-                    {{ (fill ~ '%') if ch.connected else '—' }}
+                <span class="scribble-line scribble-sub" data-display-text>
+                    {{ ch.display_text if ch.connected else '—' }}
                 </span>
             </div>
 
             <div class="surface-buttons">
-                <button type="button" class="surf-btn" data-encoder-fn-select data-channel-index="{{ ch.index }}">Button 1</button>
+                <button type="button" class="surf-btn" data-encoder-fn-select data-channel-index="{{ ch.index }}">{{ enc.function | replace('_', ' ') | upper }}</button>
                 {% for slot in ["button2", "button3"] %}
                 {% set assigned = ch.buttons[slot] %}
                 <button type="button" class="surf-btn {{ 'is-on' if assigned and assigned.state }}"

@@ -67,10 +67,6 @@ class CameraDriver(ABC):
         ...
 
     @abstractmethod
-    async def set_shutter(self, mode: str, value: int | None) -> None:
-        ...
-
-    @abstractmethod
     async def trigger_awb(self) -> None:
         ...
 

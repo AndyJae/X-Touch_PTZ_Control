@@ -26,6 +26,11 @@ def _build_driver(handler) -> PanasonicAWDriver:
         transport=httpx.MockTransport(handler),
     )
     driver._connected = True
+    # Bypass von connect() (kein echter QID-Roundtrip in diesen Tests) --
+    # BUTTON_FEATURES/-LABELS werden seit dem Modell-Registry-Umbau (§9a)
+    # erst dort ueber das erkannte Modell aufgeloest, hier also von Hand.
+    driver.model = "AW-UE160"
+    driver._apply_model_catalog()
     return driver
 
 
@@ -170,6 +175,201 @@ def test_query_model_extracts_model_id() -> None:
     driver = _build_driver(handler)
     model = _run(driver._query_model())
     assert model == "AW-UE160"
+
+
+def test_apply_model_catalog_resolves_known_model() -> None:
+    # Spec §9a, Modell-Registry-Umbau: BUTTON_FEATURES ist seitdem
+    # modellabhaengig statt fest auf AW-UE160 -- AW-HE50 hat laut Quelle
+    # (drivers/panasonic_models/aw_he50.py, portiert aus smart_reset_work)
+    # z.B. keinen "knee"-Eintrag, im Unterschied zu AW-UE160.
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-HE50"
+    driver._apply_model_catalog()
+
+    assert driver.BUTTON_FEATURES["drs"] == {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"}
+    assert "knee" not in driver.BUTTON_FEATURES
+    assert driver.BUTTON_FEATURE_LABELS["drs"] == "DRS"
+
+
+def test_apply_model_catalog_resolves_alias_to_same_catalog_as_base_model() -> None:
+    driver_base = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver_base.model = "AW-HE50"
+    driver_base._apply_model_catalog()
+
+    driver_alias = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver_alias.model = "AW-HE50H"  # CAMERA_ID_ALIASES-Eintrag von AW-HE50
+    driver_alias._apply_model_catalog()
+
+    assert driver_alias.BUTTON_FEATURES == driver_base.BUTTON_FEATURES
+    assert driver_alias.BUTTON_FEATURE_LABELS == driver_base.BUTTON_FEATURE_LABELS
+
+
+def test_apply_model_catalog_empty_for_unrecognized_model() -> None:
+    # Kein erfundener Fallback (Spec §9a/CLAUDE.md) -- unbekanntes Modell
+    # zeigt weder Button-Features noch einen Gain-/Pedestal-Wertebereich an,
+    # verhindert aber nicht das Verbinden selbst.
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "SOME-UNKNOWN-CAMERA"
+    driver._apply_model_catalog()
+
+    assert driver.BUTTON_FEATURES == {}
+    assert driver.BUTTON_FEATURE_LABELS == {}
+    assert driver.gain_min_db is None
+    assert driver.gain_max_db is None
+    assert driver.pedestal_command is None
+    assert driver.pedestal_min is None
+    assert driver.pedestal_max is None
+
+
+def test_apply_model_catalog_resolves_gain_pedestal_for_ue160() -> None:
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-UE160"
+    driver._apply_model_catalog()
+
+    assert (driver.gain_min_db, driver.gain_max_db, driver.gain_step_db) == (-6, 12, 1)
+    assert driver.pedestal_command == "OSJ:0F"
+    assert driver.pedestal_query_command == "QSJ:0F"
+    assert (driver.pedestal_min, driver.pedestal_max) == (-200, 200)
+    assert driver.pedestal_center_data == 0x800
+    assert (driver.pedestal_scale, driver.pedestal_data_width) == (1, 3)
+
+
+def test_apply_model_catalog_resolves_gain_pedestal_for_he50_otp_family() -> None:
+    # AW-HE50 nutzt laut HDIntegratedCamera_InterfaceSpecifications-E.pdf
+    # §3.2.6/§3.2.14 ein anderes Gain-Raster (nur 3dB-Schritte, 0-18dB) und
+    # eine andere Pedestal-Kommandofamilie (OTP/QTP statt OSJ:0F) als UE160.
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-HE50"
+    driver._apply_model_catalog()
+
+    assert (driver.gain_min_db, driver.gain_max_db, driver.gain_step_db) == (0, 18, 3)
+    assert driver.pedestal_command == "OTP"
+    assert driver.pedestal_query_command == "QTP"
+    assert (driver.pedestal_min, driver.pedestal_max) == (-10, 10)
+    assert driver.pedestal_center_data == 0x96
+    assert (driver.pedestal_scale, driver.pedestal_data_width) == (15, 3)
+
+
+def test_apply_model_catalog_resolves_gain_pedestal_for_he120_wide_pedestal_range() -> None:
+    # AW-HE120 teilt sich die OTP/QTP-Kommandofamilie mit AW-HE50, aber mit
+    # einem anderen Bereich/Skalierung (-150..+150 statt -10..+10).
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-HE120"
+    driver._apply_model_catalog()
+
+    assert (driver.gain_min_db, driver.gain_max_db, driver.gain_step_db) == (0, 18, 1)
+    assert driver.pedestal_command == "OTP"
+    assert (driver.pedestal_min, driver.pedestal_max) == (-150, 150)
+    assert (driver.pedestal_center_data, driver.pedestal_scale) == (0x96, 1)
+
+
+def test_apply_model_catalog_ak_ub300_has_pedestal_but_no_gain() -> None:
+    # AK-UB300 nutzt fuer Gain ein strukturell anderes Region-Select-Schema
+    # (OGS + OSA:50/51/52), das nicht in set_gain_db(db)/step_gain(delta)
+    # passt -- bewusst kein GAIN_MIN_DB/MAX_DB in ak_ub300.py. Pedestal
+    # (OSG:4A) passt dagegen ins bestehende Set/Step-Interface.
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AK-UB300"
+    driver._apply_model_catalog()
+
+    assert driver.gain_min_db is None
+    assert driver.gain_max_db is None
+    assert driver.pedestal_command == "OSG:4A"
+    assert driver.pedestal_query_command == "QSG:4A"
+    assert (driver.pedestal_min, driver.pedestal_max) == (-99, 99)
+    assert (driver.pedestal_center_data, driver.pedestal_scale, driver.pedestal_data_width) == (0x80, 1, 2)
+
+
+def test_apply_model_catalog_undocumented_model_has_no_gain_pedestal() -> None:
+    # AW-UE100 hat einen Button-Katalog (aus smart_reset_work portiert), kommt
+    # aber in keiner der beiden lokalen Referenz-PDFs fuer Gain/Pedestal vor.
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-UE100"
+    driver._apply_model_catalog()
+
+    assert driver.BUTTON_FEATURES  # Button-Katalog ist vorhanden
+    assert driver.gain_min_db is None
+    assert driver.pedestal_command is None
+
+
+def test_set_pedestal_uses_otp_command_for_he50() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    driver.model = "AW-HE50"
+    driver._apply_model_catalog()
+
+    _run(driver.set_pedestal(0))
+    _run(driver.set_pedestal(10))
+    _run(driver.set_pedestal(-10))
+
+    assert seen[0] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OTP:096&res=1"
+    assert seen[1] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OTP:12C&res=1"  # 0x96+10*15=0x12C
+    assert seen[2] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OTP:000&res=1"  # 0x96-10*15=0x000
+
+
+def test_query_pedestal_uses_model_query_command_for_ak_ub300() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "cmd=QSG:4A" in str(request.url)
+        return httpx.Response(200, text="OSG:4A:E3")  # 0xE3 - 0x80 = +99
+
+    driver = _build_driver(handler)
+    driver.model = "AK-UB300"
+    driver._apply_model_catalog()
+
+    value = _run(driver._query_pedestal())
+    assert value == 99
+
+
+def test_step_gain_clamps_to_he50_range() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "cmd=QGU" in str(request.url):
+            return httpx.Response(200, text="OGU:1A")  # 0x1A-0x08=+18dB, bereits am Maximum
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    driver.model = "AW-HE50"
+    driver._apply_model_catalog()
+
+    new_db = _run(driver.step_gain(5))
+    assert new_db == 18  # geclamped auf GAIN_MAX_DB=18 (nicht +23)
+
+
+def test_set_pedestal_raises_when_model_has_no_pedestal_data() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    driver.model = "AW-UE100"  # nicht in den Referenz-PDFs dokumentiert
+    driver._apply_model_catalog()
+
+    with pytest.raises(CameraCommandError):
+        _run(driver.set_pedestal(0))
+
+
+def test_connect_resolves_button_catalog_from_detected_model(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "cmd=QID" in str(request.url):
+            return httpx.Response(200, text="OID:AW-HE50")
+        return httpx.Response(200, text="ER1:unhandled")
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_async_client(
+            base_url=kwargs.get("base_url", ""), transport=httpx.MockTransport(handler)
+        ),
+    )
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+
+    _run(driver.connect())
+
+    assert driver.model == "AW-HE50"
+    assert driver.connected is True
+    assert "drs" in driver.BUTTON_FEATURES
+    assert "knee" not in driver.BUTTON_FEATURES
 
 
 def test_query_iris_parses_position_and_mode() -> None:

@@ -18,10 +18,11 @@ function initEncoderFunctionSelect() {
 }
 
 // Surface-Ansicht: Drehregler (Spec §9) -- Drehen (Ziehen mit der Maus oder
-// Scrollen) aendert nur einen lokalen Pending-Wert (Vorschau, kein
-// Kamerabefehl, siehe apply_encoder_turn()), erst ein Klick ohne Ziehen
-// committet ihn (commit_encoder_value()). Nutzerentscheid: Drehen/Committen
-// bewusst getrennt, analog zum physischen Drehrad-Druck am X-Touch Extender.
+// Scrollen) sendet bei gain/pedestal SOFORT einen Kamerabefehl (live, ueber
+// den Rate-Limiter in apply_encoder_turn()); ein Klick ohne Ziehen loest nur
+// noch rein visuelles "gespeichert"-Feedback aus (commit_encoder_value()),
+// ohne weiteren Kamerabefehl. Nutzerentscheid, analog zum physischen
+// Drehrad-Druck am X-Touch Extender.
 function initEncoderKnob(ws) {
     const PX_PER_TICK = 6; // reine UI-Feinabstimmung, keine Spec-Vorgabe
 
@@ -342,22 +343,24 @@ function applySurfaceSnapshot(channels) {
         if (fill) fill.style.height = pct + "%";
         if (handle) handle.style.bottom = pct + "%";
 
-        const irisReadout = article.querySelector("[data-iris-readout]");
-        if (irisReadout) irisReadout.textContent = ch.connected ? pct + "%" : "—";
+        // EINE Kanal-Anzeige (Nutzerentscheid): Text kommt direkt aus dem
+        // Server-Snapshot (channel_line1_text()/channel_display_text() in
+        // core/application.py), damit Web-UI und physisches Scribble-Strip
+        // nie auseinanderlaufen.
+        const displayLine1 = article.querySelector("[data-display-line1]");
+        if (displayLine1) displayLine1.textContent = ch.connected ? ch.display_line1 : (ch.name || `CAM ${ch.index}`);
+        const displayText = article.querySelector("[data-display-text]");
+        if (displayText) displayText.textContent = ch.connected ? ch.display_text : "—";
+        const scribbleStrip = displayText ? displayText.closest(".scribble-strip") : null;
 
         const enc = ch.encoder;
-        const encFnLabel = article.querySelector("[data-encoder-fn]");
-        const encValLabel = article.querySelector("[data-encoder-val]");
-        const encDisplay = encValLabel ? encValLabel.closest(".encoder-display") : null;
+        const fnButton = article.querySelector("[data-encoder-fn-select]");
         const encKnob = article.querySelector("[data-encoder]");
-        if (encFnLabel) encFnLabel.textContent = enc ? enc.function.replace(/_/g, " ").toUpperCase() : "—";
-        if (encValLabel) {
-            encValLabel.textContent = enc && enc.value != null
-                ? (enc.value >= 0 ? "+" : "") + enc.value + (enc.function === "gain" ? "dB" : "")
-                : "—";
-        }
-        if (encDisplay) encDisplay.classList.toggle("is-pending", !!(enc && enc.pending));
-        if (encKnob && enc && enc.value != null && enc.min != null && enc.max != null) {
+        if (fnButton) fnButton.textContent = enc.function.replace(/_/g, " ").toUpperCase();
+        // Rot bis zum naechsten Dreh-Tick (Nutzerentscheid, siehe
+        // commit_encoder_value()/apply_encoder_turn()).
+        if (scribbleStrip) scribbleStrip.classList.toggle("is-saved", !!enc.saved);
+        if (encKnob && enc.value != null && enc.min != null && enc.max != null) {
             const pos = Math.round(((enc.value - enc.min) / (enc.max - enc.min)) * 100);
             encKnob.style.setProperty("--enc-pos", pos + "%");
         }

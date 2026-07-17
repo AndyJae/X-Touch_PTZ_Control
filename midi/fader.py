@@ -1,12 +1,15 @@
 """midi/fader.py -- Bidirektionale X-Touch-Extender-Faderanbindung (Spec §5,
 aktueller Umfang: Fader/Touch <-> Iris (§5.2/§5.4), Scribble Strips (§5.3)
-und Encoder (§9: Funktionsauswahl ueber Button 1, Drehen, Push). Encoder-Drehen
-aendert dabei nur einen lokalen Pending-Wert (Vorschau auf Scribble-Zeile 2,
-kein Kamerabefehl) -- erst der Encoder-Push (Note 32-39) committet ihn
-(Nutzerentscheid; Spec §9 nannte die Push-Verwendung urspruenglich "noch
-offen"). Encoder-LED-Ring (CC 48-55) ist weiterhin nicht Teil dieser
-Verdrahtung -- Encoding dafuer laut Spec §14 unverifiziert.
-Resync-bei-Hotplug (§5.5) folgt in einem weiteren Schritt.
+und Encoder (§9: feste Funktionsliste gain/pedestal/camera_status ueber
+Button 1, Drehen, Push). Encoder-Drehen sendet bei gain/pedestal seit
+Nutzerentscheid SOFORT live einen Kamerabefehl (ueber
+`core.application.apply_encoder_turn`s eigenen Rate-Limiter je Kamera,
+analog zum Iris-Fader) -- der Encoder-Push (Note 32-39) sendet dagegen
+nichts mehr, sondern markiert den Kanal nur visuell als "gespeichert"
+(Spec §9 nannte die Push-Verwendung urspruenglich "noch offen"). Encoder-
+LED-Ring (CC 48-55) ist weiterhin nicht Teil dieser Verdrahtung -- Encoding
+dafuer laut Spec §14 unverifiziert. Resync-bei-Hotplug (§5.5) folgt in
+einem weiteren Schritt.
 
 Note-/CC-Belegung gegen den realen X-Touch Extender verifiziert (Kanal 1:
 Pitchbend Kanal 1 = Fader 1, Note 104 = Fader-Touch 1); ebenso die
@@ -45,10 +48,11 @@ from core.application import (
     AppState,
     apply_encoder_turn,
     apply_iris,
+    channel_display_text,
+    channel_line1_text,
     channel_snapshot,
     commit_encoder_value,
     cycle_encoder_function,
-    encoder_preview,
 )
 from midi.mackie import MackieControlProtocol
 
@@ -68,27 +72,6 @@ _SCRIBBLE_LOWER_BASE = 0x38  # untere Zeile: 0x38-0x6F
 
 def _scribble_text(text: str) -> str:
     return (text or "")[:_SCRIBBLE_STRIP_CHARS].ljust(_SCRIBBLE_STRIP_CHARS)
-
-
-def _iris_percent_text(value: float | None) -> str:
-    """Platzhalter fuer Zeile 2 (Spec §5.3 nennt F-Nummer, die Hex->F-Nummer-
-    Tabelle ist laut Spec aber nicht vollstaendig dokumentiert, siehe
-    Modul-Docstring) -- Iris in Prozent, bis die Umrechnung nachgeruestet
-    wird."""
-    if value is None:
-        return ""
-    return f"{round(value * 100)}%"
-
-
-def _encoder_value_text(function_name: str, value: int) -> str:
-    """Kompakte Vorschau-Darstellung fuer Zeile 2 waehrend einer aktiven
-    Encoder-Funktion (7 Zeichen Limit, Spec §5.3) -- kein LED-Ring
-    verfuegbar (siehe Modul-Docstring), daher die einzige Rueckmeldung."""
-    if function_name == "gain":
-        return f"G{value:+d}dB"
-    if function_name == "pedestal":
-        return f"P{value:+d}"
-    return f"{value:+d}"
 
 
 _SCRIBBLE_DEVICE_ID = 0x15  # X-Touch Extender -- 0x14 waere der reguläre X-Touch (live verifiziert:
@@ -196,9 +179,12 @@ class XTouchFader:
             # Rec/Button 1: schaltet nur die lokale Encoder-Funktionsauswahl
             # weiter, kein Kamerabefehl (Spec §9). Nur auf Press reagieren,
             # nicht auf Release, sonst wuerde ein Tastendruck zweimal zaehlen.
+            # Zeile 1 wechselt dabei zwischen Kameraname und Funktionsname
+            # (Nutzerentscheid) -- deshalb Vollabzug beider Zeilen statt nur
+            # Zeile 2 wie bei Drehen/Push.
             channel_index = msg.note - _REC_NOTE_BASE + 1
             await cycle_encoder_function(self._state, channel_index)
-            self._refresh_channel_line2(channel_index)
+            self._refresh_channel_full(channel_index)
         elif msg.type == "control_change" and _ENCODER_CC_BASE <= msg.control < _ENCODER_CC_BASE + 8:
             channel_index = msg.control - _ENCODER_CC_BASE + 1
             delta = self._protocol.encoder_cc_to_delta(msg.value)
@@ -209,9 +195,10 @@ class XTouchFader:
             and _ENCODER_PUSH_NOTE_BASE <= msg.note < _ENCODER_PUSH_NOTE_BASE + 8
             and msg.velocity > 0
         ):
-            # Encoder-Push: committet den seit dem letzten Button-1-Druck
-            # aufgelaufenen Pending-Wert (Nutzerentscheid, siehe Modul-
-            # Docstring). Nur auf Press reagieren, nicht auf Release.
+            # Encoder-Push: sendet keinen Kamerabefehl mehr (gain/pedestal
+            # senden seit Nutzerentscheid schon live beim Drehen, siehe
+            # Modul-Docstring) -- markiert den Wert nur visuell als
+            # "gespeichert". Nur auf Press reagieren, nicht auf Release.
             channel_index = msg.note - _ENCODER_PUSH_NOTE_BASE + 1
             await commit_encoder_value(self._state, channel_index)
             self._refresh_channel_line2(channel_index)
@@ -257,42 +244,54 @@ class XTouchFader:
     def _refresh_scribble_strips(self) -> None:
         """Vollabzug aller 8 Strips (wie channel_snapshot() selbst, kein
         inkrementelles Diffing) -- ausgeloest durch die seltenen Events
-        (Connect/Disconnect, Feature-Toggle, Config-Aenderung). Zeile 2 zeigt
-        normalerweise die Iris-% (Platzhalter, bis eine Hex->F-Nummer-Tabelle
-        verfuegbar ist, siehe Modul-Docstring) -- waehrend eine Encoder-
-        Funktion "in Bearbeitung" ist (`encoder_preview()` liefert dann einen
-        Wert), zeigt Zeile 2 stattdessen deren Vorschauwert (Nutzerentscheid,
-        siehe Modul-Docstring)."""
+        (Connect/Disconnect, Feature-Toggle, Config-Aenderung). Zeile 1/2
+        kommen aus `channel_line1_text()`/`channel_display_text()`
+        (core/application.py) -- denselben Funktionen, die auch die Web-UI
+        fuer die EINE verbleibende Kanal-Anzeige verwendet (Nutzerentscheid:
+        physisches Geraet und Web-UI duerfen nicht auseinanderlaufen)."""
         for ch in channel_snapshot(self._state):
             if ch["camera_id"] is None:
                 upper, lower = "", "----"
             elif not ch["connected"]:
                 upper, lower = ch["name"] or "", "NC"
             else:
-                upper, lower = ch["name"] or "", self._line2_text(ch["index"], ch["iris"])
+                upper, lower = ch["display_line1"], ch["display_text"]
             self._send_scribble_strip(ch["index"], upper, lower)
 
-    def _line2_text(self, channel_index: int, iris: float | None) -> str:
-        preview = encoder_preview(self._state, channel_index)
-        if preview is not None:
-            function_name, value = preview
-            return _encoder_value_text(function_name, value)
-        return _iris_percent_text(iris)
+    def _refresh_channel_full(self, channel_index: int) -> None:
+        """Aktualisiert BEIDE Zeilen nach einem Funktionswechsel (Rec/
+        Button 1) -- Zeile 1 wechselt zwischen Kameraname (camera_status) und
+        Funktionsname (gain/pedestal, Nutzerentscheid), Zeile 2 zeigt den
+        neuen Wert. Kein Vollabzug aller 8 Strips dafuer noetig."""
+        if self._out_port is None:
+            return
+        entry = self._state.mapping.get_channel("fader", channel_index)
+        if entry is None:
+            return
+        camera_cfg = self._state.cameras.get(entry.camera_id)
+        cam_state = self._state.state_store.get_camera(entry.camera_id)
+        upper = channel_line1_text(self._state, channel_index, camera_cfg.name if camera_cfg else None)
+        lower = channel_display_text(self._state, channel_index, cam_state.iris)
+        self._send_scribble_strip(channel_index, upper, lower)
 
     def _refresh_channel_line2(self, channel_index: int) -> None:
         """Aktualisiert Zeile 2 nur des einen betroffenen Kanals nach einem
-        Encoder-Ereignis (Funktionsauswahl/Drehen/Push) -- kein Vollabzug
-        aller 8 Strips dafuer noetig."""
+        Encoder-Ereignis (Drehen/Push) -- Zeile 1 (Kameraname/Funktionsname)
+        aendert sich dabei nicht, kein Vollabzug aller 8 Strips noetig."""
         if self._out_port is None:
             return
         entry = self._state.mapping.get_channel("fader", channel_index)
         if entry is None:
             return
         cam_state = self._state.state_store.get_camera(entry.camera_id)
-        self._send_line2_text(channel_index, self._line2_text(channel_index, cam_state.iris))
+        self._send_line2_text(channel_index, channel_display_text(self._state, channel_index, cam_state.iris))
 
     def _send_iris_percent_line(self, channel_index: int, value: float) -> None:
-        self._send_line2_text(channel_index, _iris_percent_text(value))
+        """Ausgeloest durch `iris_changed` -- respektiert die aktive Encoder-
+        Funktion ueber `channel_display_text()` (Bugfix: zeigte vorher immer
+        Iris-%, auch wenn Zeile 2 gerade gain/pedestal anzeigte, und
+        ueberschrieb das kurzzeitig waehrend eines Fader-Zugs)."""
+        self._send_line2_text(channel_index, channel_display_text(self._state, channel_index, value))
 
     def _send_line2_text(self, channel_index: int, text: str) -> None:
         if self._out_port is None:

@@ -469,39 +469,6 @@ button:last-child {
     transform: translate(-50%, -50%) rotate(calc(var(--enc-pos) * 2.7deg - 135deg)) translateY(-15px);
 }
 
-.encoder-display {
-    width: 100%;
-    background: #0a0603;
-    border: 1px solid rgba(255, 179, 71, 0.28);
-    border-radius: 6px;
-    padding: 4px 4px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    font-family: "Cascadia Code", Consolas, monospace;
-}
-
-/* Noch nicht committeter Vorschauwert (Drehen ohne Encoder-Push, Spec §9) --
-   Nutzerentscheid: Drehen aendert nur lokal, dieser Rahmen macht sichtbar,
-   dass der Wert noch nicht an die Kamera gesendet wurde. */
-.encoder-display.is-pending {
-    border-color: var(--accent);
-    box-shadow: 0 0 6px rgba(88, 208, 255, 0.35);
-}
-
-.encoder-display-fn {
-    font-size: 0.7rem;
-    letter-spacing: 0.04em;
-    font-weight: 700;
-    color: var(--accent-strong);
-}
-
-.encoder-display-val {
-    font-size: 0.66rem;
-    color: var(--muted);
-}
-
 .scribble-strip {
     width: 100%;
     background: #04070c;
@@ -512,6 +479,16 @@ button:last-child {
     flex-direction: column;
     align-items: center;
     gap: 2px;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+/* Rotes Feedback, solange der per Encoder-Push gespeicherte Gain-/
+   Pedestal-Wert seit dem letzten Dreh-Tick unveraendert ist (Nutzerentscheid,
+   siehe commit_encoder_value()/apply_encoder_turn() in core/application.py). */
+.scribble-strip.is-saved {
+    background: #2e0a0a;
+    border-color: rgba(226, 62, 62, 0.65);
+    box-shadow: 0 0 8px rgba(226, 62, 62, 0.45);
 }
 
 .scribble-line {
