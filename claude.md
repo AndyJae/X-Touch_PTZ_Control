@@ -98,15 +98,31 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   `0x15` erscheint der Text. Offsets (0x00–0x37 obere Zeile, 0x38–0x6F untere Zeile) bestätigt.
 - Integrationsmechanismus für die Button-Funktionsquelle aus `smart-reset-browser` (§9a) —
   für AW-UE160 über das Web-UI umgesetzt (siehe Spec §9a); physische Auslösung über den
-  X-Touch Extender ist für den Fader/Iris-Pfad jetzt verdrahtet (`midi/fader.py`), aber
-  Rec/Solo/Mute/Select/Encoder sind nur Rx-seitig verifiziert und noch nicht an
+  X-Touch Extender ist für den Fader/Iris-Pfad und für Rec+Encoder (Funktionsauswahl,
+  Gain/Pedestal-Preview/Commit, siehe unten) jetzt verdrahtet (`midi/fader.py`), aber
+  Solo/Mute/Select sind weiterhin nur Rx-seitig verifiziert und noch nicht an
   `apply_button_action`/`trigger_companion_select` angebunden (siehe unten)
 - Verhalten bei erkanntem Kameramodell ohne `smart-reset-browser`-Plugin-Modul (§9a)
 - Umfang etwaiger PTZ-Control-eigener Zusatzfunktionen über `smart-reset-browser` hinaus (§9a)
-- Encoder-Funktion (Gain/Pedestal, §9) hat noch keine Anwendungslogik in
-  `core/application.py`/`core/mapping.py` — nur `fader`->Iris ist gemappt
-- MIDI-Buttons (Rec/Solo/Mute/Select) sind Rx-seitig verifiziert (siehe oben), aber nicht mit
-  Kamera-Feature-Aktionen bzw. Companion-SELECT verdrahtet
+- ~~Encoder-Funktion (Gain/Pedestal, §9) hat noch keine Anwendungslogik in
+  `core/application.py`/`core/mapping.py` — nur `fader`->Iris ist gemappt~~
+  **Umgesetzt**: Gain/Pedestal laufen über einen Preview/Commit-Mechanismus
+  (`apply_encoder_turn`/`commit_encoder_value`/`encoder_preview` in
+  `core/application.py`, physisch verdrahtet in `midi/fader.py` — Rec =
+  Funktionsauswahl, Encoder-Drehung = Pending-Wert, Encoder-Push = Commit).
+  `core/mapping.py` kennt weiterhin nur den `fader`-Eintrag pro Kanal; der
+  Encoder nutzt dieselbe Kanal->Kamera-Zuordnung mit, braucht keinen eigenen
+  Mapping-Typ. **Bugfix 2026-07-17:** der noch nicht committete Vorschauwert
+  war ungeclampt und konnte weit über die Gerätetabelle hinauslaufen (UI
+  zeigte z. B. "+239dB" bei Gain); jetzt in `apply_encoder_turn` auf denselben
+  Bereich begrenzt wie das UI-Display (`_ENCODER_RANGES`: Gain -6…+12dB,
+  Pedestal -200…+200 lt. `AW-UE160_InterfaceSpecification_E.pdf` Kap. 9
+  `OSL:25`/`OSJ:0F`), Regressionstest siehe
+  `tests/test_application.py::test_apply_encoder_turn_clamps_preview_to_spec_range`.
+- MIDI-Buttons Solo/Mute/Select sind Rx-seitig verifiziert (siehe oben), aber nicht mit
+  Kamera-Feature-Aktionen bzw. Companion-SELECT verdrahtet. Rec ist verdrahtet, aber nur
+  für die Encoder-Funktionsauswahl (`cycle_encoder_function`) — dafür ist Rec laut Spec §9
+  auch vorgesehen, nicht für `apply_button_action`/Companion-SELECT.
 - Hotplug/Reconnect für den MIDI-Port (Spec §5.5) nicht implementiert
 - Web-UI-Port-Auswahl für MIDI (Setup-Seite) ist weiterhin ein statisches Mockup, nicht mit
   echten `mido`-Ports verbunden — Port kommt aktuell nur aus `config.yaml`

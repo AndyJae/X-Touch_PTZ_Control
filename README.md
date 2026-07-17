@@ -27,9 +27,14 @@ nicht von PTZ_Control selbst ausgelöst wurden (z. B. Kamera-eigenes Web-UI),
 über das neu implementierte Lens-Info-Feedback (`#LPC1`, Spec §7.3) in
 `drivers/panasonic_aw.py`. Die Scribble-Strip-Displays zeigen pro Kanal
 Kameraname (Zeile 1) und Iris-% (Zeile 2, Platzhalter bis zur Klärung der
-F-Nummer-Tabelle, siehe Spec §14 Punkt 10) oder `NC`/`----`. Rec/Solo/Mute/
-Select-Buttons und der Encoder sind Rx-seitig verifiziert, aber noch nicht
-an Kamera-Aktionen angebunden (siehe CLAUDE.md, Offene Punkte).
+F-Nummer-Tabelle, siehe Spec §14 Punkt 10) oder `NC`/`----`. Solo/Mute/
+Select-Buttons sind Rx-seitig verifiziert, aber noch nicht an Kamera-Aktionen/
+Companion-SELECT angebunden (siehe CLAUDE.md, Offene Punkte). Rec + Encoder
+steuern live Gain/Pedestal: Drehen ändert nur einen lokalen Vorschauwert
+(geclampt auf den in der AW-UE160-Spec bestätigten Bereich, Gain -6…+12dB,
+Pedestal -200…+200), erst Encoder-Push sendet den aufgelaufenen Wert als
+Kamerabefehl (`core/application.py` `apply_encoder_turn`/
+`commit_encoder_value`).
 
 ## Stack
 

@@ -425,14 +425,22 @@ Pro Kamera eine Instanz. Regeln:
   Treiber-Methoden (`set_gain_db`/`step_gain`, `set_shutter`, ggf. `set_pedestal`
   für Master Black — Panasonic-Terminologie "Master Pedestal", §7.2) ist noch zu
   bestätigen.
-- Encoder v1: relativer Modus. `gain`: ±1 Klick = ±1 Step lt. Gerätetabelle.
-  Skalierung/Beschleunigung der übrigen Funktionen (Shutter, Master Black) ist noch
-  offen (§14); als Ausgangspunkt: ±1 Digit mit Beschleunigung
-  (Klicks/100 ms > 3 → ×5), analog zur bisherigen Pedestal-Regel.
-  LED-Ring zeigt Position innerhalb der Range (Modus "Fan").
-- Encoder-Push (physischer Druckknopf des Encoders, Note 32–39, §5.2) hat in v1
-  keine zugewiesene Funktion mehr, da die Funktionsauswahl nun über Button 1
-  erfolgt — Verwendung noch offen (siehe §14).
+- Encoder v1 (per Nutzerentscheid als Preview/Commit umgesetzt, siehe
+  `apply_encoder_turn`/`commit_encoder_value`/`encoder_preview` in
+  `core/application.py`): Drehen ändert nur einen lokalen Pending-Wert, es
+  wird dabei **kein** Kamerabefehl gesendet. `gain`/`pedestal`: ±1 Klick =
+  ±1 Digit, Beschleunigung ×5 nach >3 Klicks/100 ms (implementiert). Shutter
+  (§14 Punkt 8) hat weiterhin keine Treiber-Methode/Skalierung. Der
+  Pending-Wert wird beim Drehen auf denselben Bereich geclampt, der auch
+  fürs UI-Display gilt (`_ENCODER_RANGES` in `core/application.py`; Gain
+  -6…+12dB, Pedestal -200…+200 lt. `AW-UE160_InterfaceSpecification_E.pdf`
+  Kap. 9 `OSL:25`/`OSJ:0F`) — **Bugfix 2026-07-17:** ohne dieses Clamping lief
+  der noch nicht committete Vorschauwert unbegrenzt weiter (Anzeige zeigte
+  z. B. "+239dB"). LED-Ring zeigt Position innerhalb der Range (Modus "Fan").
+- Encoder-Push (physischer Druckknopf des Encoders, Note 32–39, §5.2) sendet
+  den seit der letzten Funktionsauswahl aufgelaufenen Pending-Wert als eine
+  einzelne Kamera-Änderung (`commit_encoder_value()`) — nicht mehr ungenutzt,
+  siehe §14 Punkt 9.
 - Select-Button: markiert Kamera als "aktiv" für die Web-UI-Detailansicht.
 
 **Bewusste Erweiterung über v1 hinaus (Nutzerentscheid):** Der SELECT-Button
@@ -609,11 +617,21 @@ MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
    besitzt (§9a) — noch nicht spezifiziert.
 7. Umfang etwaiger PTZ-Control-eigener Zusatzfunktionen über den
    `smart-reset-browser`-Katalog hinaus (§9a) — auf später verschoben.
-8. Vollständige Liste der über Button 1 wählbaren Encoder-Funktionen (v1 vorläufig:
-   Gain, Shutter, Master Black, siehe §9) — inkl. verbindlicher Zuordnung zu
-   Treiber-Methoden und Encoder-Skalierung/Beschleunigung pro Funktion.
-9. Verwendung des Encoder-Push (Note 32–39, §5.2), nachdem die Funktionsauswahl
-   auf Button 1 verlagert wurde — aktuell ungenutzt.
+8. ~~Vollständige Liste der über Button 1 wählbaren Encoder-Funktionen (v1
+   vorläufig: Gain, Shutter, Master Black, siehe §9) — inkl. verbindlicher
+   Zuordnung zu Treiber-Methoden und Encoder-Skalierung/Beschleunigung pro
+   Funktion.~~ **Teilweise umgesetzt**: `gain`→`step_gain`, `pedestal`
+   (Master Black/Pedestal)→`step_pedestal` sind verdrahtet (`core/
+   application.py`, `channel_defaults.encoder.functions` in `config.yaml`),
+   Skalierung ±1 Digit/Klick mit ×5-Beschleunigung >3 Klicks/100 ms
+   implementiert. Shutter hat weiterhin keine Treiber-Methode/Zuordnung —
+   bleibt offen.
+9. ~~Verwendung des Encoder-Push (Note 32–39, §5.2), nachdem die
+   Funktionsauswahl auf Button 1 verlagert wurde — aktuell ungenutzt.~~
+   **Umgesetzt**: Encoder-Push committet den seit der letzten
+   Funktionsauswahl aufgelaufenen Pending-Wert als eine Kamera-Änderung
+   (`commit_encoder_value()` in `core/application.py`, verdrahtet in
+   `midi/fader.py`).
 10. F-Nummer-Dekodiertabelle (`QIF`/`OIF:[Data]`, §7.2): **Geprüft, weiterhin offen —
     genauere Analyse nötig, bevor eine echte F-Zahl (z. B. „F 4.0") angezeigt werden kann.**
     AW-UE160_InterfaceSpecification_E.pdf (Kap. 9, S. 67, „REQUEST IRIS F NO.") nennt für
