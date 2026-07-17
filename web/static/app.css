@@ -279,6 +279,7 @@ button:last-child {
 
 .assign-table-wrap {
     overflow-x: auto;
+    padding-right: 6px;
 }
 
 .assign-table {
@@ -335,8 +336,12 @@ button:last-child {
     font-size: 0.85rem;
 }
 
+.assign-table .name-cell {
+    width: 90px;
+}
+
 .assign-table .ip-cell {
-    width: 130px;
+    width: 140px;
 }
 
 .assign-table .port-cell {
@@ -432,6 +437,12 @@ button:last-child {
     background: radial-gradient(circle at 35% 30%, #4b5058, #17191c 70%);
     border: 1px solid rgba(0, 0, 0, 0.7);
     box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255, 255, 255, 0.15);
+    cursor: grab;
+    touch-action: none;
+}
+
+.encoder.is-dragging {
+    cursor: grabbing;
 }
 
 .encoder-ring {
@@ -469,6 +480,14 @@ button:last-child {
     align-items: center;
     gap: 2px;
     font-family: "Cascadia Code", Consolas, monospace;
+}
+
+/* Noch nicht committeter Vorschauwert (Drehen ohne Encoder-Push, Spec §9) --
+   Nutzerentscheid: Drehen aendert nur lokal, dieser Rahmen macht sichtbar,
+   dass der Wert noch nicht an die Kamera gesendet wurde. */
+.encoder-display.is-pending {
+    border-color: var(--accent);
+    box-shadow: 0 0 6px rgba(88, 208, 255, 0.35);
 }
 
 .encoder-display-fn {

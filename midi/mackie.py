@@ -9,3 +9,9 @@ class MackieControlProtocol:
 
     def normalized_to_pitchbend(self, value: float) -> int:
         return int(max(0, min(16383, round(value * 16383))))
+
+    def encoder_cc_to_delta(self, raw_value: int) -> int:
+        """CC 16-23 relativ (Spec §5.2/§9): Wert 1-7 = +, 65-71 = -."""
+        if raw_value >= 64:
+            return -(raw_value - 64)
+        return raw_value

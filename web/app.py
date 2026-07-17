@@ -21,20 +21,23 @@ from fastapi.templating import Jinja2Templates
 from core.application import (
     AppState,
     apply_button_action,
+    apply_encoder_turn,
     apply_iris,
     assign_channel_button,
     assign_channel_companion_target,
     available_button_features,
     build_app_state,
     channel_snapshot,
+    commit_encoder_value,
     configure_companion,
     connect_camera,
+    cycle_encoder_function,
     disconnect_camera,
     register_camera,
     rename_camera,
     trigger_companion_select,
 )
-from core.companion import CompanionError
+from core.companion import CompanionError, is_reachable
 from core.config import load_config
 from midi.fader import XTouchFader
 
@@ -211,6 +214,16 @@ async def api_trigger_channel_button(channel_index: int, button_slot: str, reque
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/channels/{channel_index}/encoder/select")
+async def api_select_encoder_function(channel_index: int, request: Request) -> JSONResponse:
+    """Web-UI-Aequivalent zu Button 1 (physisch Rec) am X-Touch Extender:
+    schaltet die Encoder-Funktion des Kanals lokal weiter (Spec §9,
+    Nutzerentscheid: Drehregler soll auch im Browser bedienbar sein)."""
+    state = _ptz_state(request)
+    function_name = await cycle_encoder_function(state, channel_index)
+    return JSONResponse({"function": function_name})
+
+
 @app.post("/api/companion/config")
 async def api_configure_companion(request: Request) -> JSONResponse:
     """Globale Bitfocus-Companion-Instanz (eine für alle Kanäle,
@@ -224,6 +237,10 @@ async def api_configure_companion(request: Request) -> JSONResponse:
         port = int(port_raw) if port_raw not in (None, "") else 8000
     except (TypeError, ValueError):
         return JSONResponse({"error": f"ungültiger Port: {port_raw!r}"}, status_code=400)
+    if host and not await is_reachable(state.companion_client, host, port):
+        return JSONResponse(
+            {"error": f"Unter {host}:{port} ist kein Server erreichbar"}, status_code=502
+        )
     await configure_companion(state, host, port)
     return JSONResponse({"ok": True})
 
@@ -277,6 +294,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 value = float(message["value"])
                 final = bool(message.get("final", False))
                 await apply_iris(state, channel_index, value, final=final)
+            elif message.get("type") == "encoder_turn":
+                # `apply_encoder_turn` publiziert bewusst kein EventBus-Event
+                # (sonst wuerde jeder Dreh-Tick auch bei MIDI einen vollen
+                # 8-Strip-Scribble-Refresh ausloesen, siehe midi/fader.py) --
+                # daher hier direkt an alle WS-Clients broadcasten.
+                channel_index = int(message["channel"])
+                delta = int(message["delta"])
+                await apply_encoder_turn(state, channel_index, delta)
+                await state.broadcast({"type": "snapshot", "channels": channel_snapshot(state)})
+            elif message.get("type") == "encoder_commit":
+                channel_index = int(message["channel"])
+                await commit_encoder_value(state, channel_index)
+                await state.broadcast({"type": "snapshot", "channels": channel_snapshot(state)})
     except WebSocketDisconnect:
         pass
     finally:

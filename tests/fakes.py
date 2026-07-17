@@ -27,9 +27,13 @@ class FakeCameraDriver:
         self.model: str | None = None
         self._connected = False
         self.iris = 0.0
+        self.gain_db = 0
+        self.pedestal = 0
         self.set_iris_calls: list[float] = []
         self.button_feature_calls: list[tuple[str, bool | None]] = []
         self.cycle_feature_calls: list[tuple[str, int]] = []
+        self.step_gain_calls: list[int] = []
+        self.step_pedestal_calls: list[int] = []
 
     async def connect(self) -> None:
         self._connected = True
@@ -53,10 +57,17 @@ class FakeCameraDriver:
         pass
 
     async def step_gain(self, delta_db: int) -> int:
-        return 0
+        self.step_gain_calls.append(delta_db)
+        self.gain_db += delta_db
+        return self.gain_db
 
     async def set_pedestal(self, value: int) -> None:
         pass
+
+    async def step_pedestal(self, delta: int) -> int:
+        self.step_pedestal_calls.append(delta)
+        self.pedestal += delta
+        return self.pedestal
 
     async def set_rb_gain(self, r: int | None, b: int | None) -> None:
         pass
@@ -86,7 +97,9 @@ class FakeCameraDriver:
         self.cycle_feature_calls.append((key, target_index))
 
     async def get_state(self) -> CameraState:
-        return CameraState(iris=self.iris, auto_iris=False, gain_db=0, nd_index=0)
+        return CameraState(
+            iris=self.iris, auto_iris=False, gain_db=self.gain_db, pedestal=self.pedestal, nd_index=0
+        )
 
     def subscribe(self, callback) -> None:
         pass

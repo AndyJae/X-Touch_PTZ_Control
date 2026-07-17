@@ -58,7 +58,7 @@
                 <tr data-camera-row data-channel-index="{{ index }}">
                     <td><span class="status-dot {{ 'is-connected' if ch.connected }}" data-status-dot title="{{ ch.error or '' }}"></span></td>
                     <td>{{ index }}</td>
-                    <td><input type="text" data-name-input value="{{ ch.name or '' }}" placeholder="CAM {{ index }}" /></td>
+                    <td class="name-cell"><input type="text" data-name-input maxlength="7" value="{{ ch.name or '' }}" placeholder="CAM {{ index }}" /></td>
                     <td class="ip-cell"><input type="text" class="input-ip" data-host-input value="{{ ch.host or '' }}" placeholder="192.168.0.1{{ 9 + index }}" /></td>
                     <td class="port-cell"><input type="text" class="input-port" data-port-input value="{{ ch.port or '' }}" placeholder="80" /></td>
                     <td><button type="button" class="connect-btn {{ 'is-connected' if ch.connected }}" data-connect-btn data-channel-index="{{ index }}">{{ 'Connected' if ch.connected else 'Connect Camera' }}</button></td>

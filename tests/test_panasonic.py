@@ -94,6 +94,55 @@ def test_step_gain_raises_when_agc_active() -> None:
         _run(driver.step_gain(1))
 
 
+def test_query_pedestal_parses_offset_from_center() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "cmd=QSJ:0F" in str(request.url)
+        return httpx.Response(200, text="OSJ:0F:764")  # 0x764 - 0x800 = -156
+
+    driver = _build_driver(handler)
+    value = _run(driver._query_pedestal())
+
+    assert value == 0x764 - 0x800
+
+
+def test_step_pedestal_reads_current_value_then_sets_new_one() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen.append(url)
+        if "cmd=QSJ:0F" in url:
+            return httpx.Response(200, text="OSJ:0F:800")  # 0
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    new_value = _run(driver.step_pedestal(20))
+
+    assert new_value == 20
+    assert seen[-1] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OSJ:0F:814&res=1"  # 0x800+20=0x814
+
+
+def test_step_pedestal_clamps_to_range() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "cmd=QSJ:0F" in str(request.url):
+            return httpx.Response(200, text="OSJ:0F:8C8")  # +200, bereits am Maximum
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    new_value = _run(driver.step_pedestal(50))
+
+    assert new_value == 200
+
+
+def test_step_pedestal_raises_when_unreadable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="garbage")
+
+    driver = _build_driver(handler)
+    with pytest.raises(CameraCommandError):
+        _run(driver.step_pedestal(1))
+
+
 def test_camera_error_response_raises_with_body() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="ER3:out of range")
@@ -139,6 +188,7 @@ def test_get_state_aggregates_queries() -> None:
         "cmd=%23GI": "gi5551",
         "cmd=QIF": "OIF:0E",
         "cmd=QGU": "OGU:08",
+        "cmd=QSJ:0F": "OSJ:0F:800",
         "cmd=QFT": "OFT:2",
         "cmd=QER": "rER1",
     }
@@ -157,6 +207,7 @@ def test_get_state_aggregates_queries() -> None:
     assert state.auto_iris is True
     assert state.iris_f_number == "0E"
     assert state.gain_db == 0
+    assert state.pedestal == 0
     assert state.nd_index == 2
     assert state.error == "rER1"
 

@@ -15,7 +15,7 @@ TEST_CONFIG = AppConfig.model_validate(
             {"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9999},
         ],
         "banks": [{"name": "Bank A", "channels": [{"camera": "cam1"}]}],
-        "channel_defaults": {"fader": "iris"},
+        "channel_defaults": {"fader": "iris", "encoder": {"functions": ["gain", "pedestal"]}},
         "global": {"rate_limit_hz": 15, "web_port": 8600},
     }
 )
@@ -129,6 +129,43 @@ def test_set_iris_on_unmapped_channel_is_ignored(client) -> None:
     assert driver.set_iris_calls == []
 
 
+def test_encoder_select_endpoint_advances_function(client) -> None:
+    response = client.post("/api/channels/1/encoder/select")
+
+    assert response.status_code == 200
+    assert response.json()["function"] == "gain"
+
+
+def test_encoder_turn_over_websocket_updates_pending_preview(client) -> None:
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # initial snapshot
+        ws.send_json({"type": "encoder_turn", "channel": 1, "delta": 1})
+        data = ws.receive_json()
+
+    channel1 = next(c for c in data["channels"] if c["index"] == 1)
+    assert channel1["encoder"]["pending"] is True
+    assert channel1["encoder"]["value"] == 1
+
+    driver = web_app.app.state.ptz.drivers["cam1"]
+    assert driver.step_gain_calls == []  # kein Kamerabefehl vor dem Commit
+
+
+def test_encoder_commit_over_websocket_sends_to_driver(client) -> None:
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_json()  # initial snapshot
+        ws.send_json({"type": "encoder_turn", "channel": 1, "delta": 1})
+        ws.receive_json()
+        ws.send_json({"type": "encoder_commit", "channel": 1})
+        data = ws.receive_json()
+
+    channel1 = next(c for c in data["channels"] if c["index"] == 1)
+    assert channel1["encoder"]["pending"] is False
+    assert channel1["encoder"]["value"] == 1
+
+    driver = web_app.app.state.ptz.drivers["cam1"]
+    assert driver.step_gain_calls == [1]
+
+
 def test_disconnect_camera_endpoint_marks_disconnected(client) -> None:
     response = client.post("/api/channels/1/camera/disconnect")
 
@@ -150,7 +187,12 @@ def test_rename_camera_endpoint_updates_name_without_disconnecting(client) -> No
     assert web_app.app.state.ptz.cameras["cam1"].name == "Studio Weit"
 
 
-def test_companion_config_endpoint_persists(client) -> None:
+def test_companion_config_endpoint_persists(client, monkeypatch) -> None:
+    async def fake_is_reachable(client, host, port):
+        return True
+
+    monkeypatch.setattr(web_app, "is_reachable", fake_is_reachable)
+
     response = client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
 
     assert response.status_code == 200
@@ -172,6 +214,11 @@ def test_assign_channel_companion_endpoint_unmapped_channel_returns_400(client) 
 
 
 def test_trigger_companion_select_endpoint_success(client, monkeypatch) -> None:
+    async def fake_is_reachable(client, host, port):
+        return True
+
+    monkeypatch.setattr(web_app, "is_reachable", fake_is_reachable)
+
     client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
     client.post("/api/channels/1/companion", json={"page": 1, "row": 0, "column": 2})
     calls = []

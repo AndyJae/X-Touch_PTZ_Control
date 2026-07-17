@@ -51,6 +51,10 @@ class CameraDriver(ABC):
         ...
 
     @abstractmethod
+    async def step_pedestal(self, delta: int) -> int:
+        ...
+
+    @abstractmethod
     async def set_rb_gain(self, r: int | None, b: int | None) -> None:
         ...
 

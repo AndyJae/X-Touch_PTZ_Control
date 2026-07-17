@@ -9,6 +9,7 @@ class CameraState:
     iris_f_number: str | None = None
     auto_iris: bool | None = None
     gain_db: int | None = None
+    pedestal: int | None = None
     nd_index: int | None = None
     shutter: str | None = None
     bars: bool | None = None

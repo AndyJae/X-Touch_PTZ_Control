@@ -33,8 +33,28 @@ def build_client() -> httpx.AsyncClient:
     """Ein wiederverwendeter Client statt einem neuen pro Trigger -- ein
     frischer `httpx.AsyncClient` pro Aufruf baut jedes Mal eine neue
     Verbindung auf und hat den SELECT-Trigger spuerbar verzoegert (gemessen:
-    ~400ms zusaetzlich pro Klick durch den Verbindungsaufbau)."""
-    return httpx.AsyncClient(timeout=_REQUEST_TIMEOUT)
+    ~400ms zusaetzlich pro Klick durch den Verbindungsaufbau).
+
+    `keepalive_expiry` explizit hoch gesetzt: httpx' Default (5s) schliesst
+    die gepoolte Verbindung nach 5s Inaktivitaet zwischen zwei Triggern,
+    danach baut der naechste Trigger wieder neu auf -- exakt die "manchmal
+    langsam"-Verzoegerung. Mit langem Expiry bleibt die eine Verbindung
+    dauerhaft offen."""
+    limits = httpx.Limits(max_keepalive_connections=1, keepalive_expiry=3600)
+    return httpx.AsyncClient(timeout=_REQUEST_TIMEOUT, limits=limits)
+
+
+async def is_reachable(client: httpx.AsyncClient, host: str, port: int) -> bool:
+    """Reine Erreichbarkeitspruefung vor dem Speichern der Companion-Config
+    (Setup-Seite): prueft nur, ob unter Host:Port ueberhaupt ein HTTP-Server
+    antwortet -- bestaetigt NICHT, dass es sich um Companion handelt, da kein
+    Companion-spezifischer Status-/Health-Endpunkt in der Spec verifiziert
+    ist (siehe Modul-Docstring)."""
+    try:
+        await client.get(f"http://{host}:{port}/")
+    except httpx.HTTPError:
+        return False
+    return True
 
 
 async def press_button(

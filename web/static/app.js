@@ -1,33 +1,80 @@
-// Surface-Ansicht: Button 1 wählt die Funktion des Encoders (Drehrad) pro Kanalzug.
-// Demo-Werte, da die Seite aktuell ein statisches UI-Mockup ohne Live-MIDI-/Kamera-Daten ist.
-const ENCODER_FUNCTIONS = [
-    { label: "GAIN", value: "+3 dB" },
-    { label: "SHUTTER", value: "1/250" },
-    { label: "MASTER BLACK", value: "0" },
-];
-
+// Surface-Ansicht: Button 1 waehlt die Encoder-Funktion des Kanals (Spec §9,
+// physisches Aequivalent: Rec-Taste). Loest nur die Auswahl serverseitig aus
+// (POST /api/channels/{i}/encoder/select, Aequivalent zu cycle_encoder_function())
+// -- die eigentliche Anzeige (Funktion/Wert) kommt ueber den WebSocket-Snapshot
+// zurueck, siehe applySurfaceSnapshot().
 function initEncoderFunctionSelect() {
-    document.querySelectorAll(".surface-channel").forEach((channel) => {
-        const button = channel.querySelector("[data-encoder-fn-select]");
-        const fnLabel = channel.querySelector("[data-encoder-fn]");
-        const valLabel = channel.querySelector("[data-encoder-val]");
-        if (!button || !fnLabel || !valLabel) return;
+    document.querySelectorAll("[data-encoder-fn-select]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const channelIndex = button.dataset.channelIndex;
+            button.disabled = true;
+            try {
+                await fetch(`/api/channels/${channelIndex}/encoder/select`, { method: "POST" });
+            } finally {
+                button.disabled = false;
+            }
+        });
+    });
+}
 
-        let index = 0;
+// Surface-Ansicht: Drehregler (Spec §9) -- Drehen (Ziehen mit der Maus oder
+// Scrollen) aendert nur einen lokalen Pending-Wert (Vorschau, kein
+// Kamerabefehl, siehe apply_encoder_turn()), erst ein Klick ohne Ziehen
+// committet ihn (commit_encoder_value()). Nutzerentscheid: Drehen/Committen
+// bewusst getrennt, analog zum physischen Drehrad-Druck am X-Touch Extender.
+function initEncoderKnob(ws) {
+    const PX_PER_TICK = 6; // reine UI-Feinabstimmung, keine Spec-Vorgabe
 
-        const render = () => {
-            const fn = ENCODER_FUNCTIONS[index];
-            fnLabel.textContent = fn.label;
-            valLabel.textContent = fn.value;
-            button.textContent = fn.label;
+    document.querySelectorAll("[data-encoder]").forEach((knob) => {
+        const channelIndex = Number(knob.dataset.channelIndex);
+
+        const sendTurn = (delta) => {
+            if (ws.readyState !== WebSocket.OPEN || delta === 0) return;
+            ws.send(JSON.stringify({ type: "encoder_turn", channel: channelIndex, delta }));
+        };
+        const sendCommit = () => {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ type: "encoder_commit", channel: channelIndex }));
         };
 
-        button.addEventListener("click", () => {
-            index = (index + 1) % ENCODER_FUNCTIONS.length;
-            render();
+        knob.addEventListener("wheel", (evt) => {
+            evt.preventDefault();
+            sendTurn(evt.deltaY < 0 ? 1 : -1);
+        }, { passive: false });
+
+        let dragging = false;
+        let dragged = false;
+        let lastY = 0;
+        let carryPx = 0; // Rest-Pixel zwischen zwei vollen Ticks
+
+        knob.addEventListener("pointerdown", (evt) => {
+            dragging = true;
+            dragged = false;
+            carryPx = 0;
+            lastY = evt.clientY;
+            knob.setPointerCapture(evt.pointerId);
+            knob.classList.add("is-dragging");
         });
 
-        render();
+        knob.addEventListener("pointermove", (evt) => {
+            if (!dragging) return;
+            carryPx += lastY - evt.clientY; // nach oben ziehen = erhoehen
+            lastY = evt.clientY;
+            if (Math.abs(carryPx) < PX_PER_TICK) return;
+            const ticks = Math.trunc(carryPx / PX_PER_TICK);
+            carryPx -= ticks * PX_PER_TICK;
+            dragged = true;
+            sendTurn(ticks);
+        });
+
+        const endDrag = () => {
+            if (!dragging) return;
+            dragging = false;
+            knob.classList.remove("is-dragging");
+            if (!dragged) sendCommit(); // Klick ohne Ziehen = uebernehmen
+        };
+        knob.addEventListener("pointerup", endDrag);
+        knob.addEventListener("pointercancel", endDrag);
     });
 }
 
@@ -298,8 +345,22 @@ function applySurfaceSnapshot(channels) {
         const irisReadout = article.querySelector("[data-iris-readout]");
         if (irisReadout) irisReadout.textContent = ch.connected ? pct + "%" : "—";
 
-        const gainVal = article.querySelector("[data-encoder-val]");
-        if (gainVal) gainVal.textContent = ch.gain_db != null ? ch.gain_db + " dB" : "—";
+        const enc = ch.encoder;
+        const encFnLabel = article.querySelector("[data-encoder-fn]");
+        const encValLabel = article.querySelector("[data-encoder-val]");
+        const encDisplay = encValLabel ? encValLabel.closest(".encoder-display") : null;
+        const encKnob = article.querySelector("[data-encoder]");
+        if (encFnLabel) encFnLabel.textContent = enc ? enc.function.replace(/_/g, " ").toUpperCase() : "—";
+        if (encValLabel) {
+            encValLabel.textContent = enc && enc.value != null
+                ? (enc.value >= 0 ? "+" : "") + enc.value + (enc.function === "gain" ? "dB" : "")
+                : "—";
+        }
+        if (encDisplay) encDisplay.classList.toggle("is-pending", !!(enc && enc.pending));
+        if (encKnob && enc && enc.value != null && enc.min != null && enc.max != null) {
+            const pos = Math.round(((enc.value - enc.min) / (enc.max - enc.min)) * 100);
+            encKnob.style.setProperty("--enc-pos", pos + "%");
+        }
 
         const dot = article.querySelector("[data-tally-dot]");
         if (dot) {
@@ -394,6 +455,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (document.querySelector(".surface-channel")) {
         const ws = connectSurfaceSocket();
         initFaderDrag(ws);
+        initEncoderKnob(ws);
         initFeatureButtons();
         initSelectButtons();
     }

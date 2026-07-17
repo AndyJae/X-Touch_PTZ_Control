@@ -13,14 +13,21 @@
                  data-channel="{{ ch.index }}" data-has-camera="{{ 'true' if ch.connected else 'false' }}">
             <div class="channel-index">{{ ch.index }}</div>
 
-            <div class="encoder" style="--enc-pos: {{ (ch.index * 37) % 100 }}%">
+            {% set enc = ch.encoder %}
+            {% set enc_pos = (((enc.value - enc.min) / (enc.max - enc.min) * 100) | round | int) if enc and enc.value is not none and enc.min is not none and enc.max is not none else 0 %}
+            <div class="encoder" data-encoder data-channel-index="{{ ch.index }}" style="--enc-pos: {{ enc_pos }}%"
+                 title="Ziehen/Scrollen = drehen, Klick = uebernehmen">
                 <div class="encoder-ring"></div>
                 <div class="encoder-cap"></div>
             </div>
 
-            <div class="encoder-display">
-                <span class="encoder-display-fn" data-encoder-fn>GAIN</span>
-                <span class="encoder-display-val" data-encoder-val>{{ (ch.gain_db ~ ' dB') if ch.gain_db is not none else '—' }}</span>
+            <div class="encoder-display {{ 'is-pending' if enc and enc.pending }}">
+                <span class="encoder-display-fn" data-encoder-fn>{{ (enc.function | replace('_', ' ') | upper) if enc else '—' }}</span>
+                <span class="encoder-display-val" data-encoder-val>
+                    {%- if enc and enc.value is not none -%}
+                        {{ "%+d"|format(enc.value) }}{{ 'dB' if enc.function == 'gain' else '' }}
+                    {%- else -%}—{%- endif -%}
+                </span>
             </div>
 
             <div class="scribble-strip">
@@ -33,7 +40,7 @@
             </div>
 
             <div class="surface-buttons">
-                <button type="button" class="surf-btn" data-encoder-fn-select>Button 1</button>
+                <button type="button" class="surf-btn" data-encoder-fn-select data-channel-index="{{ ch.index }}">Button 1</button>
                 {% for slot in ["button2", "button3"] %}
                 {% set assigned = ch.buttons[slot] %}
                 <button type="button" class="surf-btn {{ 'is-on' if assigned and assigned.state }}"

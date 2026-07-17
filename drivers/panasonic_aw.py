@@ -22,6 +22,8 @@ _GAIN_AGC_DATA = 0x80
 
 # --- Master Pedestal (OSJ:0F, §7.2): 738h(-200)-800h(0)-8C8h(+200) -> Data = 0x800 + value ---
 _PEDESTAL_CENTER_DATA = 0x800
+_PEDESTAL_MIN = -200
+_PEDESTAL_MAX = 200
 
 # --- R/B Gain Preset (OSL:36/38, §7.2): 418h(-1000)-800h(0)-BE8h(+1000) -> Data = 0x800 + value ---
 _RB_GAIN_CENTER_DATA = 0x800
@@ -301,6 +303,16 @@ class PanasonicAWDriver(CameraDriver):
         data = _PEDESTAL_CENTER_DATA + value
         await self._request("aw_cam", f"OSJ:0F:{data:03X}")
 
+    async def step_pedestal(self, delta: int) -> int:
+        current = await self._query_pedestal()
+        if current is None:
+            raise CameraCommandError(
+                "pedestal step ignored: pedestal unreadable", command="OSJ:0F"
+            )
+        new_value = max(_PEDESTAL_MIN, min(_PEDESTAL_MAX, current + delta))
+        await self.set_pedestal(new_value)
+        return new_value
+
     async def set_rb_gain(self, r: int | None, b: int | None) -> None:
         if r is not None:
             data = _RB_GAIN_CENTER_DATA + r
@@ -393,6 +405,7 @@ class PanasonicAWDriver(CameraDriver):
             iris_f_number=await self._query_f_number(),
             auto_iris=auto_iris,
             gain_db=await self._query_gain_db(),
+            pedestal=await self._query_pedestal(),
             nd_index=await self._query_nd(),
             shutter=None,  # Query-Response-Format fuer Shutter-Status nicht in Spec definiert
             bars=None,  # QBR-Response-Format nicht in Spec definiert (nur Query-Name, §11)
@@ -449,6 +462,24 @@ class PanasonicAWDriver(CameraDriver):
         if data == _GAIN_AGC_DATA:
             return None
         return data - _GAIN_ZERO_DB_DATA
+
+    async def _query_pedestal(self) -> int | None:
+        # QSJ:0F als Query-Kommando fuer Master Pedestal ist Dokumentenbeleg aus
+        # AW-UE160_InterfaceSpecification_E.pdf Kap.9 "MASTER PEDESTAL"
+        # (Request QSJ:0F -> Response OSJ:0F:[Data]), nicht live am Geraet
+        # verifiziert (analog zu QGU, siehe CLAUDE.md Offene Punkte).
+        try:
+            body = await self._request("aw_cam", "QSJ:0F")
+        except CameraCommandError:
+            return None
+        value = _extract_value(body)
+        if value is None:
+            return None
+        try:
+            data = int(value, 16)
+        except ValueError:
+            return None
+        return data - _PEDESTAL_CENTER_DATA
 
     async def _query_nd(self) -> int | None:
         try:
