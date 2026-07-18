@@ -204,6 +204,88 @@ def test_companion_config_endpoint_persists(client, monkeypatch) -> None:
     assert web_app.app.state.ptz.config.companion.host == "192.168.0.50"
 
 
+def test_companion_config_endpoint_marks_connected_when_reachable(client, monkeypatch) -> None:
+    async def fake_is_reachable(client, host, port):
+        return True
+
+    monkeypatch.setattr(web_app, "is_reachable", fake_is_reachable)
+
+    client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
+
+    assert web_app.app.state.ptz.companion_connected is True
+    setup_response = client.get("/setup")
+    assert "Saved" in setup_response.text
+
+
+def test_companion_config_endpoint_rejects_unreachable_and_stays_disconnected(client, monkeypatch) -> None:
+    host_before_call = web_app.app.state.ptz.config.companion.host
+
+    async def fake_is_reachable(client, host, port):
+        return False
+
+    monkeypatch.setattr(web_app, "is_reachable", fake_is_reachable)
+
+    response = client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
+
+    assert response.status_code == 502
+    assert web_app.app.state.ptz.companion_connected is False
+    assert web_app.app.state.ptz.config.companion.host == host_before_call
+
+
+def test_companion_disconnect_clears_connected_flag(client, monkeypatch) -> None:
+    async def fake_is_reachable(client, host, port):
+        return True
+
+    monkeypatch.setattr(web_app, "is_reachable", fake_is_reachable)
+    client.post("/api/companion/config", json={"host": "192.168.0.50", "port": 8000})
+    assert web_app.app.state.ptz.companion_connected is True
+
+    client.post("/api/companion/config", json={"host": "", "port": 8000})
+
+    assert web_app.app.state.ptz.companion_connected is False
+    setup_response = client.get("/setup")
+    assert "data-companion-save>Save<" in setup_response.text
+
+
+def test_setup_page_does_not_show_saved_when_companion_configured_but_unreachable_at_startup(
+    monkeypatch, tmp_path
+) -> None:
+    """Bugfix: config.yaml kann einen Companion-Host enthalten, ohne dass
+    Companion tatsaechlich laeuft -- die Setup-Seite darf 'Saved' dann nicht
+    allein aus `companion.host` ableiten (siehe lifespan-Erreichbarkeitspruefung)."""
+    config = AppConfig.model_validate(
+        {
+            "cameras": [
+                {"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9999},
+            ],
+            "banks": [{"name": "Bank A", "channels": [{"camera": "cam1"}]}],
+            "channel_defaults": {"fader": "iris"},
+            "global": {"rate_limit_hz": 15, "web_port": 8600},
+            "companion": {"host": "192.168.0.50", "port": 8000},
+        }
+    )
+    monkeypatch.setattr(web_app, "load_config", lambda path="config.yaml": config)
+    monkeypatch.setattr(web_app, "_CONFIG_PATH", str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(
+        core_application,
+        "build_driver",
+        lambda camera: FakeCameraDriver(camera.host, camera.port),
+    )
+
+    async def fake_is_reachable(client, host, port):
+        return False
+
+    monkeypatch.setattr(web_app, "is_reachable", fake_is_reachable)
+
+    with TestClient(web_app.app) as test_client:
+        assert web_app.app.state.ptz.companion_connected is False
+        response = test_client.get("/setup")
+
+    assert response.status_code == 200
+    assert "data-companion-save>Save<" in response.text
+    assert "is-connected\" data-companion-save" not in response.text
+
+
 def test_assign_channel_companion_endpoint_persists(client) -> None:
     response = client.post("/api/channels/1/companion", json={"page": 1, "row": 0, "column": 2})
 

@@ -28,7 +28,7 @@
         <label for="companion-port">Port</label>
         <input type="text" id="companion-port" data-companion-port value="{{ companion.port }}" placeholder="8000" />
         <div class="button-row">
-            <button type="button" class="{{ 'is-connected' if companion.host }}" data-companion-save>{{ 'Saved' if companion.host else 'Save' }}</button>
+            <button type="button" class="{{ 'is-connected' if companion_connected }}" data-companion-save>{{ 'Saved' if companion_connected else 'Save' }}</button>
             <button type="button" data-companion-disconnect>Disconnect</button>
         </div>
     </div>

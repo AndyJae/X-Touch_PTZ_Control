@@ -87,6 +87,13 @@ class AppState:
     # `rate_limiters` fuer den Iris-Fader, aber getrennt: anderer
     # Wertebereich, keine Hysterese noetig, siehe `build_app_state`).
     encoder_rate_limiters: dict[str, RateLimiter] = field(default_factory=dict)
+    # Ob die zuletzt gespeicherte Companion-Config tatsaechlich erreichbar
+    # war (echte Pruefung per is_reachable, siehe configure_companion und
+    # web/app.py lifespan) -- unabhaengig davon, ob ueberhaupt ein Host in
+    # der Config steht (Bugfix: `companion.host` truthy != Companion laeuft
+    # gerade). Startet konservativ bei False, bis eine echte Pruefung das
+    # Gegenteil belegt.
+    companion_connected: bool = False
 
     async def broadcast(self, payload: dict) -> None:
         stale: list[WebSocket] = []
@@ -274,12 +281,15 @@ async def rename_camera(state: AppState, channel_index: int, name: str) -> None:
     await state.event_bus.publish("config_changed", {"channel_index": channel_index})
 
 
-async def configure_companion(state: AppState, host: str, port: int) -> None:
+async def configure_companion(state: AppState, host: str, port: int, connected: bool = False) -> None:
     """Speichert die globale Bitfocus-Companion-Instanz (eine für alle
     Kanäle, Nutzerentscheid) -- Setup-Seite, Panel an der Stelle des
-    ehemaligen "Camera Status"-Blocks."""
+    ehemaligen "Camera Status"-Blocks. `connected` kommt vom Aufrufer, der
+    die tatsaechliche Erreichbarkeit (is_reachable) bereits geprueft hat --
+    hier bewusst kein eigener Check, um den Request nicht zu duplizieren."""
     state.config.companion.host = host.strip()
     state.config.companion.port = port
+    state.companion_connected = connected
     save_config(state.config_path, state.config)
     await state.event_bus.publish("config_changed", {})
 

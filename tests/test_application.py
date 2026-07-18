@@ -690,6 +690,24 @@ def test_configure_companion_persists(monkeypatch, tmp_path) -> None:
     assert reloaded.companion.port == 8000
 
 
+def test_configure_companion_defaults_to_not_connected(monkeypatch, tmp_path) -> None:
+    """Bugfix: ohne explizit bestaetigte Erreichbarkeit darf `companion_connected`
+    nicht faelschlich True werden, nur weil ein Host gespeichert wurde."""
+    state = _empty_state(monkeypatch, tmp_path)
+
+    _run(configure_companion(state, "192.168.0.50", 8000))
+
+    assert state.companion_connected is False
+
+
+def test_configure_companion_sets_connected_when_caller_confirmed_reachability(monkeypatch, tmp_path) -> None:
+    state = _empty_state(monkeypatch, tmp_path)
+
+    _run(configure_companion(state, "192.168.0.50", 8000, connected=True))
+
+    assert state.companion_connected is True
+
+
 def test_assign_channel_companion_target_persists(monkeypatch, tmp_path) -> None:
     state = _empty_state(monkeypatch, tmp_path)
     _run(register_camera(state, 1, name="CAM 1", host="127.0.0.1", port=8081))

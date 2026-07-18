@@ -500,6 +500,31 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
 - Update-Notifications für andere Ereignisse als Iris (`OAW`, `OWS` etc., Spec §7.3.1) laufen
   technisch über denselben neuen Notification-Kanal, werden aber nicht ausgewertet
   (`PanasonicAWDriver._handle_notification` reagiert nur auf `lPI`)
+- ~~Setup-Seite zeigte den Companion-Button als "Saved"/`is-connected` rein anhand von
+  `companion.host` (Config-Vorhandensein) -- Bugreport 2026-07-18: Button zeigte "Saved"
+  auch dann, wenn Companion beim App-Start gar nicht lief~~ **Behoben (2026-07-18):** neues
+  `AppState.companion_connected`-Flag (Default `False`), das eine echte `is_reachable()`-
+  Pruefung widerspiegelt statt nur `companion.host`-Truthiness. Zwei Stellen setzen es:
+  `web/app.py` lifespan prueft beim App-Start (analog zum bestehenden Kamera-Connect-Block
+  direkt darueber), und `configure_companion()` (`core/application.py`, neuer optionaler
+  `connected`-Parameter, Default `False`) wird von der `POST /api/companion/config`-Route mit
+  dem Ergebnis der dort ohnehin schon vorhandenen `is_reachable()`-Pruefung aufgerufen.
+  `web/templates/setup.html` nutzt jetzt `companion_connected` statt `companion.host` für
+  Klasse/Label des Save-Buttons. Wie beim Kamera-`connected`-Flag keine kontinuierliche
+  Hintergrundpruefung -- der Zustand wird nur beim App-Start und bei explizitem Speichern neu
+  ermittelt, nicht laufend nachgehalten. Getestet in `tests/test_application.py`
+  (`test_configure_companion_defaults_to_not_connected`,
+  `test_configure_companion_sets_connected_when_caller_confirmed_reachability`),
+  `tests/test_web_app.py` (`test_companion_config_endpoint_marks_connected_when_reachable`,
+  `test_companion_config_endpoint_rejects_unreachable_and_stays_disconnected`,
+  `test_companion_disconnect_clears_connected_flag`,
+  `test_setup_page_does_not_show_saved_when_companion_configured_but_unreachable_at_startup`).
+  225 Tests bestehen (vorher 219). Zusaetzlich live gegen die laufende App verifiziert: mit
+  `companion.host: localhost, port: 8888` in `config.yaml` und keinem Listener auf 8888 zeigte
+  `GET /setup` nach Neustart `<button ... class="" data-companion-save>Save</button>` und der
+  Log die neue Warnung `Companion (localhost:8888) nicht erreichbar`; nach Start eines
+  Test-Listeners auf 8888 und erneutem Speichern über `POST /api/companion/config` zeigte die
+  Seite korrekt `class="is-connected"` / `Saved`.
 
 ## Abschlussregel
 

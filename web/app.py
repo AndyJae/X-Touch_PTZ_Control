@@ -71,6 +71,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             state.state_store.get_camera(camera_id).error = str(exc)
     LOGGER.info("PTZ Control Web-UI bereit: %d Kamera(s) konfiguriert", len(state.drivers))
 
+    # Bugfix: config.yaml kann einen Companion-Host enthalten, ohne dass
+    # Companion beim Start tatsaechlich laeuft -- die Setup-Seite zeigte den
+    # Button bisher rein anhand von `companion.host` als "Saved" an. Echte
+    # Erreichbarkeitspruefung beim Start, analog zum Kamera-Connect oben.
+    if state.config.companion.host:
+        state.companion_connected = await is_reachable(
+            state.companion_client, state.config.companion.host, state.config.companion.port
+        )
+        if not state.companion_connected:
+            LOGGER.warning(
+                "Companion (%s:%s) nicht erreichbar",
+                state.config.companion.host,
+                state.config.companion.port,
+            )
+
     midi_fader: XTouchFader | None = None
     # Spec §5.5: ohne konfigurierten Port wartet das Tool (UI-Auswahl folgt in
     # einem spaeteren Schritt) -- kein Auto-Connect ohne explizite Config.
@@ -129,6 +144,7 @@ async def setup_page(request: Request) -> HTMLResponse:
             "channels": channel_snapshot(state),
             "button_features": button_features,
             "companion": state.config.companion,
+            "companion_connected": state.companion_connected,
         },
     )
 
@@ -255,7 +271,9 @@ async def api_configure_companion(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": f"Unter {host}:{port} ist kein Server erreichbar"}, status_code=502
         )
-    await configure_companion(state, host, port)
+    # host leer (Disconnect) -> nicht verbunden; host gesetzt -> Erreichbarkeit
+    # wurde oben bereits bestaetigt (sonst waere die Route schon zurueckgekehrt).
+    await configure_companion(state, host, port, connected=bool(host))
     return JSONResponse({"ok": True})
 
 
