@@ -160,8 +160,8 @@ banks:
     channels:                # Index 0–7 = Kanalzug 1–8
       - camera: cam1
         buttons:              # Button-2/3-Zuordnung pro Kanal, siehe §9a.
-          button2: drs         # Feature-Key aus dem Katalog des erkannten
-          button3: knee        # Kameramodells (button1 ist unzulässig, siehe §9)
+          button2: drs_low     # Feature-Key aus dem Katalog des erkannten
+          button3: knee_auto   # Kameramodells (button1 ist unzulässig, siehe §9)
       - camera: cam2
       # nicht belegte Kanäle weglassen → Fader unten, Strip leer
       # `buttons` ist optional; ohne Zuordnung sind Button 2/3 des Kanals inaktiv
@@ -528,7 +528,9 @@ konfiguriert. Implementierung: `core/companion.py`.
 ## 9a. Button-Funktionsquelle: Kamera-Modell-Erkennung (extern: `C:\smart_reset_work`)
 
 **Status: Modell-Registry mit 17 Panasonic-Modellen umgesetzt (Nutzerentscheid).
-Physische X-Touch-Auslösung für Button 2/3 (Solo/Mute) weiterhin offen (siehe §14).**
+Physische X-Touch-Auslösung für Button 2/3 (Solo/Mute) sowie Select (Companion) über
+`midi/fader.py` verdrahtet (Software-Logik verifiziert, LED-Tx und Kanal 2-8 noch nicht
+gegen reale Hardware getestet, siehe §14).**
 
 Externe Referenzquelle: `C:\smart_reset_work\camera_plugins\panasonic\*.py`
 (`UI_BUTTONS`/`UI_BUTTON_LABELS` pro Kameramodell, dort gegen reale
@@ -544,14 +546,31 @@ Kameramodell ist eine eigene Datei (`CAMERA_ID`, optional
 `CAMERA_ID_ALIASES`, `BUTTON_FEATURES`, `BUTTON_FEATURE_LABELS`) — wörtlich
 aus der jeweiligen `UI_BUTTONS`/`UI_BUTTON_LABELS`-Definition der Referenz-
 quelle portiert (Toggle-Struktur `{"on"/"off"}` → `{"kind":"toggle",
-"on"/"off"}`, Trigger `{"cmd"}` → `{"kind":"trigger","cmd"}`, Cycle
-`{"cycle"}` → `{"kind":"cycle","cycle"}`, analog zur bisherigen AW-UE160-
-Portierung). `RESET_COMMANDS`/`UI_LAYOUT`/`UI_DROPDOWNS` aus der Quelle
-gehören zu deren eigenem Reset-Tool und haben in PTZ_Control keine
-Entsprechung — Button 2/3 sind hier frei aus dem Katalog zuweisbar, kein
-fester Grid-/Dropdown-Aufbau. Alias-Modelle (z. B. AW-HE60 zu AW-HE50)
-re-exportieren `BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS` vom Basismodell,
-genau wie in der Quelle.
+"on"/"off"}`, Trigger `{"cmd"}` → `{"kind":"trigger","cmd"}`). `RESET_
+COMMANDS`/`UI_LAYOUT`/`UI_DROPDOWNS` aus der Quelle gehören zu deren
+eigenem Reset-Tool und haben in PTZ_Control keine Entsprechung — Button 2/3
+sind hier frei aus dem Katalog zuweisbar, kein fester Grid-/Dropdown-Aufbau.
+Alias-Modelle (z. B. AW-HE60 zu AW-HE50) re-exportieren `BUTTON_FEATURES`/
+`BUTTON_FEATURE_LABELS` vom Basismodell, genau wie in der Quelle.
+
+**Mehrwertige Parameter (Knee, DRS) — kein "cycle"-Feature-Typ
+(Nutzerentscheid 2026-07-18):** ursprünglich gab es einen dritten Feature-
+Typ `{"kind":"cycle","cycle":[...]}`, bei dem jeder Tastendruck zum
+nächsten von N benannten Schritten weiterschaltete (z. B. Knee:
+Off→Manual→Auto→Off). Das passt aber nicht zur physischen Taste: Button 2/3
+haben nur eine einzelne, nicht mehrfarbige LED, können also keinen von
+mehr als zwei Zuständen anzeigen. Stattdessen bekommt jeder sinnvolle
+Zielzustand einen eigenen, gewöhnlichen Toggle-Eintrag (z. B. `knee_manual`,
+`knee_auto` statt einem einzelnen `knee`; `drs_low`/`drs_mid`/`drs_high`
+statt einem einzelnen `drs`) — "on" schaltet auf den Zielzustand, "off" auf
+den gemeinsamen Grundzustand (meist Data-Wert 0). Damit bleibt die LED-
+Semantik echt binär. `trigger_button_feature()` akzeptiert für "on"/"off"
+seither auch eine Liste von Kommandos (nicht nur einen einzelnen String),
+falls ein Zielzustand mehrere Befehle braucht (AW-UE160s Knee: Auto sendet
+z. B. `OSL:45:1` gefolgt von `OSA:2D:2`). Das Cycle-Konzept selbst existiert
+weiterhin, aber ausschließlich bei Button 1 (Encoder-Funktionsauswahl
+Gain/Pedestal/Camera Status, siehe unten) — ein komplett getrennter
+Mechanismus ohne Bezug zu `BUTTON_FEATURES`.
 
 Eine kleine Registry (`drivers/panasonic_models/registry.py`, angelehnt an
 `C:\smart_reset_work\core\registry.py`s `PluginRegistry`, aber ohne dessen
@@ -568,13 +587,39 @@ connect()` löst danach über die Registry den passenden Katalog auf
 `BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS` — nicht mehr fest auf AW-UE160
 hartkodierte Klassenattribute wie vor diesem Umbau. Die Zuordnung Button 2/3
 → Feature-Key ist weiterhin pro Kanal in `config.yaml` persistiert
-(`banks[].channels[].buttons`, §4), über die Setup-Seite editierbar.
-Ausgelöst wird die Aktion aktuell **nur** über die Button-2/3-Elemente der
-Übersicht-Seite (Web-UI) — **nicht** über den physischen X-Touch Extender
-(Solo/Mute sind laut CLAUDE.md nur Rx-seitig verifiziert, nicht an
-`apply_button_action` angebunden). Zustand (an/aus bzw. Cycle-Stufe) wird wie
-in der Referenzquelle nur lokal getrackt, nicht durch Kamera-Rückfrage
-verifiziert — für die genutzten Kommandos existiert kein Query-Gegenstück.
+(`banks[].channels[].buttons`, §4). Editierbar sowohl über die Setup-Seite
+(Dropdown pro Kanal/Slot) als auch — seit Nutzerauftrag 2026-07-18 — direkt
+auf der Übersicht-Seite über ein Zahnrad-Icon neben Button 2/3: öffnet ein
+Popover mit demselben, dynamisch per `GET /api/channels/{i}/available-
+buttons` geladenen Katalog, Auswahl ruft denselben `POST /api/channels/{i}/
+buttons/{slot}` wie die Setup-Seite auf — keine zweite Zuweisungs-Logik,
+kein Seitenwechsel mehr nötig, um eine Funktion zuzuweisen.
+Ausgelöst wird die Aktion sowohl über die Button-2/3-Elemente der
+Übersicht-Seite (Web-UI) als auch — seit Nutzerauftrag 2026-07-18 — über den
+physischen X-Touch Extender: Solo (Note 8–15) und Mute (Note 16–23) rufen
+dieselbe `apply_button_action()` auf (`midi/fader.py`). LED-Feedback (OFF=aus/
+ON=an, kein Blinken) läuft über denselben Event-getriebenen Vollabzug wie die
+Scribble Strips. Software-Logik verifiziert, LED-Tx und Kanal 2–8 noch nicht
+gegen reale Hardware getestet (siehe §14).
+
+**Zustandsabfrage beim Zuweisen (Nutzerauftrag 2026-07-18):** Zustand war
+bisher rein lokal getrackt (kein Query-Gegenstück angenommen) und erst nach
+dem ersten Druck bekannt. Gegen die lokalen PDFs verifiziert: praktisch
+jeder Toggle im aktuellen Katalog HAT ein Query-Gegenstück (z. B. `drs*` →
+`QSE:33`, `knee_manual`/`knee_auto` → `QSA:2D`, `osd` → `QUS`, Antwort dabei
+als `OUS:[Data]` statt `ODUS:[Data]` — einziger Fall mit abweichendem
+Antwort-Präfix). `PanasonicAWDriver.query_button_feature(key)` liest
+`feature["query"]`/`feature["query_on_value"]` (nur gesetzt, wo verifiziert)
+und wird von `assign_channel_button()` bei jeder Neuzuweisung mit
+verbundener Kamera aufgerufen — der Button erscheint dadurch sofort korrekt
+beleuchtet/unbeleuchtet, nicht erst nach dem ersten Druck. `auto_iris` ist
+ein Sonderfall (nutzt die bereits vorhandene `#GI`-Iris-Abfrage). Bewusst
+OHNE Query gelassen, wo das PDF-Zusammenspiel nicht eindeutig verifizierbar
+war: AW-UE160s `knee_manual`/`knee_auto` (Zustand hängt an zwei Kommandos,
+`OSL:45` + `OSA:2D`) sowie AK-UB300s `super_gain`/`drs` (Modell kommt in
+keiner PDF vor, nur die Befehlsfamilie selbst bei anderen Modellen).
+`trigger_button_feature()`s `"on"`/`"off"` akzeptieren seither auch eine
+Liste von Kommandos (fuer AW-UE160s zweikommandiges Knee).
 
 **Scope-Grenze:** Der Modell-Registry-Umbau deckt inzwischen sowohl den
 Button-2/3-Katalog als auch Gain/Pedestal ab (`GAIN_MIN_DB`/`GAIN_MAX_DB`/
@@ -600,8 +645,8 @@ AW-UE80); AK-UB300 (AK-UB300GJ/EJ — AK-Serie, nicht AW; weicht beim
 Gain-Befehl ab, siehe §7.2, betrifft aber nicht diesen Katalog).
 
 Beispiel AW-UE160 (`drivers/panasonic_models/aw_ue160.py`): Auto Focus, Auto
-Iris, ABB (Black), AWW (White), DRS, Flare, Gamma, Knee (Cycle:
-Off/Manual/Auto), Linear Matrix, Matrix, OSD, White Clip.
+Iris, ABB (Black), AWW (White), DRS, Flare, Gamma, Knee: Manual, Knee: Auto,
+Linear Matrix, Matrix, OSD, White Clip.
 
 Wird ein Kameramodell erkannt, für das keine Datei registriert ist, liefert
 `_apply_model_catalog()` leere `BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS` und

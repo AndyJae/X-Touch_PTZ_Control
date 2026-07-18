@@ -25,10 +25,12 @@ mit dem einfachen zentrierten Set/Step-Interface kompatibel, daher hier
 
 Knee-Korrektur (2026-07-18, §3.2.30 "Knee settings"): Knee Mode ist dort
 explizit "Only supported by the AW-HE130/AW-HR140/AW-UE150/AK-UB300" mit
-3 Werten (0=OFF/1=MANUAL/2=AUTO, `OSA:2D`) -- AK-UB300 nutzt denselben
-Top-Level-Befehl wie die AW-Modelle (nur die abhaengigen Knee-Point/-Slope-
-Werte haben eine eigene, AK-UB300-spezifische Kodierung, die hier nicht
-relevant ist). Bisher faelschlich als Toggle gefuehrt, jetzt 3-Werte-Cycle.
+3 gueltigen Werten (0=OFF/1=MANUAL/2=AUTO, `OSA:2D`) -- AK-UB300 nutzt
+denselben Top-Level-Befehl wie die AW-Modelle (nur die abhaengigen
+Knee-Point/-Slope-Werte haben eine eigene, AK-UB300-spezifische Kodierung,
+die hier nicht relevant ist). Als je ein Toggle pro Zielzustand
+(`knee_manual`/`knee_auto`) statt einem "cycle"-Feature (Nutzerentscheid
+2026-07-18, siehe drivers/panasonic_aw.py-Klassendocstring).
 
 `drs` (`OSE:33`) bewusst NICHT angefasst: die DRS-Tabelle derselben PDF
 nennt nur "AW-HE50/AW-HE60/AW-HE40/AW-UE70/AW-HE42" (3 Werte) und
@@ -36,6 +38,14 @@ nennt nur "AW-HE50/AW-HE60/AW-HE40/AW-UE70/AW-HE42" (3 Werte) und
 keiner der beiden Gruppen erwaehnt. Ob/wie AK-UB300 DRS ueberhaupt
 unterstuetzt, ist damit unbestaetigt; der bisherige Toggle wird deshalb
 weder bestaetigt noch korrigiert (kein erfundener Wert in beide Richtungen).
+
+Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `knee_manual`/
+`knee_auto` (`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle
+direkt in der o. g. PDF fuer AK-UB300 als Request/Response-Paar verifiziert.
+`super_gain` (`QSI:28`) bewusst NICHT ergaenzt (Nutzerentscheid 2026-07-18):
+`QSI:28` ist zwar bei anderen Modellen belegt, AK-UB300 selbst kommt aber in
+keiner dieser PDFs vor -- kein direkter Beleg fuer dieses Modell. `drs`
+bleibt aus demselben Grund wie oben ohne Query.
 """
 
 CAMERA_ID = "AK-UB300"
@@ -55,23 +65,18 @@ BUTTON_FEATURES: dict[str, dict] = {
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
-    "knee": {
-        "kind": "cycle",
-        "cycle": [
-            {"label": "OFF", "cmd": ["OSA:2D:0"]},
-            {"label": "Manual", "cmd": ["OSA:2D:1"]},
-            {"label": "Auto", "cmd": ["OSA:2D:2"]},
-        ],
-    },
-    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
+    "knee_manual": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "1"},
+    "knee_auto": {"kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "2"},
+    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0", "query": "QSA:2E", "query_on_value": "1"},
     "super_gain": {"kind": "toggle", "on": "OSI:28:1", "off": "OSI:28:0"},
-    "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
+    "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
 }
 
 BUTTON_FEATURE_LABELS: dict[str, str] = {
     "auto_iris": "Auto Iris",
     "drs": "DRS",
-    "knee": "Knee",
+    "knee_manual": "Knee: Manual",
+    "knee_auto": "Knee: Auto",
     "white_clip": "White Clip",
     "awb_black": "ABB (Black)",
     "aww_white": "AWW (White)",

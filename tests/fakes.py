@@ -42,7 +42,12 @@ class FakeCameraDriver:
         self.pedestal = 0
         self.set_iris_calls: list[float] = []
         self.button_feature_calls: list[tuple[str, bool | None]] = []
-        self.cycle_feature_calls: list[tuple[str, int]] = []
+        self.query_button_feature_calls: list[str] = []
+        # Steuert, was query_button_feature() als naechstes zurueckgibt (siehe
+        # core/application.py::assign_channel_button(), Nutzerentscheid
+        # 2026-07-18: Zustand beim Zuweisen sofort abfragen) -- Default None
+        # entspricht "kein Query-Kommando bekannt/Zustand unbekannt".
+        self.query_button_feature_result: bool | None = None
         self.step_gain_calls: list[int] = []
         self.step_pedestal_calls: list[int] = []
 
@@ -101,8 +106,9 @@ class FakeCameraDriver:
     async def trigger_button_feature(self, key: str, *, enabled: bool | None = None) -> None:
         self.button_feature_calls.append((key, enabled))
 
-    async def cycle_button_feature(self, key: str, target_index: int) -> None:
-        self.cycle_feature_calls.append((key, target_index))
+    async def query_button_feature(self, key: str) -> bool | None:
+        self.query_button_feature_calls.append(key)
+        return self.query_button_feature_result
 
     async def get_state(self) -> CameraState:
         return CameraState(

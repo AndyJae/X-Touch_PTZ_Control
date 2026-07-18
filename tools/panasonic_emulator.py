@@ -26,7 +26,12 @@ bestimmt:
     keine Pedestal-Daten hat,
   - welche Kamera-Feature-Button-Befehle akzeptiert werden -- nur die im
     Modell-Katalog (`BUTTON_FEATURES`) tatsaechlich vorkommenden Kommandos,
-    alles andere liefert `ER1` (z. B. hat AW-HE50 keinen "knee"-Befehl).
+    alles andere liefert `ER1` (z. B. hat AW-HE50 keinen "knee_auto"-Befehl),
+  - ob ein gesetztes Toggle-Feature per Query wieder abgefragt werden kann
+    (Nutzerauftrag 2026-07-18 "echte Zustandsabfrage beim Zuweisen") -- nur
+    fuer Features mit einem `"query"`-Eintrag (siehe
+    `_model_query_command_map()`), sonst `ER1` wie bei einem unbekannten
+    Kommando.
 Iris/ND/Bars/Fehlerstatus/F-Nummer bleiben modellunabhaengig (kein
 per-Modell-Daten dafuer vorhanden, siehe CLAUDE.md Offene Punkte).
 
@@ -78,21 +83,52 @@ DEFAULT_MODEL_ID = "AW-UE160"
 
 def _model_button_commands(module: ModuleType | None) -> set[str]:
     """Flache Menge aller literalen Kommandos aus `module.BUTTON_FEATURES`
-    (siehe drivers/panasonic_aw.py::trigger_button_feature/
-    cycle_button_feature fuer die Struktur) -- nur diese Kommandos werden
-    fuer das jeweilige Modell als Kamera-Feature-Button akzeptiert."""
+    (siehe drivers/panasonic_aw.py::trigger_button_feature fuer die
+    Struktur) -- nur diese Kommandos werden fuer das jeweilige Modell als
+    Kamera-Feature-Button akzeptiert. "on"/"off" sind normalerweise ein
+    einzelner String, koennen aber eine Liste sein (mehrwertige Parameter
+    wie Knee/DRS sind seit 2026-07-18 je ein Toggle pro Zielzustand statt
+    einem eigenen "cycle"-Feature, AW-UE160s "knee_auto" braucht z. B. zwei
+    Kommandos)."""
     commands: set[str] = set()
     for feature in getattr(module, "BUTTON_FEATURES", {}).values():
         kind = feature["kind"]
         if kind == "toggle":
-            commands.add(feature["on"])
-            commands.add(feature["off"])
+            for side in (feature["on"], feature["off"]):
+                if isinstance(side, str):
+                    commands.add(side)
+                else:
+                    commands.update(side)
         elif kind == "trigger":
             commands.add(feature["cmd"])
-        elif kind == "cycle":
-            for step in feature["cycle"]:
-                commands.update(step["cmd"])
     return commands
+
+
+def _model_query_command_map(module: ModuleType | None) -> dict[str, str]:
+    """Kontroll-Kommando-Praefix (z. B. "OSA:2D") -> Query-Kommando (z. B.
+    "QSA:2D"), abgeleitet aus `feature["query"]` je Toggle-Feature (siehe
+    drivers/panasonic_aw.py::query_button_feature(), Nutzerauftrag
+    2026-07-18 "echte Zustandsabfrage beim Zuweisen"). Mehrere Toggle-Keys
+    koennen denselben Praefix/dieselbe Query teilen (z. B. drs_low/drs_mid/
+    drs_high schreiben alle auf OSE:33, QSE:33 fragt den zuletzt gesetzten
+    Rohwert ab, unabhaengig davon, ueber welchen Toggle-Key er gesetzt
+    wurde) -- Features ohne "query" (z. B. AW-UE160s knee_manual/knee_auto,
+    bewusst nicht verifizierbar, siehe dortiger Kommentar) tauchen hier
+    nicht auf."""
+    mapping: dict[str, str] = {}
+    for feature in getattr(module, "BUTTON_FEATURES", {}).values():
+        if feature.get("kind") != "toggle":
+            continue
+        query_cmd = feature.get("query")
+        if query_cmd is None:
+            continue
+        for side in (feature.get("on"), feature.get("off")):
+            if side is None:
+                continue
+            for cmd in ([side] if isinstance(side, str) else side):
+                prefix = cmd.rsplit(":", 1)[0]
+                mapping[prefix] = query_cmd
+    return mapping
 
 
 class CameraState:
@@ -120,6 +156,13 @@ class CameraState:
         self.pedestal_data = self.pedestal_center_data if self.pedestal_center_data is not None else 0
 
         self.known_button_commands = _model_button_commands(module)
+        self.query_command_map = _model_query_command_map(module)
+        # Query-Kommando -> zuletzt gesetzter Rohwert (als Hex-String ohne
+        # Praefix, z. B. "1") -- fehlt ein Eintrag, wird "0" angenommen (der
+        # in allen Modell-Dateien durchgaengige Grundzustand jedes hier
+        # abgedeckten Toggles, siehe query_on_value in drivers/
+        # panasonic_models/*.py: nie "0" fuer den "on"-Zustand).
+        self.toggle_query_states: dict[str, str] = {}
 
         self.nd_index = 0  # THROUGH
         self.bars_on = False
@@ -196,14 +239,24 @@ def _handle_cam(cmd: str) -> str:
         return cmd  # R/B Gain Preset: nur echoen
     if cmd in ("OWS", "OAS"):
         return cmd  # AWB/ABB-Trigger: Notification-Verhalten wird hier nicht simuliert
+    if cmd in state.query_command_map.values():
+        # Query-Gegenstueck eines Toggle-Kommandos (siehe
+        # _model_query_command_map()) -- Response-Praefix ist durchgaengig
+        # "O" + Query-Kommando ohne das fuehrende "Q" (QSA:2D -> OSA:2D,
+        # QUS -> OUS, ...), so in allen lokalen PDFs bestaetigt.
+        value = state.toggle_query_states.get(cmd, "0")
+        return f"O{cmd[1:]}:{value}"
     if cmd in state.known_button_commands:
         # Kamera-Feature-Buttons (Spec §9a, modellabhaengiger Katalog aus
-        # drivers/panasonic_models/*.py): nur echoen, kein Folgezustand
-        # simuliert -- der Treiber fragt diese Werte nicht ab (keine
-        # Query-Kommandos definiert, siehe dortiger Kommentar), also reicht
-        # das Echo fuer den Smoke-Test. Kommandos ausserhalb des Katalogs des
-        # gewaehlten Modells (z.B. "knee" bei AW-HE50) fallen unten auf ER1,
-        # wie bei einer echten Kamera ohne diesen Menuepunkt.
+        # drivers/panasonic_models/*.py): Rohwert fuer eine evtl. zugehoerige
+        # Query merken (siehe query_command_map), sonst nur echoen -- kein
+        # weiterer Folgezustand simuliert. Kommandos ausserhalb des Katalogs
+        # des gewaehlten Modells (z. B. "knee_auto" bei AW-HE50) fallen oben
+        # auf ER1, wie bei einer echten Kamera ohne diesen Menuepunkt.
+        prefix, _, value = cmd.rpartition(":")
+        query_cmd = state.query_command_map.get(prefix)
+        if query_cmd is not None:
+            state.toggle_query_states[query_cmd] = value
         return cmd
 
     return f"ER1:{cmd}"

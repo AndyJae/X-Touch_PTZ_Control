@@ -13,8 +13,13 @@ die App persistiert das selbst; erneutes Klicken bei bereits verbundener
 Kamera trennt sie wieder (Registrierung bleibt erhalten), Umbenennen läuft
 über ein eigenes, vom Verbindungsstatus unabhängiges Feld. Kamera-Feature-
 Buttons (Spec §9a, z. B. DRS/Knee/Auto-Iris für AW-UE160) sind Button 2/3
-pro Kanal zuweisbar (ebenfalls Setup-Seite) und über die Control-Seite
-auslösbar. Der SELECT-Button pro Kanal löst optional einen
+pro Kanal zuweisbar — entweder auf der Setup-Seite oder direkt auf der
+Übersicht-Seite über ein Zahnrad-Icon neben dem jeweiligen Button (selber
+dynamischer Katalog, selbe Zuweisungs-Route) — und über die Control-Seite
+auslösbar; wird eine Funktion bei verbundener Kamera neu zugewiesen, fragt
+die App sofort deren Ist-Zustand ab (wo laut den lokalen PDFs ein
+Query-Kommando existiert), statt ihn erst nach dem ersten Druck zu kennen.
+Der SELECT-Button pro Kanal löst optional einen
 Bitfocus-Companion-Button fern aus (v3 HTTP-API, `core/companion.py`) —
 bewusste Erweiterung über v1 hinaus, siehe Spec §9. Kopfzeile trägt auf
 allen Seiten ein Logo (`web/static/images/`).

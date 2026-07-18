@@ -10,13 +10,20 @@ Pedestal ueber `OTP`/`QTP` wie bei HE50/HE60, aber eigene Formel/Bereich
 gleiche Pedestal-Familie wie AW-HE130/AW-HR140.
 
 DRS/Knee-Korrektur (2026-07-18, dieselbe PDF, §3.2.30 "Knee settings" +
-DRS-Tabelle): `drs` ist kein Toggle, sondern ein 4-Werte-Cycle (0=Off/
-1=Low/2=Mid/3=High, Tabelle fuer "AW-HE120/AW-HE130/AW-HR140/AW-UE150").
+DRS-Tabelle): `drs` hat 4 gueltige Werte (0=Off/1=Low/2=Mid/3=High, Tabelle
+fuer "AW-HE120/AW-HE130/AW-HR140/AW-UE150") -- als je ein Toggle pro
+Zielzustand (`drs_low`/`drs_mid`/`drs_high`) statt einem "cycle"-Feature
+(Nutzerentscheid 2026-07-18, siehe drivers/panasonic_aw.py-Klassendocstring).
 `knee` (`OSA:2D`) wurde bisher faelschlich als Toggle gefuehrt (aus
 smart_reset_work, dort nicht gegen diese PDF geprueft) -- laut §3.2.30 ist
 Knee Mode aber explizit **"Only supported by the AW-HE130/AW-HR140/
 AW-UE150/AK-UB300"**, AW-HE120 wird dort NICHT genannt. Der Eintrag wurde
 deshalb komplett entfernt (kein erfundenes/falsches Feature).
+
+Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
+(`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `osd` (`QUS`) und
+`white_clip` (`QSA:2E`) -- alle vier direkt in der o. g. PDF als
+Request/Response-Paar verifiziert.
 """
 
 CAMERA_ID = "AW-HE120"
@@ -36,27 +43,23 @@ PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
 BUTTON_FEATURES: dict[str, dict] = {
-    "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0"},
+    "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0", "query": "QAF", "query_on_value": "1"},
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
-    "drs": {
-        "kind": "cycle",
-        "cycle": [
-            {"label": "OFF", "cmd": ["OSE:33:0"]},
-            {"label": "LOW", "cmd": ["OSE:33:1"]},
-            {"label": "MID", "cmd": ["OSE:33:2"]},
-            {"label": "HIGH", "cmd": ["OSE:33:3"]},
-        ],
-    },
-    "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
-    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
+    "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
+    "drs_mid": {"kind": "toggle", "on": "OSE:33:2", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "2"},
+    "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
+    "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
+    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0", "query": "QSA:2E", "query_on_value": "1"},
 }
 
 BUTTON_FEATURE_LABELS: dict[str, str] = {
     "auto_focus": "Auto Focus",
     "auto_iris": "Auto Iris",
-    "drs": "DRS",
+    "drs_low": "DRS: Low",
+    "drs_mid": "DRS: Mid",
+    "drs_high": "DRS: High",
     "osd": "OSD",
     "white_clip": "White Clip",
     "awb_black": "ABB (Black)",

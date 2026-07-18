@@ -118,46 +118,46 @@ def test_ak_ub300_has_pedestal_but_no_gain_module_constants() -> None:
 # Kapitel 8/9 der jeweiligen PDFs verifizieren) -- bestehende, aus
 # smart_reset_work uebernommene Eintraege waren fuer diese beiden Features
 # durchgaengig als einfache Toggles kodiert, obwohl sie laut PDF mehrwertige
-# Cycles sind (oder, bei "knee" auf AW-HE120, gar nicht existieren). ---
+# Parameter sind (oder, bei "knee" auf AW-HE120, gar nicht existieren).
+# Zweite Korrektur, ebenfalls 2026-07-18 (Nutzerentscheid): mehrwertige
+# Parameter werden NICHT als "cycle"-Feature gefuehrt, sondern als je ein
+# Toggle pro Zielzustand (Button 2/3 haben nur eine einfarbige LED, koennen
+# also kein rundenweises Durchschalten anzeigen) -- "cycle" existiert nur
+# noch bei Button 1 (Encoder-Funktionsauswahl), ein komplett getrennter
+# Mechanismus. Dritte Ergaenzung, ebenfalls 2026-07-18 (Nutzerauftrag "echte
+# Zustandsabfrage beim Zuweisen"): "query"/"query_on_value" pro Feature, wo
+# ein Query-Kommando direkt in den PDFs verifiziert wurde (bei drs/knee
+# durchgaengig der Fall, siehe QSE:33/QSA:2D). ---
 
-_DRS_3VALUE_CYCLE = {
-    "kind": "cycle",
-    "cycle": [
-        {"label": "OFF", "cmd": ["OSE:33:0"]},
-        {"label": "LOW", "cmd": ["OSE:33:1"]},
-        {"label": "HIGH", "cmd": ["OSE:33:3"]},
-    ],
+_DRS_3VALUE_TOGGLES = {
+    "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
+    "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
 }
-_DRS_4VALUE_CYCLE = {
-    "kind": "cycle",
-    "cycle": [
-        {"label": "OFF", "cmd": ["OSE:33:0"]},
-        {"label": "LOW", "cmd": ["OSE:33:1"]},
-        {"label": "MID", "cmd": ["OSE:33:2"]},
-        {"label": "HIGH", "cmd": ["OSE:33:3"]},
-    ],
+_DRS_4VALUE_TOGGLES = {
+    "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
+    "drs_mid": {"kind": "toggle", "on": "OSE:33:2", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "2"},
+    "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
 }
-_KNEE_CYCLE = {
-    "kind": "cycle",
-    "cycle": [
-        {"label": "OFF", "cmd": ["OSA:2D:0"]},
-        {"label": "Manual", "cmd": ["OSA:2D:1"]},
-        {"label": "Auto", "cmd": ["OSA:2D:2"]},
-    ],
+_KNEE_TOGGLES = {
+    "knee_manual": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "1"},
+    "knee_auto": {"kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "2"},
 }
 
 
-def test_drs_is_three_value_cycle_for_he_low_tier_group() -> None:
+def test_drs_is_three_value_toggles_for_he_low_tier_group() -> None:
     # HDIntegratedCamera_InterfaceSpecifications-E.pdf, DRS-Tabelle fuer
     # "AW-HE50/AW-HE60/AW-HE40/AW-UE70/AW-HE42": nur 0/1/3 (Off/Low/High),
-    # Data-Wert 2 ist fuer diese Gruppe nicht dokumentiert.
+    # Data-Wert 2 ist fuer diese Gruppe nicht dokumentiert -- kein
+    # "drs_mid"-Eintrag.
     for model in ("AW-HE50", "AW-HE60", "AW-HE40", "AW-HE42", "AW-UE70"):
         module = resolve_model(model)
         assert module is not None, model
-        assert module.BUTTON_FEATURES["drs"] == _DRS_3VALUE_CYCLE, model
+        for key, feature in _DRS_3VALUE_TOGGLES.items():
+            assert module.BUTTON_FEATURES[key] == feature, (model, key)
+        assert "drs_mid" not in module.BUTTON_FEATURES, model
 
 
-def test_drs_is_four_value_cycle_for_higher_tier_group() -> None:
+def test_drs_is_four_value_toggles_for_higher_tier_group() -> None:
     # Dieselbe PDF, DRS-Tabelle fuer "AW-HE120/AW-HE130/AW-HR140/AW-UE150":
     # volle 4 Werte (Off/Low/Mid/High). Gilt laut den jeweils dedizierten
     # PDFs auch fuer AW-UE100 und AW-UE80/UE50/UE40/UE30.
@@ -168,7 +168,8 @@ def test_drs_is_four_value_cycle_for_higher_tier_group() -> None:
     ):
         module = resolve_model(model)
         assert module is not None, model
-        assert module.BUTTON_FEATURES["drs"] == _DRS_4VALUE_CYCLE, model
+        for key, feature in _DRS_4VALUE_TOGGLES.items():
+            assert module.BUTTON_FEATURES[key] == feature, (model, key)
 
 
 def test_knee_absent_from_he120_not_supported_per_pdf() -> None:
@@ -177,25 +178,43 @@ def test_knee_absent_from_he120_not_supported_per_pdf() -> None:
     # genannt, der Katalog hatte ihn vorher faelschlich als Toggle.
     module = resolve_model("AW-HE120")
     assert module is not None
-    assert "knee" not in module.BUTTON_FEATURES
+    assert "knee_manual" not in module.BUTTON_FEATURES
+    assert "knee_auto" not in module.BUTTON_FEATURES
 
 
-def test_knee_is_three_value_cycle_where_supported() -> None:
+def test_knee_is_toggle_pair_where_supported() -> None:
     # Dieselbe PDF-Stelle nennt AW-HE130/AW-HR140/AW-UE150/AK-UB300 als
     # Knee-faehig (0=OFF/1=MANUAL/2=AUTO); AW-UE100 hat das laut seinem
     # eigenen dedizierten PDF ebenfalls in exakt dieser Kodierung.
     for model in ("AW-HE130", "AW-HR140", "AW-UE150A", "AW-HE145", "AK-UB300", "AW-UE100"):
         module = resolve_model(model)
         assert module is not None, model
-        assert module.BUTTON_FEATURES["knee"] == _KNEE_CYCLE, model
+        for key, feature in _KNEE_TOGGLES.items():
+            assert module.BUTTON_FEATURES[key] == feature, (model, key)
 
 
 def test_knee_not_guessed_for_ue80_group_despite_menu_entry() -> None:
     # Kap. 8 der AW-UE80UE50UE40-PDF listet "Knee mode OSA:2D" als
     # existierendes Menu, aber die Werte-/Label-Tabelle liess sich nicht
-    # sauber extrahieren -- bewusst kein erfundener Cycle, "knee" bleibt
+    # sauber extrahieren -- bewusst kein erfundener Wert, "knee_*" bleibt
     # abwesend (siehe aw_ue80.py-Kommentar, CLAUDE.md Offene Punkte).
     for model in ("AW-UE80", "AW-UE50", "AW-UE40", "AW-UE30"):
         module = resolve_model(model)
         assert module is not None, model
-        assert "knee" not in module.BUTTON_FEATURES, model
+        assert "knee_manual" not in module.BUTTON_FEATURES, model
+        assert "knee_auto" not in module.BUTTON_FEATURES, model
+
+
+def test_ue160_knee_toggle_uses_command_list_for_on_side() -> None:
+    # AW-UE160s Knee braucht laut Referenzquelle zwei Kommandos je
+    # Zielzustand (OSL:45 aktiviert den manuellen/Auto-Modus ueberhaupt
+    # erst, OSA:2D waehlt Manual/Auto) -- "on" ist deshalb eine Liste,
+    # "off" bleibt ein einzelner, gemeinsamer Befehl.
+    from drivers.panasonic_models import aw_ue160
+
+    assert aw_ue160.BUTTON_FEATURES["knee_manual"] == {
+        "kind": "toggle", "on": ["OSL:45:1", "OSA:2D:1"], "off": "OSL:45:0",
+    }
+    assert aw_ue160.BUTTON_FEATURES["knee_auto"] == {
+        "kind": "toggle", "on": ["OSL:45:1", "OSA:2D:2"], "off": "OSL:45:0",
+    }

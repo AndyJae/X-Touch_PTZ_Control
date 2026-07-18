@@ -181,24 +181,22 @@ def test_apply_model_catalog_resolves_known_model() -> None:
     # Spec §9a, Modell-Registry-Umbau: BUTTON_FEATURES ist seitdem
     # modellabhaengig statt fest auf AW-UE160 -- AW-HE50 hat laut Quelle
     # (drivers/panasonic_models/aw_he50.py, portiert aus smart_reset_work)
-    # z.B. keinen "knee"-Eintrag, im Unterschied zu AW-UE160. `drs` ist ein
-    # 3-Werte-Cycle (0=Off/1=Low/3=High, Data-Wert 2 nicht belegt), siehe
-    # HDIntegratedCamera_InterfaceSpecifications-E.pdf-Verifikation
-    # 2026-07-18 in aw_he50.py.
+    # z.B. keinen "knee"-Eintrag, im Unterschied zu AW-UE160. `drs` hat 3
+    # gueltige Werte (Off/Low/High, Data-Wert 2 nicht belegt), als je ein
+    # Toggle pro Zielzustand (Nutzerentscheid 2026-07-18: kein "cycle"-
+    # Feature mehr auf Button 2/3), siehe aw_he50.py.
     driver = PanasonicAWDriver(host="127.0.0.1", port=80)
     driver.model = "AW-HE50"
     driver._apply_model_catalog()
 
-    assert driver.BUTTON_FEATURES["drs"] == {
-        "kind": "cycle",
-        "cycle": [
-            {"label": "OFF", "cmd": ["OSE:33:0"]},
-            {"label": "LOW", "cmd": ["OSE:33:1"]},
-            {"label": "HIGH", "cmd": ["OSE:33:3"]},
-        ],
+    assert driver.BUTTON_FEATURES["drs_low"] == {
+        "kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1",
+    }
+    assert driver.BUTTON_FEATURES["drs_high"] == {
+        "kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3",
     }
     assert "knee" not in driver.BUTTON_FEATURES
-    assert driver.BUTTON_FEATURE_LABELS["drs"] == "DRS"
+    assert driver.BUTTON_FEATURE_LABELS["drs_low"] == "DRS: Low"
 
 
 def test_apply_model_catalog_resolves_alias_to_same_catalog_as_base_model() -> None:
@@ -418,7 +416,7 @@ def test_connect_resolves_button_catalog_from_detected_model(monkeypatch) -> Non
 
     assert driver.model == "AW-HE50"
     assert driver.connected is True
-    assert "drs" in driver.BUTTON_FEATURES
+    assert "drs_low" in driver.BUTTON_FEATURES
     assert "knee" not in driver.BUTTON_FEATURES
 
 
@@ -530,7 +528,11 @@ def test_trigger_button_feature_unknown_key_raises() -> None:
         _run(driver.trigger_button_feature("does_not_exist", enabled=True))
 
 
-def test_cycle_button_feature_sends_all_commands_of_target_step() -> None:
+def test_trigger_button_feature_toggle_on_sends_command_list() -> None:
+    # AW-UE160s "knee_auto" braucht zwei Kommandos fuer "on" (OSL:45:1 +
+    # OSA:2D:2) -- Nutzerentscheid 2026-07-18: Knee ist kein "cycle"-Feature
+    # mehr, sondern je ein Toggle pro Zielzustand; "on"/"off" duerfen dafuer
+    # eine Liste statt eines einzelnen Kommandos sein.
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -538,7 +540,7 @@ def test_cycle_button_feature_sends_all_commands_of_target_step() -> None:
         return httpx.Response(200, text="")
 
     driver = _build_driver(handler)
-    _run(driver.cycle_button_feature("knee", 2))  # "Auto": OSL:45:1 + OSA:2D:2
+    _run(driver.trigger_button_feature("knee_auto", enabled=True))
 
     assert seen == [
         "http://192.168.0.10/cgi-bin/aw_cam?cmd=OSL:45:1&res=1",
@@ -546,10 +548,65 @@ def test_cycle_button_feature_sends_all_commands_of_target_step() -> None:
     ]
 
 
-def test_cycle_button_feature_out_of_range_raises() -> None:
+def test_trigger_button_feature_toggle_off_sends_single_shared_command() -> None:
+    # "off" ist bei knee_manual/knee_auto derselbe einzelne Befehl (OSL:45:0)
+    # -- als String, nicht als Liste, um zu pruefen, dass beide Formen
+    # funktionieren.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    _run(driver.trigger_button_feature("knee_auto", enabled=False))
+
+    assert seen == ["http://192.168.0.10/cgi-bin/aw_cam?cmd=OSL:45:0&res=1"]
+
+
+def test_query_button_feature_returns_true_when_response_matches_on_value() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "cmd=QSA:0D" in str(request.url)
+        return httpx.Response(200, text="OSA:0D:1")
+
+    driver = _build_driver(handler)
+    assert _run(driver.query_button_feature("drs")) is True
+
+
+def test_query_button_feature_returns_false_when_response_differs() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="OSA:0D:0")
+
+    driver = _build_driver(handler)
+    assert _run(driver.query_button_feature("drs")) is False
+
+
+def test_query_button_feature_returns_none_without_known_query_command() -> None:
+    # AW-UE160s knee_manual/knee_auto haben bewusst KEIN Query-Kommando
+    # (siehe aw_ue160.py-Kommentar: Zustand haengt an zwei Befehlen, nicht
+    # zuverlaessig aus einer einzelnen Abfrage ableitbar).
     driver = _build_driver(lambda request: httpx.Response(200, text=""))
-    with pytest.raises(ValueError):
-        _run(driver.cycle_button_feature("knee", 99))
+    assert _run(driver.query_button_feature("knee_auto")) is None
+
+
+def test_query_button_feature_returns_none_for_unknown_key() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    assert _run(driver.query_button_feature("does_not_exist")) is None
+
+
+def test_query_button_feature_returns_none_on_camera_error() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text="ER1:QSA:0D"))
+    assert _run(driver.query_button_feature("drs")) is None
+
+
+def test_query_button_feature_auto_iris_uses_existing_iris_query() -> None:
+    # Sonderfall wie in trigger_button_feature(): nutzt #GI (Mode-Bit) statt
+    # eines eigenen Query-Kommandos fuer auto_iris.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="gi7ff1")  # Mode 1 = Auto
+
+    driver = _build_driver(handler)
+    assert _run(driver.query_button_feature("auto_iris")) is True
 
 
 # --- Update-Notification-Kanal / Lens-Info (§7.3) ---------------------------

@@ -192,6 +192,20 @@ async def api_rename_camera(channel_index: int, request: Request) -> JSONRespons
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/channels/{channel_index}/available-buttons")
+async def api_available_channel_buttons(channel_index: int, request: Request) -> JSONResponse:
+    """Feature-Katalog des am Kanal verbundenen Kameramodells (`key -> Label`,
+    siehe `available_button_features()`) -- fuer das Zahnrad-Popover auf der
+    Übersicht-Seite (Nutzerauftrag 2026-07-18: Funktion direkt dort waehlen
+    koennen, ohne auf die Setup-Seite wechseln zu muessen). Leer, wenn der
+    Kanal keine (verbundene) Kamera hat."""
+    state = _ptz_state(request)
+    entry = state.mapping.get_channel("fader", channel_index)
+    if entry is None:
+        return JSONResponse({"features": {}})
+    return JSONResponse({"features": available_button_features(state, entry.camera_id)})
+
+
 @app.post("/api/channels/{channel_index}/buttons/{button_slot}")
 async def api_assign_channel_button(channel_index: int, button_slot: str, request: Request) -> JSONResponse:
     state = _ptz_state(request)

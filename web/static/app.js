@@ -255,8 +255,8 @@ function initButtonAssignmentSelects() {
 }
 
 // Übersicht-Seite: Button 2/3 lösen die auf der Setup-Seite zugewiesene
-// Kamera-Feature-Aktion aus (Spec §9a). Der neue Zustand (an/aus/Cycle-Label)
-// kommt über den WebSocket-Snapshot zurück, siehe applySurfaceSnapshot().
+// Kamera-Feature-Aktion aus (Spec §9a). Der neue Zustand (an/aus) kommt über
+// den WebSocket-Snapshot zurück, siehe applySurfaceSnapshot().
 function initFeatureButtons() {
     document.querySelectorAll("[data-feature-btn]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -270,6 +270,77 @@ function initFeatureButtons() {
             } finally {
                 button.disabled = false;
             }
+        });
+    });
+}
+
+// Übersicht-Seite: Zahnrad neben Button 2/3 oeffnet ein Popover mit dem
+// echten, dynamischen Funktionskatalog des am Kanal verbundenen
+// Kameramodells (Nutzerauftrag 2026-07-18) -- keine zweite Seite (Setup)
+// mehr noetig, um eine Funktion zuzuweisen. Katalog kommt bei jedem Oeffnen
+// frisch von GET /api/channels/{i}/available-buttons (nicht beim Seitenladen
+// gecacht, falls sich das Kameramodell durch Reconnect aendert). Auswahl
+// ruft denselben POST /api/channels/{i}/buttons/{slot} wie die Setup-Seite
+// auf -- Persistenz in config.yaml UND (dort serverseitig, siehe
+// assign_channel_button()) eine sofortige Zustandsabfrage, deren Ergebnis
+// ueber den naechsten WebSocket-Snapshot zurueckkommt und applySurfaceSnapshot()
+// den Button korrekt beleuchtet/unbeleuchtet zeigen laesst -- kein manuelles
+// Text-/Zustands-Setzen hier noetig.
+function initFeatureGearMenu() {
+    document.querySelectorAll("[data-gear-btn]").forEach((gear) => {
+        const row = gear.closest(".feature-btn-row");
+        const popover = row.querySelector("[data-feature-popover]");
+        const channelIndex = gear.dataset.channelIndex;
+        const buttonSlot = gear.dataset.buttonSlot;
+
+        gear.addEventListener("click", async (evt) => {
+            evt.stopPropagation();
+            const wasOpen = !popover.hidden;
+            document.querySelectorAll("[data-feature-popover]").forEach((other) => {
+                other.hidden = true;
+            });
+            if (wasOpen) return;
+
+            popover.innerHTML = "<button type=\"button\" class=\"feature-popover-option\" disabled>Lädt…</button>";
+            popover.hidden = false;
+            try {
+                const res = await fetch(`/api/channels/${channelIndex}/available-buttons`);
+                const data = await res.json();
+                popover.innerHTML = "";
+                const noneOption = document.createElement("button");
+                noneOption.type = "button";
+                noneOption.className = "feature-popover-option";
+                noneOption.textContent = "—";
+                noneOption.dataset.featureKey = "";
+                popover.appendChild(noneOption);
+                Object.entries(data.features || {}).forEach(([key, label]) => {
+                    const option = document.createElement("button");
+                    option.type = "button";
+                    option.className = "feature-popover-option";
+                    option.textContent = label;
+                    option.dataset.featureKey = key;
+                    popover.appendChild(option);
+                });
+                popover.querySelectorAll(".feature-popover-option[data-feature-key]").forEach((option) => {
+                    option.addEventListener("click", async (optEvt) => {
+                        optEvt.stopPropagation();
+                        popover.hidden = true;
+                        await fetch(`/api/channels/${channelIndex}/buttons/${buttonSlot}`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ feature_key: option.dataset.featureKey || null }),
+                        });
+                    });
+                });
+            } catch (err) {
+                popover.innerHTML = "<button type=\"button\" class=\"feature-popover-option\" disabled>Fehler</button>";
+            }
+        });
+    });
+
+    document.addEventListener("click", () => {
+        document.querySelectorAll("[data-feature-popover]").forEach((popover) => {
+            popover.hidden = true;
         });
     });
 }
@@ -460,6 +531,7 @@ document.addEventListener("DOMContentLoaded", () => {
         initFaderDrag(ws);
         initEncoderKnob(ws);
         initFeatureButtons();
+        initFeatureGearMenu();
         initSelectButtons();
     }
 });

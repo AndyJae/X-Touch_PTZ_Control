@@ -529,6 +529,83 @@ button:last-child {
     box-shadow: 0 0 10px rgba(88, 208, 255, 0.6);
 }
 
+/* Zahnrad + Popover zur Funktionsauswahl direkt auf der Surface-Seite,
+   siehe app.js initFeatureGearMenu(). */
+.feature-btn-row {
+    position: relative;
+    display: flex;
+    gap: 3px;
+}
+
+.feature-btn-row .surf-btn {
+    flex: 1;
+    min-width: 0;
+}
+
+.gear-btn {
+    flex: 0 0 18px;
+    width: 18px;
+    padding: 0;
+    font-size: 0.65rem;
+    line-height: 1;
+    border-radius: 4px;
+    border: 1px solid rgba(0, 0, 0, 0.6);
+    background: linear-gradient(180deg, #3a3f47, #232629);
+    color: #8a94a3;
+    cursor: pointer;
+}
+
+.gear-btn:hover {
+    color: #fff;
+}
+
+.gear-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.feature-popover {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    margin-top: 3px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px;
+    background: #1b1e22;
+    border: 1px solid rgba(0, 0, 0, 0.7);
+    border-radius: 4px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.6);
+}
+
+.feature-popover[hidden] {
+    display: none;
+}
+
+.feature-popover-option {
+    padding: 4px 6px;
+    font-size: 0.6rem;
+    text-align: left;
+    background: #2a2e33;
+    color: #cfd8e3;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.feature-popover-option:disabled {
+    color: #6b7280;
+    cursor: default;
+}
+
+.feature-popover-option:hover {
+    background: #3a3f47;
+    color: #fff;
+}
+
 .meter-fader-row {
     display: flex;
     gap: 6px;

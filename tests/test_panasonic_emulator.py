@@ -92,17 +92,58 @@ def test_pedestal_control_updates_state_with_correct_scale() -> None:
     assert emu._handle_cam("QTP") == "OTP:12C"
 
 
+def test_toggle_feature_query_returns_last_set_value() -> None:
+    # AW-HE50 hat "drs_low"/"drs_high" (OSE:33) mit bestaetigter Query
+    # QSE:33 (siehe drivers/panasonic_models/aw_he50.py).
+    emu.state = emu.CameraState("AW-HE50")
+    assert emu._handle_cam("QSE:33") == "OSE:33:0"  # Grundzustand, nichts gesetzt
+
+    assert emu._handle_cam("OSE:33:1") == "OSE:33:1"
+    assert emu._handle_cam("QSE:33") == "OSE:33:1"
+
+    assert emu._handle_cam("OSE:33:3") == "OSE:33:3"
+    assert emu._handle_cam("QSE:33") == "OSE:33:3"
+
+
+def test_toggle_feature_query_with_dus_ous_prefix_mismatch() -> None:
+    # OSD (DUS control, QUS query) ist der eine Sonderfall mit
+    # unterschiedlichem Control-/Response-Praefix (Antwort "OUS", nicht
+    # "ODUS") -- bestaetigt in HDIntegratedCamera_InterfaceSpecifications-
+    # E.pdf Tabelle 3.2.22.
+    emu.state = emu.CameraState("AW-HE50")
+    assert emu._handle_cam("DUS:1") == "DUS:1"
+    assert emu._handle_cam("QUS") == "OUS:1"
+
+
+def test_toggle_feature_query_unsupported_for_features_without_query() -> None:
+    # AW-UE160s knee_manual/knee_auto haben bewusst kein "query" (siehe
+    # aw_ue160.py) -- die Query-Kommandos existieren fuer dieses Modell also
+    # gar nicht im Katalog, ER1 wie ein unbekannter Befehl.
+    assert _handle("AW-UE160", "QSA:2D") == "ER1:QSA:2D"
+
+
 def test_button_feature_command_only_accepted_for_models_that_have_it() -> None:
-    # "knee" (OSL:45:.../OSA:2D:...) ist nur im AW-UE160-Katalog, nicht bei
-    # AW-HE50 (siehe drivers/panasonic_models/aw_ue160.py vs. aw_he50.py).
+    # "knee_manual"/"knee_auto" (OSL:45:.../OSA:2D:...) sind nur im
+    # AW-UE160-Katalog, nicht bei AW-HE50 (siehe
+    # drivers/panasonic_models/aw_ue160.py vs. aw_he50.py).
     assert _handle("AW-UE160", "OSL:45:1") == "OSL:45:1"
     assert _handle("AW-HE50", "OSL:45:1") == "ER1:OSL:45:1"
 
-    # "drs" ist bei AW-HE50 OSE:33:.../bei AW-UE160 OSA:0D:... -- jeweils nur
-    # das eigene Kommando wird akzeptiert.
+    # "drs_low" ist bei AW-HE50 OSE:33:1/bei AW-UE160 gibt es nur den
+    # eigenstaendigen "drs"-Toggle auf OSA:0D:... -- jeweils nur das eigene
+    # Kommando wird akzeptiert.
     assert _handle("AW-HE50", "OSE:33:1") == "OSE:33:1"
     assert _handle("AW-UE160", "OSE:33:1") == "ER1:OSE:33:1"
     assert _handle("AW-UE160", "OSA:0D:1") == "OSA:0D:1"
+
+
+def test_button_feature_toggle_with_command_list_accepts_every_command() -> None:
+    # AW-UE160s "knee_auto" hat "on": ["OSL:45:1", "OSA:2D:2"] (Liste statt
+    # einzelnem String, siehe drivers/panasonic_aw.py::trigger_button_feature)
+    # -- der Emulator muss beide Kommandos einzeln kennen.
+    assert _handle("AW-UE160", "OSL:45:1") == "OSL:45:1"
+    assert _handle("AW-UE160", "OSA:2D:2") == "OSA:2D:2"
+    assert _handle("AW-UE160", "OSL:45:0") == "OSL:45:0"  # gemeinsames "off"
 
 
 def test_unknown_command_returns_er1_regardless_of_model() -> None:

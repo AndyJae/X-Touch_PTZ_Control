@@ -213,6 +213,59 @@ def test_assign_channel_button_invalid_slot_raises(monkeypatch, tmp_path) -> Non
         _run(assign_channel_button(state, 1, "button1", "drs"))
 
 
+def test_assign_channel_button_queries_state_when_camera_connected(monkeypatch, tmp_path) -> None:
+    # Nutzerauftrag 2026-07-18: beim Zuweisen sofort den Ist-Zustand abfragen
+    # (siehe drivers/panasonic_aw.py::query_button_feature()), statt ihn erst
+    # nach dem ersten Druck lokal zu kennen.
+    state = _build_state(monkeypatch, config_path=str(tmp_path / "config.yaml"))
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.query_button_feature_result = True
+
+    _run(assign_channel_button(state, 1, "button2", "drs"))
+
+    assert driver.query_button_feature_calls == ["drs"]
+    assert state.state_store.get_camera("cam1").feature_states["drs"] is True
+
+
+def test_assign_channel_button_leaves_state_unknown_when_query_returns_none(monkeypatch, tmp_path) -> None:
+    # query_button_feature() liefert None, wenn kein Query-Kommando bekannt
+    # ist (Default des Fakes) -- dann bleibt der Zustand wie bisher unbekannt,
+    # kein erfundener Fallback.
+    state = _build_state(monkeypatch, config_path=str(tmp_path / "config.yaml"))
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+
+    _run(assign_channel_button(state, 1, "button2", "drs"))
+
+    assert driver.query_button_feature_calls == ["drs"]
+    assert "drs" not in state.state_store.get_camera("cam1").feature_states
+
+
+def test_assign_channel_button_skips_query_when_camera_not_connected(monkeypatch, tmp_path) -> None:
+    state = _build_state(monkeypatch, config_path=str(tmp_path / "config.yaml"))
+    driver = state.drivers["cam1"]
+    driver.query_button_feature_result = True  # sollte ignoriert werden
+
+    _run(assign_channel_button(state, 1, "button2", "drs"))
+
+    assert driver.query_button_feature_calls == []
+    assert "drs" not in state.state_store.get_camera("cam1").feature_states
+
+
+def test_assign_channel_button_skips_query_when_clearing_assignment(monkeypatch, tmp_path) -> None:
+    state = _build_state(monkeypatch, config_path=str(tmp_path / "config.yaml"))
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.query_button_feature_result = True
+    _run(assign_channel_button(state, 1, "button2", "drs"))
+    driver.query_button_feature_calls.clear()
+
+    _run(assign_channel_button(state, 1, "button2", None))
+
+    assert driver.query_button_feature_calls == []
+
+
 def test_apply_button_action_toggle_flips_state(monkeypatch) -> None:
     state = _build_state(monkeypatch, config=_config_with_button("button2", "drs"))
     _run(connect_camera(state, "cam1"))
@@ -235,17 +288,6 @@ def test_apply_button_action_trigger_ignores_state(monkeypatch) -> None:
     driver = state.drivers["cam1"]
     assert driver.button_feature_calls == [("awb_black", None), ("awb_black", None)]
     assert "awb_black" not in state.state_store.get_camera("cam1").feature_states
-
-
-def test_apply_button_action_cycle_wraps(monkeypatch) -> None:
-    state = _build_state(monkeypatch, config=_config_with_button("button3", "knee"))
-    _run(connect_camera(state, "cam1"))
-
-    for _ in range(3):
-        _run(apply_button_action(state, 1, "button3"))
-
-    driver = state.drivers["cam1"]
-    assert driver.cycle_feature_calls == [("knee", 1), ("knee", 2), ("knee", 0)]
 
 
 def test_apply_button_action_without_assignment_is_noop(monkeypatch) -> None:

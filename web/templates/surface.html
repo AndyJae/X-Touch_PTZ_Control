@@ -42,12 +42,25 @@
                 <button type="button" class="surf-btn" data-encoder-fn-select data-channel-index="{{ ch.index }}">{{ enc.function | replace('_', ' ') | upper }}</button>
                 {% for slot in ["button2", "button3"] %}
                 {% set assigned = ch.buttons[slot] %}
-                <button type="button" class="surf-btn {{ 'is-on' if assigned and assigned.state }}"
-                        data-feature-btn data-channel-index="{{ ch.index }}" data-button-slot="{{ slot }}"
-                        {{ "disabled" if not assigned }}
-                        title="{{ assigned.label if assigned else 'no function assigned (Setup page)' }}">
-                    {{ assigned.label if assigned else ('Button ' ~ (loop.index + 1)) }}
-                </button>
+                {# Zahnrad oeffnet ein Popover zur Funktionsauswahl direkt hier auf der
+                   Surface-Seite (Nutzerauftrag 2026-07-18), statt auf die Setup-Seite
+                   wechseln zu muessen -- Katalog wird beim Oeffnen per
+                   GET /api/channels/{i}/available-buttons dynamisch geladen (siehe
+                   app.js initFeatureGearMenu()), Auswahl ruft denselben
+                   POST /api/channels/{i}/buttons/{slot} wie die Setup-Seite auf. #}
+                <div class="feature-btn-row">
+                    <button type="button" class="surf-btn {{ 'is-on' if assigned and assigned.state }}"
+                            data-feature-btn data-channel-index="{{ ch.index }}" data-button-slot="{{ slot }}"
+                            {{ "disabled" if not assigned }}
+                            title="{{ assigned.label if assigned else 'no function assigned' }}">
+                        {{ assigned.label if assigned else ('Button ' ~ (loop.index + 1)) }}
+                    </button>
+                    <button type="button" class="gear-btn" data-gear-btn
+                            data-channel-index="{{ ch.index }}" data-button-slot="{{ slot }}"
+                            {{ "disabled" if not ch.connected }}
+                            title="Funktion wählen">⚙</button>
+                    <div class="feature-popover" data-feature-popover hidden></div>
+                </div>
                 {% endfor %}
                 <button type="button" class="surf-btn btn-select" data-select-btn data-channel-index="{{ ch.index }}"
                         {{ "disabled" if not ch.companion }}

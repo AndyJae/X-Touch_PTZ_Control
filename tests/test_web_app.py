@@ -274,3 +274,33 @@ def test_register_camera_endpoint_empty_host_returns_400(client) -> None:
     response = client.post("/api/channels/2/camera", json={"name": "", "host": "", "port": ""})
 
     assert response.status_code == 400
+
+
+def test_available_channel_buttons_endpoint_returns_connected_models_catalog(client) -> None:
+    # cam1 ist in TEST_CONFIG Kanal 1 zugeordnet und verbindet beim Start
+    # (FakeCameraDriver meldet immer "AW-UE160", siehe tests/fakes.py).
+    response = client.get("/api/channels/1/available-buttons")
+
+    assert response.status_code == 200
+    features = response.json()["features"]
+    assert features["drs"] == "DRS"
+    assert "knee_manual" in features
+
+
+def test_available_channel_buttons_endpoint_empty_for_unmapped_channel(client) -> None:
+    response = client.get("/api/channels/5/available-buttons")
+
+    assert response.status_code == 200
+    assert response.json()["features"] == {}
+
+
+def test_assign_channel_button_endpoint_persists_and_queries_state(client) -> None:
+    driver = web_app.app.state.ptz.drivers["cam1"]
+    driver.query_button_feature_result = True
+
+    response = client.post("/api/channels/1/buttons/button2", json={"feature_key": "drs"})
+
+    assert response.status_code == 200
+    assert driver.query_button_feature_calls == ["drs"]
+    cam_state = web_app.app.state.ptz.state_store.get_camera("cam1")
+    assert cam_state.feature_states["drs"] is True

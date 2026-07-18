@@ -267,19 +267,101 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
     echter 0/1-Toggle, keine Korrektur nötig.
   Emulator (`tools/panasonic_emulator.py`) brauchte keine Änderung — er
   liest `BUTTON_FEATURES` bereits vollständig dynamisch aus dem
-  aufgelösten Modell-Modul. Getestet in `tests/test_panasonic_models.py`
-  (`test_drs_is_three_value_cycle_for_he_low_tier_group`,
-  `test_drs_is_four_value_cycle_for_higher_tier_group`,
-  `test_knee_absent_from_he120_not_supported_per_pdf`,
-  `test_knee_is_three_value_cycle_where_supported`,
-  `test_knee_not_guessed_for_ue80_group_despite_menu_entry`), live gegen
-  Emulator verifiziert (HE50 lehnt `OSE:33:2` ab, HE120 lehnt jedes
-  `OSA:2D`-Kommando ab, UE100 akzeptiert `OSA:2D:2`).
+  aufgelösten Modell-Modul. Live gegen Emulator verifiziert (HE50 lehnt
+  `OSE:33:2` ab, HE120 lehnt jedes `OSA:2D`-Kommando ab, UE100 akzeptiert
+  `OSA:2D:2`). **Hinweis:** das hier beschriebene "cycle"-Feature (Druck
+  schaltet rundenweise durch alle Werte) wurde noch am selben Tag durch
+  Toggle-pro-Zielzustand ersetzt, siehe nächster Punkt — die Test-Namen in
+  diesem Punkt sind daher historisch, nicht mehr im Code vorhanden.
   **Weiterhin offen:** der Rest des Katalogs (`auto_focus`, `auto_iris`,
   `awb_black`, `aww_white`, `osd`, `white_clip`, `matrix`, `gamma`, `flare`,
   `linear_matrix`, `adaptive_matrix`, `night_mode`, `super_gain` u. Ä.) ist
   weiterhin nur gegen smart_reset_work verifiziert, nicht gegen die PDFs;
   ebenso die genauen Knee-Werte für AW-UE80/UE50/UE40/UE30.
+- ~~Cycle-Features (Knee, DRS) auf Button 2/3 waren rundenweise durchschalt-
+  bar, aber ihr aktueller Zustand war nirgends ablesbar (Bugreport
+  2026-07-18: Button-Text zeigt nur den statischen Feature-Namen, `is-on`
+  ist bei einem Cycle-Index nur binär truthy/falsy, unterscheidet nicht
+  zwischen z. B. "Manual" und "Auto")~~ **Umgesetzt (Nutzerentscheid
+  2026-07-18):** kein `"kind":"cycle"`-Feature-Typ mehr auf Button 2/3 —
+  jeder sinnvolle Zielzustand bekommt stattdessen einen eigenen, normalen
+  Toggle-Eintrag (`knee_manual`/`knee_auto` statt `knee`; `drs_low`/
+  `drs_mid`/`drs_high` statt `drs`). Grund: Button 2/3 haben nur eine
+  einzelne, nicht mehrfarbige LED und können echt nur an/aus zeigen, kein
+  rundenweises Durchschalten sinnvoll darstellen — das Cycle-Konzept bleibt
+  exklusiv bei Button 1 (Encoder-Funktionsauswahl, komplett getrennter
+  Mechanismus). `drivers/panasonic_aw.py::trigger_button_feature()`
+  akzeptiert seither für "on"/"off" auch eine Liste von Kommandos (nicht
+  nur einen String) — AW-UE160s Knee braucht z. B. zwei Kommandos je
+  Zielzustand (`["OSL:45:1", "OSA:2D:2"]` für Auto). `cycle_button_feature()`
+  (Treiber) sowie der `"cycle"`-Zweig in `core/application.py::
+  apply_button_action()` wurden komplett entfernt (kein Feature nutzt sie
+  mehr). Betroffen: alle Modelle mit `drs`/`knee` im Katalog (praktisch
+  jedes AW-Modell) -- AK-UB300s `drs` blieb unberührt, da nie als Cycle
+  gefuehrt (weiterhin ein einfacher Toggle). AW-UE80/UE50/UE40/UE30 haben
+  weiterhin kein `knee_*` (unveränderter offener Punkt, siehe oben). Getestet in
+  `tests/test_panasonic_models.py` (`test_drs_is_three_value_toggles_for_
+  he_low_tier_group`, `test_drs_is_four_value_toggles_for_higher_tier_
+  group`, `test_knee_absent_from_he120_not_supported_per_pdf`,
+  `test_knee_is_toggle_pair_where_supported`,
+  `test_ue160_knee_toggle_uses_command_list_for_on_side`),
+  `tests/test_panasonic.py` (`test_trigger_button_feature_toggle_on_sends_
+  command_list`), `tests/test_panasonic_emulator.py`
+  (`test_button_feature_toggle_with_command_list_accepts_every_command`) --
+  dabei einen echten Bug im Emulator gefunden und behoben: `_model_button_
+  commands()` versuchte `set.add()` auf eine Liste (TypeError) fuer
+  Toggle-Kommandos mit Listen-"on"/"off", jetzt behoben.
+- ~~Button-2/3-Funktion konnte nur auf der Setup-Seite zugewiesen werden --
+  Bugreport 2026-07-18: kein Weg, auf der Übersicht-Seite direkt eine
+  Funktion zu waehlen, ohne die Seite zu wechseln~~ **Umgesetzt (Nutzer-
+  auftrag 2026-07-18, ueber einen Zahnrad-Prototyp iterativ entstanden):**
+  Zahnrad-Icon (⚙) neben Button 2/3 auf der Übersicht-Seite oeffnet ein
+  Popover mit dem echten, dynamischen Funktionskatalog des verbundenen
+  Kameramodells (`GET /api/channels/{i}/available-buttons`, neue Route,
+  liest `available_button_features()` -- bisher nur von der Setup-Seite
+  serverseitig gerendert). Auswahl ruft denselben
+  `POST /api/channels/{i}/buttons/{slot}` wie die Setup-Seite auf, keine
+  zweite Zuweisungs-Logik.
+  **Zusaetzlich (Nutzerauftrag):** `assign_channel_button()` fragt bei
+  verbundener Kamera sofort den Ist-Zustand des neu zugewiesenen Toggle-
+  Features ab (`PanasonicAWDriver.query_button_feature()`, neu), damit der
+  Button in der Web-UI sofort korrekt beleuchtet/unbeleuchtet erscheint,
+  statt erst nach dem ersten Druck einen (dann nur lokal geratenen)
+  Zustand zu haben. Dafuer wurden ALLE Kommandos des aktuellen Button-
+  Katalogs gegen die lokalen PDFs auf ein Query-Gegenstueck geprueft
+  (Nutzerauftrag "mit den vorhandenen PDFs verifizieren, bei Unklarheiten
+  fragen") -- Ergebnis: `query`/`query_on_value` jetzt bei praktisch jedem
+  Toggle gesetzt (`auto_focus`→`QAF`, `osd`→`QUS` [Antwort als `OUS:
+  [Data]`, einziger Fall mit abweichendem Antwort-Praefix], `white_clip`→
+  `QSA:2E`, `drs*`→`QSE:33` bzw. AW-UE160 `QSA:0D`, `knee_manual`/
+  `knee_auto`→`QSA:2D`, AW-UE160-exklusiv `flare`→`QSA:11`, `gamma`→
+  `QSA:0A`, `linear_matrix`→`QSL:6C`, `matrix`→`QSA:84`, `adaptive_matrix`
+  [AW-UE150A/AW-HE145]→`QSJ:4F`, `night_mode` [AW-HE40-Gruppe]→`QSI:1A`).
+  **Bewusst OHNE Query gelassen** (Nutzerentscheid, kein erfundener Wert):
+  AW-UE160s `knee_manual`/`knee_auto` (Zustand haengt an zwei Kommandos,
+  `OSL:45` + `OSA:2D` -- ob `OSA:2D` seinen Wert behaelt, wenn `OSL:45`
+  auf 0 steht, ist nicht dokumentiert) sowie AK-UB300s `super_gain`
+  (`QSI:28` ist bei anderen Modellen belegt, AK-UB300 selbst kommt aber in
+  keiner PDF vor) und `drs` (schon vorher unbestaetigt, siehe oben).
+  `trigger_button_feature()` akzeptiert seit dieser Arbeit fuer "on"/"off"
+  auch eine Liste von Kommandos (nicht nur einen String) -- unveraendert
+  fuer alle bestehenden Ein-Kommando-Toggles, nur fuer AW-UE160s Knee
+  genutzt (siehe oben, frueherer Punkt).
+  Emulator (`tools/panasonic_emulator.py`) erweitert: `_model_query_
+  command_map()` leitet aus `feature["query"]` eine Kontroll-Praefix->
+  Query-Kommando-Zuordnung ab und beantwortet Query-Kommandos jetzt mit
+  dem zuletzt gesetzten Rohwert (Default "0", der in jedem Modell
+  durchgaengige Grundzustand) -- Response-Praefix ist immer "O" + Query-
+  Kommando ohne das fuehrende "Q" (bestaetigtes Muster ueber alle PDFs,
+  einzige Ausnahme `QUS`→`OUS` folgt demselben Muster trotz
+  abweichendem Control-Praefix `DUS`).
+  Getestet in `tests/test_panasonic.py` (`test_query_button_feature_*`),
+  `tests/test_application.py` (`test_assign_channel_button_queries_state_
+  when_camera_connected` u. a.), `tests/test_web_app.py`
+  (`test_available_channel_buttons_endpoint_*`,
+  `test_assign_channel_button_endpoint_persists_and_queries_state`),
+  `tests/test_panasonic_emulator.py` (`test_toggle_feature_query_*`).
+  203 Tests bestehen (vorher 187).
 - Umfang etwaiger PTZ-Control-eigener Zusatzfunktionen über den portierten
   Katalog hinaus (§9a)
 - ~~Encoder-Funktion (Gain/Pedestal, §9) hat noch keine Anwendungslogik in
@@ -310,10 +392,41 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   `web/templates/surface.html` ist entfallen), und die Button-1-Spalte ist
   aus der Setup-Seite entfernt (Button 1 war dort ohnehin nur ein
   deaktiviertes Platzhalter-Dropdown).
-- MIDI-Buttons Solo/Mute/Select sind Rx-seitig verifiziert (siehe oben), aber nicht mit
+- ~~MIDI-Buttons Solo/Mute/Select sind Rx-seitig verifiziert (siehe oben), aber nicht mit
   Kamera-Feature-Aktionen bzw. Companion-SELECT verdrahtet. Rec ist verdrahtet, aber nur
   für die Encoder-Funktionsauswahl (`cycle_encoder_function`) — dafür ist Rec laut Spec §9
-  auch vorgesehen, nicht für `apply_button_action`/Companion-SELECT.
+  auch vorgesehen, nicht für `apply_button_action`/Companion-SELECT.~~ **Umgesetzt
+  (Nutzerauftrag 2026-07-18):** `midi/fader.py` mapt Note 8–15 (Solo) auf
+  `apply_button_action(..., "button2")` und Note 16–23 (Mute) auf `"button3"` — exakt
+  dieselbe bereits fertige/getestete Anwendungslogik, die auch der Web-UI-Button-Klick
+  (`POST /api/channels/{i}/buttons/{slot}/trigger`) auslöst. Note 24–31 (Select) mapt auf
+  `trigger_companion_select()`; `CompanionError` wird hier (anders als in der Web-Route)
+  nur geloggt statt weitergeworfen, damit ein Verbindungsfehler den MIDI-Poll-Loop nicht
+  abbricht. LED-Tx (neu, Nutzerentscheid: rein binär OFF=Licht aus/ON=Licht an, kein
+  Blinken) für Solo/Mute läuft über `_refresh_button_leds()`, ausgelöst durch dieselben
+  Events wie der bestehende Scribble-Strip-Vollabzug (`feature_changed`/`config_changed`/
+  `connection_changed`) — kein neues Event nötig, da `apply_button_action()`/
+  `assign_channel_button()` bereits publizieren. Zustand kommt aus derselben
+  `_channel_button_snapshot()`-Quelle wie die `is-on`-Klasse der Web-UI. Select hat
+  bewusst keine LED-Ansteuerung — SELECT ist laut `trigger_companion_select()`-Docstring
+  eine einmalige Aktion ohne Dauerzustand, es gibt nichts anzuzeigen. LED-Farben (Rec/Mute
+  rot, Solo gelb, Select grün, je Tastentyp hardwarefest, nicht per MIDI wählbar) laut
+  `github.com/Aldaviva/BehringerXTouchExtender` (Extender-spezifische Community-Referenz,
+  bereits als Quelle für Device-ID 0x15 genutzt) — **keine** offizielle Behringer-Doku und
+  nicht gegen reale Hardware verifiziert; ändert nichts an der Velocity-0/127-Ansteuerung.
+  Ohne Zuweisung eines Feature-Keys auf Button 2/3 bleibt Solo/Mute wie beim physischen
+  Knopf ohne Funktion ein No-Op (kein Kamerabefehl, LED aus).
+  **Verifiziert:** neue `tests/test_fader.py` (8 Tests, gefakter Output-Port statt echtem
+  MIDI-Port) deckt die Notenbereich→Kanal/Slot-Zuordnung und die LED-Velocity-Logik ab
+  (Solo-Press → `apply_button_action`/LED an, zweiter Press → LED aus, Mute ohne Zuordnung
+  → No-Op, Note-Release wird ignoriert, ungemapptes Kanal 8 → kein Crash, Select-Press →
+  `trigger_companion_select` mit korrektem Page/Row/Column, `CompanionError` wird geloggt
+  statt den Poll-Loop zu crashen, unbekannter Feature-Zustand zeigt LED aus). Volle
+  Testsuite jetzt 211 Tests (vorher 203), keine Regression.
+  **Nicht verifiziert:** LED-Tx (Note-On/Off zurück ans Gerät) sowie die Note-Rx-Bereiche
+  für Solo/Mute/Select auf Kanal 2–8 wurden noch nicht gegen die reale Hardware getestet —
+  nur Kanal 1 Rx ist bisher hardwareverifiziert (siehe oben), Tx für keinen der vier
+  Tastentypen bisher überhaupt.
 - Hotplug/Reconnect für den MIDI-Port (Spec §5.5) nicht implementiert
 - Web-UI-Port-Auswahl für MIDI (Setup-Seite) ist weiterhin ein statisches Mockup, nicht mit
   echten `mido`-Ports verbunden — Port kommt aktuell nur aus `config.yaml`

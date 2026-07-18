@@ -683,7 +683,16 @@ async def assign_channel_button(
 ) -> None:
     """Speichert die Button-2/3-Zuordnung eines Kanals dauerhaft in
     `config.yaml` (Spec §9a, per Nutzerentscheid: persistent statt nur
-    Laufzeit). `feature_key=None`/leer löscht die Zuordnung wieder."""
+    Laufzeit). `feature_key=None`/leer löscht die Zuordnung wieder.
+
+    Fragt bei Zuweisung eines Toggle-Features mit bekanntem Query-Kommando
+    (Nutzerentscheid 2026-07-18, siehe `PanasonicAWDriver.
+    query_button_feature()`) sofort den Ist-Zustand ab, damit der Button in
+    der Web-UI korrekt beleuchtet/unbeleuchtet erscheint statt erst nach dem
+    ersten Druck einen (dann nur lokal geratenen) Zustand zu haben. Ohne
+    bekanntes Query-Kommando (siehe `query_button_feature()`-Docstring) oder
+    ohne verbundene Kamera bleibt der Zustand wie bisher unbekannt, bis zum
+    ersten Druck."""
     if button_slot not in ("button2", "button3"):
         raise ValueError(f"ungültiger Button-Slot: {button_slot!r}")
     channel_cfg = _channel_config(state, channel_index)
@@ -694,13 +703,36 @@ async def assign_channel_button(
     else:
         channel_cfg.buttons.pop(button_slot, None)
     save_config(state.config_path, state.config)
+
+    if feature_key:
+        entry = state.mapping.get_channel("fader", channel_index)
+        if entry is not None:
+            driver = state.drivers.get(entry.camera_id)
+            if driver is not None and driver.connected:
+                query_button_feature = getattr(driver, "query_button_feature", None)
+                if query_button_feature is not None:
+                    known_state = await query_button_feature(feature_key)
+                    if known_state is not None:
+                        cam_state = state.state_store.get_camera(entry.camera_id)
+                        cam_state.feature_states[feature_key] = known_state
+
     await state.event_bus.publish("config_changed", {"channel_index": channel_index})
 
 
 async def apply_button_action(state: AppState, channel_index: int, button_slot: str) -> None:
     """Löst die einem Kanal-Button zugewiesene Kamera-Feature-Aktion aus
     (Spec §9a). Kein Effekt ohne Kamera/Zuordnung/Verbindung -- entspricht
-    dem physischen Verhalten (ein Button ohne Belegung tut nichts)."""
+    dem physischen Verhalten (ein Button ohne Belegung tut nichts).
+
+    Nur noch "toggle"/"trigger" (Nutzerentscheid 2026-07-18): mehrwertige
+    Kamera-Parameter (Knee, DRS) sind kein eigener "cycle"-Feature-Typ mehr,
+    sondern je ein Toggle pro Zielzustand (z. B. "knee_auto"), siehe
+    drivers/panasonic_aw.py-Klassendocstring -- Button 2/3 haben eine
+    einzelne, nicht mehrfarbige LED und koennen so nur echt an/aus
+    darstellen, kein rundenweises Durchschalten. Das Cycle-Konzept lebt
+    weiterhin bei Button 1 (Encoder-Funktionsauswahl, siehe
+    `cycle_encoder_function()`), das ist ein komplett getrennter
+    Mechanismus ohne Bezug zu BUTTON_FEATURES."""
     if button_slot not in ("button2", "button3"):
         raise ValueError(f"ungültiger Button-Slot: {button_slot!r}")
     entry = state.mapping.get_channel("fader", channel_index)
@@ -723,12 +755,8 @@ async def apply_button_action(state: AppState, channel_index: int, button_slot: 
             new_enabled = not bool(cam_state.feature_states.get(feature_key, False))
             await driver.trigger_button_feature(feature_key, enabled=new_enabled)
             cam_state.feature_states[feature_key] = new_enabled
-        elif feature["kind"] == "trigger":
+        else:  # "trigger"
             await driver.trigger_button_feature(feature_key)
-        else:  # "cycle"
-            target = (int(cam_state.feature_states.get(feature_key, 0)) + 1) % len(feature["cycle"])
-            await driver.cycle_button_feature(feature_key, target)
-            cam_state.feature_states[feature_key] = target
     except CameraCommandError as exc:
         cam_state.error = str(exc)
         await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
@@ -786,8 +814,8 @@ def _channel_companion_snapshot(state: AppState, index: int) -> dict | None:
 
 def _channel_button_snapshot(state: AppState, index: int, driver, cam_state) -> dict:
     """Button-2/3-Zuordnung + zuletzt getrackter Zustand für einen Kanal
-    (Spec §9a). `state` bei Cycle-Features der aktuelle Cycle-Index, bei
-    Toggles bool -- siehe Kommentar an `CameraState.feature_states`."""
+    (Spec §9a). `state` ist bool (an/aus), siehe Kommentar an
+    `CameraState.feature_states`."""
     channel_cfg = _channel_config(state, index)
     labels = getattr(driver, "BUTTON_FEATURE_LABELS", {}) if driver else {}
     result: dict[str, dict | None] = {}

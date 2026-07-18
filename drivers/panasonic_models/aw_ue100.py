@@ -30,10 +30,17 @@ aktuellen Auftrags.
 DRS/Knee-Korrektur (2026-07-18, Nutzerauftrag "Button-Kataloge gegen
 Kapitel 8 verifizieren", Quelle: Kap. 8 "Menu-Command Correspondance Table"
 + Kap. 9 "Command List" dieser PDF): bestehende, aus smart_reset_work
-uebernommene Eintraege waren FALSCH kodiert. `drs` (`OSE:33`) ist ein
-4-Werte-Cycle (0=Off/1=Low/2=Mid/3=High), kein Toggle. `knee` (`OSA:2D`)
-ist ein 3-Werte-Cycle (0=OFF/1=MANUAL/2=AUTO, Kap. 9 zeigt "Knee Mode"
-explizit mit diesen drei Werten), ebenfalls kein Toggle.
+uebernommene Eintraege waren FALSCH kodiert. `drs` (`OSE:33`) hat 4 gueltige
+Werte (0=Off/1=Low/2=Mid/3=High), `knee` (`OSA:2D`) hat 3 gueltige Werte
+(0=OFF/1=MANUAL/2=AUTO, Kap. 9 zeigt "Knee Mode" explizit mit diesen drei
+Werten) -- beide als je ein Toggle pro Zielzustand (`drs_low`/`drs_mid`/
+`drs_high`, `knee_manual`/`knee_auto`) statt eigener "cycle"-Features
+(Nutzerentscheid 2026-07-18, siehe drivers/panasonic_aw.py-Klassendocstring).
+
+Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
+(`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `knee_manual`/
+`knee_auto` (`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle
+direkt in dieser PDF als Request/Response-Paar verifiziert.
 """
 
 CAMERA_ID = "AW-UE100"
@@ -52,36 +59,27 @@ PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
 BUTTON_FEATURES: dict[str, dict] = {
-    "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0"},
+    "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0", "query": "QAF", "query_on_value": "1"},
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
-    "drs": {
-        "kind": "cycle",
-        "cycle": [
-            {"label": "OFF", "cmd": ["OSE:33:0"]},
-            {"label": "LOW", "cmd": ["OSE:33:1"]},
-            {"label": "MID", "cmd": ["OSE:33:2"]},
-            {"label": "HIGH", "cmd": ["OSE:33:3"]},
-        ],
-    },
-    "knee": {
-        "kind": "cycle",
-        "cycle": [
-            {"label": "OFF", "cmd": ["OSA:2D:0"]},
-            {"label": "Manual", "cmd": ["OSA:2D:1"]},
-            {"label": "Auto", "cmd": ["OSA:2D:2"]},
-        ],
-    },
-    "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
-    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
+    "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
+    "drs_mid": {"kind": "toggle", "on": "OSE:33:2", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "2"},
+    "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
+    "knee_manual": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "1"},
+    "knee_auto": {"kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "2"},
+    "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
+    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0", "query": "QSA:2E", "query_on_value": "1"},
 }
 
 BUTTON_FEATURE_LABELS: dict[str, str] = {
     "auto_focus": "Auto Focus",
     "auto_iris": "Auto Iris",
-    "drs": "DRS",
-    "knee": "Knee",
+    "drs_low": "DRS: Low",
+    "drs_mid": "DRS: Mid",
+    "drs_high": "DRS: High",
+    "knee_manual": "Knee: Manual",
+    "knee_auto": "Knee: Auto",
     "osd": "OSD",
     "white_clip": "White Clip",
     "awb_black": "ABB (Black)",

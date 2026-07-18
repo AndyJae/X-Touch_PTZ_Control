@@ -148,12 +148,21 @@ class PanasonicAWDriver(CameraDriver):
     # AW-UE160 zu stehen. Unbekanntes Modell -> leere Kataloge (kein
     # erfundener Fallback).
     #
-    # "toggle": on/off-Kommando, kein Query verfügbar (auch in der
+    # "toggle": on/off-Kommando (einzelner String oder Liste, siehe
+    #   trigger_button_feature()), kein Query verfügbar (auch in der
     #   Referenzquelle nicht — Zustand wird dort wie hier nur lokal
     #   getrackt, nicht kamera-verifiziert, siehe core/state.py).
     # "trigger": ein einmaliges Kommando, kein Ein/Aus-Zustand.
-    # "cycle": mehrere benannte Schritte, jeder Schritt kann mehrere
-    #   Kommandos umfassen (z. B. "knee").
+    # Mehrwertige Kamera-Parameter (Knee, DRS) sind seit Nutzerentscheid
+    # 2026-07-18 KEIN eigener "cycle"-Feature-Typ mehr, sondern je ein
+    # "toggle" pro sinnvollem Zielzustand (z. B. "knee_manual"/"knee_auto"
+    # statt einem einzelnen "knee") -- Grund: Button 2/3 sind physische
+    # Zwei-Zustand-Tasten mit einer einzigen (nicht mehrfarbigen) LED, ein
+    # rundenweises Durchschalten mehrerer Zustaende laesst sich darauf nicht
+    # sinnvoll anzeigen. Das Cycle-Konzept existiert weiterhin, aber nur bei
+    # Button 1 (physisch Rec, Encoder-Funktionsauswahl Gain/Pedestal/Camera
+    # Status, siehe core/application.py._ENCODER_FUNCTIONS) -- ein komplett
+    # anderer, eigenstaendiger Mechanismus ohne Bezug zu BUTTON_FEATURES.
     BUTTON_FEATURES: dict[str, dict] = {}
     BUTTON_FEATURE_LABELS: dict[str, str] = {}
 
@@ -406,7 +415,15 @@ class PanasonicAWDriver(CameraDriver):
     async def trigger_button_feature(self, key: str, *, enabled: bool | None = None) -> None:
         """Toggle (braucht `enabled`) oder Trigger (ignoriert `enabled`).
         `auto_iris`/`aww_white` delegieren an die vorhandenen typisierten
-        Methoden, um Kommando-Logik nicht doppelt zu halten."""
+        Methoden, um Kommando-Logik nicht doppelt zu halten.
+
+        `feature["on"]`/`feature["off"]` sind normalerweise ein einzelner
+        Kommando-String, koennen aber auch eine Liste sein (Nutzerentscheid
+        2026-07-18: mehrwertige Kamera-Parameter wie Knee/DRS werden nicht
+        mehr als eigenes Cycle-Feature gefuehrt, sondern als je ein Toggle
+        pro Zielzustand, siehe drivers/panasonic_models/*.py -- AW-UE160s
+        "Knee: Auto" braucht z. B. zwei Kommandos, `OSL:45:1` UND
+        `OSA:2D:2`, in dieser Reihenfolge)."""
         if key == "auto_iris":
             if enabled is None:
                 raise ValueError("'auto_iris' ist ein Toggle, 'enabled' erforderlich")
@@ -421,21 +438,52 @@ class PanasonicAWDriver(CameraDriver):
         if feature["kind"] == "toggle":
             if enabled is None:
                 raise ValueError(f"{key!r} ist ein Toggle, 'enabled' erforderlich")
-            await self._request("aw_cam", feature["on"] if enabled else feature["off"])
+            commands = feature["on"] if enabled else feature["off"]
+            if isinstance(commands, str):
+                commands = [commands]
+            for cmd in commands:
+                await self._request("aw_cam", cmd)
         elif feature["kind"] == "trigger":
             await self._request("aw_cam", feature["cmd"])
         else:
-            raise ValueError(f"{key!r} ist kein Toggle/Trigger, cycle_button_feature() nutzen")
+            raise ValueError(f"{key!r}: unbekannte Feature-Art {feature['kind']!r}")
 
-    async def cycle_button_feature(self, key: str, target_index: int) -> None:
+    async def query_button_feature(self, key: str) -> bool | None:
+        """Fragt den Ist-Zustand eines Toggle-Button-Features ab (Nutzer-
+        entscheid 2026-07-18: beim Zuweisen ueber die Web-UI sofort pruefen,
+        ob an oder aus, statt den Zustand erst nach dem ersten Druck lokal
+        zu kennen).
+
+        `auto_iris` ist wie in `trigger_button_feature()` ein Sonderfall --
+        nutzt die bereits vorhandene Iris-Abfrage (`#GI`-Mode-Bit) statt
+        eines eigenen Query-Kommandos. Fuer alle anderen Toggle-Features
+        liest diese Methode `feature["query"]`/`feature["query_on_value"]`
+        (nur gesetzt, wo ein Query-Kommando direkt in den lokalen PDFs
+        verifiziert wurde, siehe drivers/panasonic_models/*.py) -- fehlt
+        eines von beiden, liefert diese Methode `None` (kein erfundener
+        Fallback), Aufrufer behalten dann das bisherige Verhalten (Zustand
+        erst nach dem ersten Druck lokal bekannt)."""
+        if key == "auto_iris":
+            _, auto_iris = await self._query_iris()
+            return auto_iris
         feature = self.BUTTON_FEATURES.get(key)
-        if feature is None or feature["kind"] != "cycle":
-            raise ValueError(f"{key!r} ist kein Cycle-Feature")
-        steps = feature["cycle"]
-        if not 0 <= target_index < len(steps):
-            raise ValueError(f"cycle index out of range: {target_index}")
-        for cmd in steps[target_index]["cmd"]:
-            await self._request("aw_cam", cmd)
+        if feature is None or feature.get("kind") != "toggle":
+            return None
+        query_cmd = feature.get("query")
+        query_on_value = feature.get("query_on_value")
+        if query_cmd is None or query_on_value is None:
+            return None
+        try:
+            body = await self._request("aw_cam", query_cmd)
+        except CameraCommandError:
+            return None
+        value = _extract_value(body)
+        if value is None:
+            return None
+        try:
+            return int(value, 16) == int(query_on_value, 16)
+        except ValueError:
+            return None
 
     # --- Status ----------------------------------------------------------
 

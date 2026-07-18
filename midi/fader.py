@@ -1,20 +1,27 @@
 """midi/fader.py -- Bidirektionale X-Touch-Extender-Faderanbindung (Spec §5,
-aktueller Umfang: Fader/Touch <-> Iris (§5.2/§5.4), Scribble Strips (§5.3)
-und Encoder (§9: feste Funktionsliste gain/pedestal/camera_status ueber
-Button 1, Drehen, Push). Encoder-Drehen sendet bei gain/pedestal seit
-Nutzerentscheid SOFORT live einen Kamerabefehl (ueber
-`core.application.apply_encoder_turn`s eigenen Rate-Limiter je Kamera,
-analog zum Iris-Fader) -- der Encoder-Push (Note 32-39) sendet dagegen
-nichts mehr, sondern markiert den Kanal nur visuell als "gespeichert"
-(Spec §9 nannte die Push-Verwendung urspruenglich "noch offen"). Encoder-
-LED-Ring (CC 48-55) ist weiterhin nicht Teil dieser Verdrahtung -- Encoding
-dafuer laut Spec §14 unverifiziert. Resync-bei-Hotplug (§5.5) folgt in
-einem weiteren Schritt.
+aktueller Umfang: Fader/Touch <-> Iris (§5.2/§5.4), Scribble Strips (§5.3),
+Encoder (§9: feste Funktionsliste gain/pedestal/camera_status ueber Button 1,
+Drehen, Push) sowie Solo/Mute/Select (§9a/§9: Button 2/3 -> dynamischer
+Feature-Katalog des erkannten Kameramodells, Select -> Companion-SELECT-
+Trigger). Encoder-Drehen sendet bei gain/pedestal seit Nutzerentscheid SOFORT
+live einen Kamerabefehl (ueber `core.application.apply_encoder_turn`s eigenen
+Rate-Limiter je Kamera, analog zum Iris-Fader) -- der Encoder-Push (Note
+32-39) sendet dagegen nichts mehr, sondern markiert den Kanal nur visuell als
+"gespeichert" (Spec §9 nannte die Push-Verwendung urspruenglich "noch offen").
+Encoder-LED-Ring (CC 48-55) ist weiterhin nicht Teil dieser Verdrahtung --
+Encoding dafuer laut Spec §14 unverifiziert. Resync-bei-Hotplug (§5.5) folgt
+in einem weiteren Schritt.
 
 Note-/CC-Belegung gegen den realen X-Touch Extender verifiziert (Kanal 1:
-Pitchbend Kanal 1 = Fader 1, Note 104 = Fader-Touch 1); ebenso die
-Scribble-Strip-Device-ID (0x15, siehe unten), siehe Offene Punkte in
-CLAUDE.md.
+Pitchbend Kanal 1 = Fader 1, Note 104 = Fader-Touch 1, Note 0/8/16/24 =
+Rec/Solo/Mute/Select 1); ebenso die Scribble-Strip-Device-ID (0x15, siehe
+unten), siehe Offene Punkte in CLAUDE.md. Solo/Mute/Select-LED-Tx (Note
+On/Off zurueck ans Geraet) ist dagegen NEU und noch nicht gegen die reale
+Hardware getestet -- nur Rx (Tastendruck empfangen) ist bisher verifiziert.
+LED-Farben (Rec/Mute rot, Solo gelb, Select gruen, je Tastentyp fix, nicht
+waehlbar) laut github.com/Aldaviva/BehringerXTouchExtender, keine offizielle
+Behringer-Doku und nicht gegen reale Hardware verifiziert -- reine Velocity-
+0/127-Ansteuerung (aus/an) aendert daran nichts, die Farbe ist Hardware-fix.
 
 Rx: Polling statt mido-Callback-Thread -- `tools/midi_monitor.py` nutzt
 denselben Ansatz und wurde bereits live gegen das Geraet verifiziert; ein
@@ -35,7 +42,16 @@ sonst unnoetiger SysEx-Traffic waehrend des Fader-Ziehens). Zeile 2 zeigt
 laut Spec §5.3 eigentlich die F-Nummer -- die Hex->F-Nummer-Tabelle ist laut
 Spec aber nicht vollstaendig dokumentiert (siehe Kommentar an
 PanasonicAWDriver._query_f_number), daher als Platzhalter die Iris-% bis
-diese Umrechnung nachgeruestet wird."""
+diese Umrechnung nachgeruestet wird.
+
+Tx Solo/Mute-LED: dieselben drei Events wie die Scribble Strips loesen einen
+Vollabzug beider LEDs aller 8 Kanaele aus (`_refresh_button_leds()`) -- kein
+eigenes Event noetig, `apply_button_action()`/`assign_channel_button()`
+publizieren bereits `feature_changed`/`config_changed`. Nutzerentscheid:
+Zustand rein binaer (OFF=Licht aus, ON=Licht an), kein Blinken. Select hat
+keine LED-Ansteuerung -- SELECT ist eine einmalige Companion-Aktion ohne
+Dauerzustand (siehe `trigger_companion_select()`-Docstring in
+core/application.py), es gibt nichts, das eine LED anzeigen koennte."""
 
 from __future__ import annotations
 
@@ -46,6 +62,7 @@ import mido
 
 from core.application import (
     AppState,
+    apply_button_action,
     apply_encoder_turn,
     apply_iris,
     channel_display_text,
@@ -53,16 +70,26 @@ from core.application import (
     channel_snapshot,
     commit_encoder_value,
     cycle_encoder_function,
+    trigger_companion_select,
 )
+from core.companion import CompanionError
 from midi.mackie import MackieControlProtocol
 
 LOGGER = logging.getLogger("ptz_control.midi")
 
 _FADER_TOUCH_NOTE_BASE = 104  # 0x68, Note 104-111 -> Fader-Touch 1-8 (Spec §5.2)
 _REC_NOTE_BASE = 0  # Note 0-7 -> Rec/Button 1 je Kanal (Encoder-Funktionsauswahl, Spec §9)
+_SOLO_NOTE_BASE = 8  # Note 8-15 -> Solo/Button 2 je Kanal (Spec §5.2/§9a)
+_MUTE_NOTE_BASE = 16  # Note 16-23 -> Mute/Button 3 je Kanal (Spec §5.2/§9a)
+_SELECT_NOTE_BASE = 24  # Note 24-31 -> Select je Kanal (Spec §9, Companion-SELECT-Trigger)
 _ENCODER_CC_BASE = 16  # CC 16-23 (0x10-0x17) -> Encoder 1-8 drehen, relativ (Spec §5.2/§9)
 _ENCODER_PUSH_NOTE_BASE = 32  # Note 32-39 -> Encoder-Push 1-8: committet den Pending-Wert (Spec §9/§5.2)
 _POLL_INTERVAL = 0.01
+# LED-Farben laut github.com/Aldaviva/BehringerXTouchExtender (Extender-spezifische
+# Referenz, siehe CLAUDE.md-Offene-Punkte): Rec/Mute fix rot, Solo fix gelb, Select
+# fix gruen -- je Tastentyp EINE feste Farbe, nicht per MIDI waehlbar. Steuerung
+# bleibt binaer ueber Velocity (0=aus/127=an, Spec §5.2); Blinken (Velocity 1) wird
+# lt. Nutzerentscheid nicht gebraucht.
 
 # --- Scribble Strips (Spec §5.3) ---
 _SCRIBBLE_STRIP_CHARS = 7
@@ -113,6 +140,7 @@ class XTouchFader:
             LOGGER.info("MIDI-Ausgang verbunden: %s", self._output_port_name)
             await self._resync_from_state()
             self._refresh_scribble_strips()
+            self._refresh_button_leds()
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -185,6 +213,44 @@ class XTouchFader:
             channel_index = msg.note - _REC_NOTE_BASE + 1
             await cycle_encoder_function(self._state, channel_index)
             self._refresh_channel_full(channel_index)
+        elif (
+            msg.type == "note_on"
+            and _SOLO_NOTE_BASE <= msg.note < _SOLO_NOTE_BASE + 8
+            and msg.velocity > 0
+        ):
+            # Solo/Button 2: loest die zugewiesene Kamera-Feature-Aktion aus
+            # (Spec §9a, `apply_button_action`). LED-Update kommt ueber
+            # denselben "feature_changed"-Event wie beim Web-UI-Klick, siehe
+            # `_on_scribble_relevant_event` -- kein manueller Zusatzaufruf
+            # noetig (EventBus.publish() wartet auf alle Subscriber, bevor
+            # apply_button_action() zurueckkehrt).
+            channel_index = msg.note - _SOLO_NOTE_BASE + 1
+            await apply_button_action(self._state, channel_index, "button2")
+        elif (
+            msg.type == "note_on"
+            and _MUTE_NOTE_BASE <= msg.note < _MUTE_NOTE_BASE + 8
+            and msg.velocity > 0
+        ):
+            # Mute/Button 3: siehe Solo/Button 2 oben.
+            channel_index = msg.note - _MUTE_NOTE_BASE + 1
+            await apply_button_action(self._state, channel_index, "button3")
+        elif (
+            msg.type == "note_on"
+            and _SELECT_NOTE_BASE <= msg.note < _SELECT_NOTE_BASE + 8
+            and msg.velocity > 0
+        ):
+            # Select: loest das hinterlegte Companion-SELECT-Ziel aus (Spec
+            # §9, bewusste Erweiterung). Einmalige Aktion ohne Dauerzustand
+            # (siehe trigger_companion_select()-Docstring) -- keine LED-
+            # Ansteuerung, da kein Zustand existiert, der angezeigt werden
+            # koennte. CompanionError wird hier (anders als in der Web-Route)
+            # nur geloggt, damit ein Verbindungsfehler den Poll-Loop nicht
+            # abbricht.
+            channel_index = msg.note - _SELECT_NOTE_BASE + 1
+            try:
+                await trigger_companion_select(self._state, channel_index)
+            except CompanionError as exc:
+                LOGGER.warning("Companion-SELECT fehlgeschlagen (Kanal %s): %s", channel_index, exc)
         elif msg.type == "control_change" and _ENCODER_CC_BASE <= msg.control < _ENCODER_CC_BASE + 8:
             channel_index = msg.control - _ENCODER_CC_BASE + 1
             delta = self._protocol.encoder_cc_to_delta(msg.value)
@@ -240,6 +306,7 @@ class XTouchFader:
 
     async def _on_scribble_relevant_event(self, _payload: dict) -> None:
         self._refresh_scribble_strips()
+        self._refresh_button_leds()
 
     def _refresh_scribble_strips(self) -> None:
         """Vollabzug aller 8 Strips (wie channel_snapshot() selbst, kein
@@ -306,3 +373,25 @@ class XTouchFader:
         strip = channel_index - 1
         self._out_port.send(_scribble_message(_SCRIBBLE_UPPER_BASE + strip * _SCRIBBLE_STRIP_CHARS, upper))
         self._out_port.send(_scribble_message(_SCRIBBLE_LOWER_BASE + strip * _SCRIBBLE_STRIP_CHARS, lower))
+
+    # --- Tx: Solo/Mute-LED (Button 2/3, Spec §5.2/§9a) --------------------
+
+    def _refresh_button_leds(self) -> None:
+        """Vollabzug der Solo/Mute-LED aller 8 Kanaele -- ausgeloest durch
+        dieselben Events wie die Scribble-Strips (siehe
+        `_on_scribble_relevant_event`). Zustand kommt aus derselben
+        `_channel_button_snapshot()`-Quelle, die auch die `is-on`-Klasse der
+        Web-UI setzt (Nutzerentscheid: physisches Geraet und Web-UI duerfen
+        nicht auseinanderlaufen). Unbekannter Zustand (`state: None`, noch
+        nie abgefragt/gedrueckt) zeigt wie in der Web-UI unbeleuchtet."""
+        for ch in channel_snapshot(self._state):
+            for slot, note_base in (("button2", _SOLO_NOTE_BASE), ("button3", _MUTE_NOTE_BASE)):
+                assigned = ch["buttons"][slot]
+                on = bool(assigned and assigned["state"])
+                self._send_button_led(ch["index"], note_base, on)
+
+    def _send_button_led(self, channel_index: int, note_base: int, on: bool) -> None:
+        if self._out_port is None:
+            return
+        note = note_base + (channel_index - 1)
+        self._out_port.send(mido.Message("note_on", note=note, velocity=127 if on else 0))

@@ -14,11 +14,14 @@ class CameraState:
     bars: bool | None = None
     error: str | None = None
     # Feature-Button-Zustand (Spec §9a), Schlüssel = Feature-Key aus
-    # PanasonicAWDriver.BUTTON_FEATURES: bool für Toggles, int (Cycle-Index)
-    # für Cycle-Features. NICHT kamera-verifiziert -- die zugrundeliegenden
-    # Kommandos haben keine Query-Gegenstücke (auch in der Referenzquelle
-    # smart-reset-browser nicht), Zustand ist rein lokal getrackt und geht
-    # bei Reconnect/Neustart auf den Default (nicht gesetzt) zurück.
+    # PanasonicAWDriver.BUTTON_FEATURES: bool für Toggles (seit 2026-07-18
+    # der einzige Feature-Typ auf Button 2/3, siehe dortiger Kommentar --
+    # `int` bleibt im Typ, weil ältere/gespeicherte Zustände theoretisch
+    # noch einen Cycle-Index enthalten könnten). NICHT kamera-verifiziert --
+    # die zugrundeliegenden Kommandos haben keine Query-Gegenstücke (auch in
+    # der Referenzquelle smart-reset-browser nicht), Zustand ist rein lokal
+    # getrackt und geht bei Reconnect/Neustart auf den Default (nicht
+    # gesetzt) zurück.
     feature_states: dict[str, bool | int] = field(default_factory=dict)
 
 
