@@ -17,10 +17,28 @@ statt einem "cycle"-Feature -- siehe aw_he50.py fuer denselben Befund und
 die Begruendung (Nutzerentscheid 2026-07-18).
 
 Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
-(`QAF`), `drs_low`/`drs_high` (`QSE:33`), `white_clip` (`QSA:2E`), `osd`
-(`QUS`) und `night_mode` (`QSI:1A`) -- alle fuenf direkt in der
-`HDIntegratedCamera_InterfaceSpecifications-E.pdf` als Request/Response-Paar
-verifiziert.
+(`QAF`), `drs_low`/`drs_high` (`QSE:33`) und `osd` (`QUS`) -- alle drei
+direkt in der `HDIntegratedCamera_InterfaceSpecifications-E.pdf` als
+Request/Response-Paar verifiziert.
+
+White-Clip-Korrektur (2026-07-18, Rest-Katalog-Pruefung): `white_clip`
+(`OSA:2E`) wurde bisher faelschlich gefuehrt (aus smart_reset_work, dort
+nicht gegen diese PDF geprueft) -- §3.2.31 "White Clip settings" ist aber
+explizit **"Only supported by the AW-HE130/AW-HR140/AW-UE150"**, weder
+AW-HE40/AW-UE70/AW-HE42 werden dort genannt. Der Eintrag wurde deshalb
+komplett entfernt (kein erfundenes/falsches Feature).
+
+Night-Mode-Korrektur (2026-07-18, Rest-Katalog-Pruefung): `night_mode` nutzte
+faelschlich `OSI:1A`/`QSI:1A` -- dieses Kommando gehoert laut PDF (Tabelle im
+Umfeld von §3.2.6 "Gain setting"/CROP-Einstellungen) zu einer CROP-MARKER-
+Farbauswahl fuer AK-UB300/AW-UE150, nicht zu Night Mode, und wurde vermutlich
+mit dem echten Night-Mode-Kommando verwechselt (aus smart_reset_work, dort
+nicht gegen diese PDF geprueft). Das tatsaechliche Kommando steht in §3.2.27
+"Night mode settings": `OSD:B2:[Data]` (0=Manual/1=Auto), Query `QSD:B2` →
+`OSD:B2:[Data]`, explizit **"Only supported by the AW-HE40/AW-UE70/
+AW-HE42"** -- Modellzuordnung war also richtig, nur das Kommando falsch.
+Korrigiert auf `OSD:B2`/`QSD:B2`, Werte (0/1) unveraendert uebernommen, da
+sie zur PDF-Setting-Spalte (0=Manual,1=Auto) passen.
 """
 
 CAMERA_ID = "AW-HE40"
@@ -53,9 +71,8 @@ BUTTON_FEATURES: dict[str, dict] = {
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
     "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
-    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0", "query": "QSA:2E", "query_on_value": "1"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
-    "night_mode": {"kind": "toggle", "on": "OSI:1A:1", "off": "OSI:1A:0", "query": "QSI:1A", "query_on_value": "1"},
+    "night_mode": {"kind": "toggle", "on": "OSD:B2:1", "off": "OSD:B2:0", "query": "QSD:B2", "query_on_value": "1"},
 }
 
 BUTTON_FEATURE_LABELS: dict[str, str] = {
@@ -63,7 +80,6 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "auto_iris": "Auto Iris",
     "drs_low": "DRS: Low",
     "drs_high": "DRS: High",
-    "white_clip": "White Clip",
     "osd": "OSD",
     "awb_black": "ABB (Black)",
     "aww_white": "AWW (White)",

@@ -40,12 +40,29 @@ unterstuetzt, ist damit unbestaetigt; der bisherige Toggle wird deshalb
 weder bestaetigt noch korrigiert (kein erfundener Wert in beide Richtungen).
 
 Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `knee_manual`/
-`knee_auto` (`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle
-direkt in der o. g. PDF fuer AK-UB300 als Request/Response-Paar verifiziert.
-`super_gain` (`QSI:28`) bewusst NICHT ergaenzt (Nutzerentscheid 2026-07-18):
-`QSI:28` ist zwar bei anderen Modellen belegt, AK-UB300 selbst kommt aber in
-keiner dieser PDFs vor -- kein direkter Beleg fuer dieses Modell. `drs`
-bleibt aus demselben Grund wie oben ohne Query.
+`knee_auto` (`QSA:2D`) und `osd` (`QUS`) -- beide direkt in der o. g. PDF
+fuer AK-UB300 als Request/Response-Paar verifiziert.
+
+White-Clip-Korrektur (2026-07-18, Rest-Katalog-Pruefung): `white_clip`
+(`OSA:2E`) wurde bisher faelschlich gefuehrt -- §3.2.31 "White Clip
+settings" ist explizit **"Only supported by the AW-HE130/AW-HR140/
+AW-UE150"**, AK-UB300 wird dort NICHT genannt (obwohl AK-UB300 laut
+"Applicable models" auf S. 5 durchaus zu den von dieser PDF abgedeckten
+Modellen gehoert -- die vorherige Formulierung "AK-UB300 kommt in keiner
+dieser PDFs vor" war insofern ungenau). Der Eintrag wurde deshalb komplett
+entfernt (kein erfundenes/falsches Feature).
+
+`super_gain` (`OSI:28`, §3.2.6 "Gain setting", direkt im Anschluss an die
+AK-UB300-exklusiven Bereichs-Gain-Kommandos `OSA:50/51/52`/`OSA:60`):
+strukturell passend zu AK-UB300s LOW/MID/HIGH/S.GAIN1-3-Bereichsschema,
+aber OHNE eigene "Only supported by AK-UB300"-Kennzeichnung auf der
+`OSI:28`-Zeile selbst (anders als die Nachbarzeilen) -- die PDF-Tabelle an
+dieser Stelle ist zudem beim Textextrakt stark spaltenverschoben
+(mehrfach widerspruechliche Zuordnungen bei Testextraktion). Bleibt daher
+weiterhin ohne Query (kein erfundener Wert) UND ohne endgueltige
+Bestaetigung, ob `OSI:28` ueberhaupt AK-UB300-exklusiv ist -- Status
+unveraendert zu vorher, nur die Begruendung praezisiert. `drs` bleibt aus
+demselben Grund wie oben ohne Query.
 """
 
 CAMERA_ID = "AK-UB300"
@@ -67,7 +84,6 @@ BUTTON_FEATURES: dict[str, dict] = {
     "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
     "knee_manual": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "1"},
     "knee_auto": {"kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "2"},
-    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0", "query": "QSA:2E", "query_on_value": "1"},
     "super_gain": {"kind": "toggle", "on": "OSI:28:1", "off": "OSI:28:0"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
 }
@@ -77,7 +93,6 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "drs": "DRS",
     "knee_manual": "Knee: Manual",
     "knee_auto": "Knee: Auto",
-    "white_clip": "White Clip",
     "awb_black": "ABB (Black)",
     "aww_white": "AWW (White)",
     "super_gain": "Super Gain",

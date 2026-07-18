@@ -137,6 +137,23 @@ def test_button_feature_command_only_accepted_for_models_that_have_it() -> None:
     assert _handle("AW-UE160", "OSA:0D:1") == "OSA:0D:1"
 
 
+def test_white_clip_rejected_for_models_without_pdf_support() -> None:
+    # Rest-Katalog-Korrektur (siehe drivers/panasonic_models/aw_he50.py):
+    # white_clip (OSA:2E) ist laut PDF nur fuer AW-HE130/AW-HR140/AW-UE150
+    # dokumentiert -- AW-HE50 darf es nicht mehr annehmen.
+    assert _handle("AW-HE130", "OSA:2E:1") == "OSA:2E:1"
+    assert _handle("AW-HE50", "OSA:2E:1") == "ER1:OSA:2E:1"
+
+
+def test_night_mode_uses_osd_b2_not_osi_1a() -> None:
+    # Rest-Katalog-Korrektur (siehe drivers/panasonic_models/aw_he40.py):
+    # das echte Night-Mode-Kommando ist OSD:B2, nicht das zuvor faelschlich
+    # gefuehrte OSI:1A (das laut PDF zu einer CROP-Marker-Farbauswahl
+    # gehoert, nicht zu Night Mode).
+    assert _handle("AW-HE40", "OSD:B2:1") == "OSD:B2:1"
+    assert _handle("AW-HE40", "OSI:1A:1") == "ER1:OSI:1A:1"
+
+
 def test_button_feature_toggle_with_command_list_accepts_every_command() -> None:
     # AW-UE160s "knee_auto" hat "on": ["OSL:45:1", "OSA:2D:2"] (Liste statt
     # einzelnem String, siehe drivers/panasonic_aw.py::trigger_button_feature)

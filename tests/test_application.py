@@ -411,6 +411,64 @@ def test_apply_encoder_turn_clamps_preview_to_spec_range(monkeypatch) -> None:
     assert encoder_preview(state, 1) == ("gain", -6)  # geclamped auf _GAIN_MIN_DB
 
 
+def test_apply_encoder_turn_respects_gain_step_db_for_3db_step_models(monkeypatch) -> None:
+    # AW-HE50/60/HE40/UE70/HE42 akzeptieren laut PDF nur 3dB-Schritte (0/3/6/
+    # 9dB usw.) -- ein Tick muss deshalb um GAIN_STEP_DB bewegen, nicht immer
+    # um 1dB (frueherer offener Punkt, siehe CLAUDE.md).
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.gain_step_db = 3
+
+    _run(apply_encoder_turn(state, 1, 1))
+
+    assert driver.step_gain_calls == [3]
+    assert encoder_preview(state, 1) == ("gain", 3)
+
+
+def test_apply_encoder_turn_gain_step_combines_with_acceleration(monkeypatch) -> None:
+    # Beschleunigung (x5, siehe Spec §9) multipliziert weiterhin auf denselben
+    # Wert wie GAIN_STEP_DB -- ein beschleunigter Tick bei einem 3dB-Schritt-
+    # Modell bewegt also um 5 Schritte a 3dB = 15dB, nicht um 5dB. Bereich
+    # bewusst weit genug (0..48dB, wie real AW-HE40) gewaehlt, damit das
+    # Range-Clamping aus test_apply_encoder_turn_clamps_preview_to_spec_range
+    # hier nicht mit hineinspielt und nur die Schrittweiten-Multiplikation
+    # geprueft wird.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.gain_step_db = 3
+    driver.gain_min_db = 0
+    driver.gain_max_db = 48
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
+
+    for _ in range(4):
+        _run(apply_encoder_turn(state, 1, 1))
+        fake_now[0] += 0.01  # > 3 Klicks/100ms -> Tick 4 beschleunigt (x5)
+
+    assert driver.step_gain_calls == [3]  # nur der erste (nicht beschleunigte) Tick kam durch
+    assert state.encoder_pending_delta[1] == 3 + 3 + 15  # Tick 2,3 (x1 Schritt) + Tick 4 (x5 Schritte)
+    assert encoder_preview(state, 1) == ("gain", 3 + 3 + 3 + 15)
+
+
+def test_apply_encoder_turn_pedestal_ignores_gain_step_db(monkeypatch) -> None:
+    # Pedestal hat kein eigenes Schrittweiten-Feld -- GAIN_STEP_DB darf hier
+    # keinen Einfluss haben, ein Tick bleibt bei 1.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.gain_step_db = 3
+    _run(cycle_encoder_function(state, 1))  # -> "gain"
+    _run(cycle_encoder_function(state, 1))  # -> "pedestal"
+
+    _run(apply_encoder_turn(state, 1, 1))
+
+    assert driver.step_pedestal_calls == [1]
+    assert encoder_preview(state, 1) == ("pedestal", 1)
+
+
 def test_apply_encoder_turn_uses_function_selected_via_button1(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))

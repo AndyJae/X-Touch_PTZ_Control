@@ -161,12 +161,26 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   `test_apply_model_catalog_resolves_gain_pedestal_for_*`,
   `test_set_pedestal_uses_otp_command_for_he50`,
   `test_step_gain_clamps_to_he50_range`) und `tests/test_panasonic_models.py`.
-  **Weiterhin offen:** die per-Tick-Schrittweite des Encoders (±1 Digit,
+  ~~**Weiterhin offen:** die per-Tick-Schrittweite des Encoders (±1 Digit,
   ×5-Beschleunigung) berücksichtigt `GAIN_STEP_DB` noch nicht -- bei den
   3dB-Stufen-Modellen (AW-HE50/60/HE40/UE70/HE42) sendet ein einzelner Tick
   weiterhin ±1dB (bzw. ±5dB beschleunigt), nicht zwingend ein gültiges
   Vielfaches von 3. Verhalten der Kamera bei einem solchen Zwischenwert
-  (z. B. `OGU:09`) ist nicht dokumentiert/verifiziert.
+  (z. B. `OGU:09`) ist nicht dokumentiert/verifiziert.~~ **Behoben
+  (2026-07-18):** `apply_encoder_turn()` in `core/application.py`
+  multipliziert das Tick-Delta bei `gain` zusätzlich mit
+  `driver.gain_step_db` (Default 1, wenn unbekannt) -- ein Tick bewegt jetzt
+  bei den 3dB-Modellen um 3dB, beschleunigt um 15dB (5 Schritte × 3dB), statt
+  immer um 1dB/5dB. `pedestal` hat kein Schrittweiten-Feld und bleibt
+  unverändert bei 1 pro Klick. Da `GAIN_MIN_DB`/`GAIN_MAX_DB` bei allen
+  3dB-Modellen selbst Vielfache von 3 sind (HE50/60: 0–18, HE40/UE70/HE42:
+  0–48), bleibt auch der geclampte Wert immer ein gültiges Vielfaches -- kein
+  zusätzliches Snapping an den Rändern nötig. Getestet in
+  `tests/test_application.py`
+  (`test_apply_encoder_turn_respects_gain_step_db_for_3db_step_models`,
+  `test_apply_encoder_turn_gain_step_combines_with_acceleration`,
+  `test_apply_encoder_turn_pedestal_ignores_gain_step_db`). Volle Testsuite
+  jetzt 214 Tests (vorher 211), keine Regression.
 - ~~AW-UE100 wurde faelschlich als "in keiner der beiden PDFs dokumentiert"
   gefuehrt~~ **Korrigiert (2026-07-18):** ein drittes lokales Referenz-PDF
   (`docs/specs/AW-UE100_InterfaceSpecification_E.pdf`, dediziertes
@@ -273,11 +287,64 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   schaltet rundenweise durch alle Werte) wurde noch am selben Tag durch
   Toggle-pro-Zielzustand ersetzt, siehe nächster Punkt — die Test-Namen in
   diesem Punkt sind daher historisch, nicht mehr im Code vorhanden.
-  **Weiterhin offen:** der Rest des Katalogs (`auto_focus`, `auto_iris`,
+  ~~**Weiterhin offen:** der Rest des Katalogs (`auto_focus`, `auto_iris`,
   `awb_black`, `aww_white`, `osd`, `white_clip`, `matrix`, `gamma`, `flare`,
   `linear_matrix`, `adaptive_matrix`, `night_mode`, `super_gain` u. Ä.) ist
   weiterhin nur gegen smart_reset_work verifiziert, nicht gegen die PDFs;
-  ebenso die genauen Knee-Werte für AW-UE80/UE50/UE40/UE30.
+  ebenso die genauen Knee-Werte für AW-UE80/UE50/UE40/UE30.~~ **Teilweise
+  fortgesetzt (2026-07-18, Nutzerauftrag "mit Punkt 2 weitermachen"):**
+  `auto_focus` (`OAF`/`QAF`, 0=Manual/1=Auto), `auto_iris` (`ORS`/`QRS`,
+  0=Manual/1=Auto -- Query laeuft weiterhin ueber die separate, bereits
+  verifizierte `#GI`-Abfrage, nicht `QRS`), `awb_black`/`aww_white`
+  (`OAS`/`OWS`) und `osd` (`DUS`/`QUS`) sind jetzt direkt gegen
+  `HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.1/3.2.9/3.2.22
+  geprueft -- alle korrekt, keine Aenderung noetig. Dabei zwei echte Fehler
+  gefunden und korrigiert:
+  - **`white_clip`** (`OSA:2E`) war bei AW-HE50/AW-HE60/AW-HE40/AW-UE70/
+    AW-HE42/AW-HE120/AK-UB300 fälschlich vorhanden -- §3.2.31 "White Clip
+    settings" nennt explizit nur **"AW-HE130/AW-HR140/AW-UE150"** als
+    unterstützt. Bei diesen sieben Modellen komplett entfernt (dieselbe Art
+    Fehler wie zuvor bei `knee`/AW-HE120, aus smart_reset_work uebernommen,
+    dort nie gegen diese PDF geprueft). AW-UE100/AW-UE150A/AW-HE145/
+    AW-UE160/AW-UE80-Gruppe behalten es -- eigene, dedizierte PDFs
+    dokumentieren es dort unabhaengig und ohne Modell-Einschraenkung.
+  - **`night_mode`** (nur AW-HE40/AW-HE42/AW-UE70) nutzte faelschlich
+    `OSI:1A`/`QSI:1A` -- laut PDF gehoert das zu einer CROP-Marker-
+    Farbauswahl fuer AK-UB300/AW-UE150, nicht zu Night Mode. Das echte
+    Kommando steht in §3.2.27 "Night mode settings": `OSD:B2`/`QSD:B2`
+    (0=Manual/1=Auto), Modellzuordnung war schon korrekt. Korrigiert.
+  Getestet in `tests/test_panasonic_models.py`
+  (`test_white_clip_absent_where_not_supported_per_pdf`,
+  `test_white_clip_present_where_supported_per_pdf`,
+  `test_night_mode_uses_correct_command_not_crop_marker_command`),
+  `tests/test_panasonic_emulator.py`
+  (`test_white_clip_rejected_for_models_without_pdf_support`,
+  `test_night_mode_uses_osd_b2_not_osi_1a`). 219 Tests bestehen (vorher 214).
+  **Weiterhin offen (in dieser Runde geprüft, aber nicht abschließend
+  klärbar):** `matrix`/`gamma`/`flare`/`linear_matrix` (AW-UE160-exklusiv,
+  `OSA:84`/`OSA:0A`/`OSA:11`/`OSL:6C`) -- die betreffende PDF-Seite (dichte
+  Menü-Baum-Tabelle rund um Gain/Matrix/Gamma/Flare) liefert bei
+  `pdftotext` in JEDEM Extraktionsmodus (Standard/`-layout`/`-table`/`-raw`)
+  in sich widersprüchliche Zuordnungen (z. B. `OSA:11` mal als "RGB GAIN
+  ACH/BCH", mal als "FLARE", `OSJ:D7` mal als "FLARE", mal als "GAMMA MODE
+  SELECT") -- zu unzuverlässig fuer eine Korrektur oder Bestätigung ohne
+  visuelle PDF-Ansicht (`pdftoppm`/Poppler ist auf dieser Maschine nicht
+  installiert, daher kein Seiten-Rendering moeglich). Bleibt bei den
+  bisherigen, nur ueber die Query-Existenz (nicht die Modell-/
+  Wert-Korrektheit) geprüften Werten -- naechster Schritt fuer eine
+  kuenftige Session: `pdftoppm`/Poppler installieren (oder die PDF-Seite
+  anderweitig visuell pruefen) und Kap. 3.2.6 ff. der
+  `HDIntegratedCamera_InterfaceSpecifications-E.pdf` (Seiten ~69-75 laut
+  aktueller Extraktion) manuell gegenlesen.
+  `super_gain` (AK-UB300, `OSI:28`) weiterhin ohne Query -- jetzt genauer
+  begründet: Kommando steht strukturell im AK-UB300-exklusiven
+  Bereichs-Gain-Block (`OSA:50/51/52`/`OSA:60`), hat aber selbst keine
+  eigene "Only supported by AK-UB300"-Kennzeichnung, und dieselbe PDF-Stelle
+  ist ebenfalls spaltenverschoben (widersprüchliche Testextraktion). `drs`
+  bei AK-UB300 weiterhin unbestätigt (unverändert). Knee-Werte für
+  AW-UE80/UE50/UE40/UE30 weiterhin nicht extrahierbar (unverändert).
+  `adaptive_matrix` (AW-HE145/AW-UE150A) in dieser Runde nicht erneut
+  geprüft, Stand von vorher unverändert übernommen.
 - ~~Cycle-Features (Knee, DRS) auf Button 2/3 waren rundenweise durchschalt-
   bar, aber ihr aktueller Zustand war nirgends ablesbar (Bugreport
   2026-07-18: Button-Text zeigt nur den statischen Feature-Namen, `is-on`

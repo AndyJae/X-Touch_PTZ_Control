@@ -205,6 +205,48 @@ def test_knee_not_guessed_for_ue80_group_despite_menu_entry() -> None:
         assert "knee_auto" not in module.BUTTON_FEATURES, model
 
 
+def test_white_clip_absent_where_not_supported_per_pdf() -> None:
+    # §3.2.31 "White Clip settings": explizit "Only supported by the
+    # AW-HE130/AW-HR140/AW-UE150" -- war vorher (aus smart_reset_work, nicht
+    # gegen diese PDF geprueft) faelschlich auch bei diesen Modellen gefuehrt.
+    for model in ("AW-HE50", "AW-HE60", "AW-HE40", "AW-HE42", "AW-UE70", "AW-HE120", "AK-UB300"):
+        module = resolve_model(model)
+        assert module is not None, model
+        assert "white_clip" not in module.BUTTON_FEATURES, model
+        assert "white_clip" not in module.BUTTON_FEATURE_LABELS, model
+
+
+def test_white_clip_present_where_supported_per_pdf() -> None:
+    # Die drei in §3.2.31 explizit genannten Modelle behalten white_clip.
+    # AW-UE100/AW-UE150A/AW-HE145/AW-UE160/AW-UE80-Gruppe haben eigene,
+    # dedizierte PDFs, die White Clip unabhaengig davon dokumentieren.
+    for model in (
+        "AW-HE130", "AW-HR140", "AW-UE150A", "AW-HE145",
+        "AW-UE100", "AW-UE160", "AW-UE80", "AW-UE50", "AW-UE40", "AW-UE30",
+    ):
+        module = resolve_model(model)
+        assert module is not None, model
+        assert module.BUTTON_FEATURES["white_clip"] == {
+            "kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0",
+            "query": "QSA:2E", "query_on_value": "1",
+        }, model
+
+
+def test_night_mode_uses_correct_command_not_crop_marker_command() -> None:
+    # §3.2.27 "Night mode settings": OSD:B2:[Data] (0=Manual/1=Auto), Query
+    # QSD:B2 -- "Only supported by the AW-HE40/AW-UE70/AW-HE42" (Modell-
+    # zuordnung war schon richtig). Der bisherige Katalog nutzte faelschlich
+    # OSI:1A/QSI:1A, das laut PDF zu einer CROP-Marker-Farbauswahl fuer
+    # AK-UB300/AW-UE150 gehoert, nicht zu Night Mode.
+    for model in ("AW-HE40", "AW-HE42", "AW-UE70"):
+        module = resolve_model(model)
+        assert module is not None, model
+        assert module.BUTTON_FEATURES["night_mode"] == {
+            "kind": "toggle", "on": "OSD:B2:1", "off": "OSD:B2:0",
+            "query": "QSD:B2", "query_on_value": "1",
+        }, model
+
+
 def test_ue160_knee_toggle_uses_command_list_for_on_side() -> None:
     # AW-UE160s Knee braucht laut Referenzquelle zwei Kommandos je
     # Zielzustand (OSL:45 aktiviert den manuellen/Auto-Modus ueberhaupt

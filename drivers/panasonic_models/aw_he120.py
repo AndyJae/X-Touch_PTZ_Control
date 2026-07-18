@@ -21,9 +21,16 @@ AW-UE150/AK-UB300"**, AW-HE120 wird dort NICHT genannt. Der Eintrag wurde
 deshalb komplett entfernt (kein erfundenes/falsches Feature).
 
 Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
-(`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `osd` (`QUS`) und
-`white_clip` (`QSA:2E`) -- alle vier direkt in der o. g. PDF als
-Request/Response-Paar verifiziert.
+(`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`) und `osd` (`QUS`) --
+alle drei direkt in der o. g. PDF als Request/Response-Paar verifiziert.
+
+White-Clip-Korrektur (2026-07-18, Rest-Katalog-Pruefung): `white_clip`
+(`OSA:2E`) wurde bisher faelschlich gefuehrt (aus smart_reset_work, dort
+nicht gegen diese PDF geprueft) -- §3.2.31 "White Clip settings" ist aber
+explizit **"Only supported by the AW-HE130/AW-HR140/AW-UE150"**, AW-HE120
+wird dort NICHT genannt. Der Eintrag wurde deshalb komplett entfernt
+(kein erfundenes/falsches Feature) -- exakt dieselbe Art Fehler wie zuvor
+bei `knee` (siehe oben).
 """
 
 CAMERA_ID = "AW-HE120"
@@ -51,7 +58,6 @@ BUTTON_FEATURES: dict[str, dict] = {
     "drs_mid": {"kind": "toggle", "on": "OSE:33:2", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "2"},
     "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
-    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0", "query": "QSA:2E", "query_on_value": "1"},
 }
 
 BUTTON_FEATURE_LABELS: dict[str, str] = {
@@ -61,7 +67,6 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "drs_mid": "DRS: Mid",
     "drs_high": "DRS: High",
     "osd": "OSD",
-    "white_clip": "White Clip",
     "awb_black": "ABB (Black)",
     "aww_white": "AWW (White)",
 }

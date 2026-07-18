@@ -616,8 +616,11 @@ beleuchtet/unbeleuchtet, nicht erst nach dem ersten Druck. `auto_iris` ist
 ein Sonderfall (nutzt die bereits vorhandene `#GI`-Iris-Abfrage). Bewusst
 OHNE Query gelassen, wo das PDF-Zusammenspiel nicht eindeutig verifizierbar
 war: AW-UE160s `knee_manual`/`knee_auto` (Zustand hängt an zwei Kommandos,
-`OSL:45` + `OSA:2D`) sowie AK-UB300s `super_gain`/`drs` (Modell kommt in
-keiner PDF vor, nur die Befehlsfamilie selbst bei anderen Modellen).
+`OSL:45` + `OSA:2D`) sowie AK-UB300s `super_gain`/`drs` (AK-UB300 ist zwar
+laut `HDIntegratedCamera_InterfaceSpecifications-E.pdf` durchaus ein
+abgedecktes Modell, aber die betreffende Tabellenstelle war beim
+Textextrakt zu widersprüchlich für eine sichere Zuordnung, siehe CLAUDE.md
+Offene Punkte, Stand 2026-07-18).
 `trigger_button_feature()`s `"on"`/`"off"` akzeptieren seither auch eine
 Liste von Kommandos (fuer AW-UE160s zweikommandiges Knee).
 

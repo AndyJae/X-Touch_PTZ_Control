@@ -458,6 +458,14 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
     weiter (frueherer Bug: Anzeige zeigte z. B. "+239dB", damals noch mit
     fest verdrahteten AW-UE160-Grenzen).
 
+    Ein Tick bewegt bei `gain` um `driver.gain_step_db` statt immer um 1dB
+    (Bugfix 2026-07-18, siehe CLAUDE.md-Offene-Punkte): die 3dB-Schritt-
+    Modelle (AW-HE50/60/HE40/UE70/HE42) akzeptieren laut PDF nur 0/3/6/9dB
+    usw. -- `GAIN_MIN_DB`/`GAIN_MAX_DB` sind bei diesen Modellen beide
+    Vielfache von `GAIN_STEP_DB`, daher bleibt auch der geclampte Wert immer
+    ein gueltiges Vielfaches. `pedestal` hat kein Schrittweiten-Feld, bleibt
+    unveraendert bei 1 pro Klick.
+
     Jeder tatsaechliche Dreh-Tick setzt `encoder_saved` zurueck (Nutzerent-
     scheid: die "gespeichert"-Anzeige gilt nur bis zum naechsten Dreh)."""
     entry = state.mapping.get_channel("fader", channel_index)
@@ -475,7 +483,14 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
     state.encoder_saved[channel_index] = False
 
     multiplier = _encoder_multiplier(state, channel_index, time.monotonic())
-    delta = tick_delta * multiplier
+    # Modelle mit `GAIN_STEP_DB` > 1 (z. B. AW-HE50/60/HE40/UE70/HE42: nur
+    # 3dB-Schritte laut PDF) akzeptieren keine beliebigen Zwischenwerte -- ein
+    # Tick muss deshalb um einen vollen Schritt bewegen, nicht immer um 1dB
+    # (frueher offener Punkt, siehe CLAUDE.md: "Verhalten der Kamera bei
+    # einem solchen Zwischenwert (z. B. OGU:09) ist nicht dokumentiert").
+    # `pedestal` hat kein Schrittweiten-Feld, bleibt bei 1.
+    step = (getattr(driver, "gain_step_db", None) or 1) if function_name == "gain" else 1
+    delta = tick_delta * multiplier * step
     pending = state.encoder_pending_delta.get(channel_index, 0) + delta
 
     cam_state = state.state_store.get_camera(camera_id)

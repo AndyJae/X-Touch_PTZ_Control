@@ -139,7 +139,17 @@ Treiber           drivers/base.py       CameraDriver-Interface (ABC)
   Web-UI. Umgekehrt sendet sie bei `iris_changed` die Motorfader-Position
   (außer während aktivem Touch, Spec §5.4) und aktualisiert die
   Scribble-Strip-Displays (SysEx, Spec §5.3, Device-ID `0x15` verifiziert).
-  Port kommt aus `config.yaml midi.input_port`/`output_port`
+  Solo/Mute (Note 8–23) rufen dieselbe `apply_button_action()` wie der
+  Web-UI-Klick auf Button 2/3 auf; Select (Note 24–31) löst
+  `trigger_companion_select()` aus. LED-Feedback für Solo/Mute ist rein
+  binär (OFF=aus/ON=an, kein Blinken) und läuft über denselben
+  Event-getriebenen Vollabzug wie die Scribble Strips — Select hat keine
+  LED-Ansteuerung (einmalige Aktion ohne Dauerzustand). LED-Farben sind laut
+  `github.com/Aldaviva/BehringerXTouchExtender` hardwarefest je Tastentyp
+  (Rec/Mute rot, Solo gelb, Select grün), nicht per MIDI wählbar — keine
+  offizielle Behringer-Doku, nicht gegen reale Hardware verifiziert (nur
+  Rx/Tastendruck ist bisher hardwareverifiziert, LED-Tx noch nicht). Port
+  kommt aus `config.yaml midi.input_port`/`output_port`
   (Substring-Match, Spec §5.5); ohne gesetzten Port bleibt MIDI unverbunden,
   kein Fehler. `midi/surface.py` ist ein früherer Scaffold-Versuch, der
   nirgends mehr eingebunden ist.
@@ -161,12 +171,21 @@ Treiber           drivers/base.py       CameraDriver-Interface (ABC)
   Modells (`PanasonicAWDriver.connect()` → `_apply_model_catalog()`). Nicht
   Teil der `CameraDriver`-ABC — ein nicht erkanntes Modell bietet einfach
   keine Optionen an (leere Kataloge, kein erfundener Fallback). Zustand wird
-  nur lokal getrackt (kein Kamera-Query für diese Kommandos verfügbar, siehe
-  Kommentar dort). Gain-/Pedestal-Bereich und -Kommando werden über dieselbe
-  Registry mitaufgelöst (`GAIN_MIN_DB`/`GAIN_MAX_DB`/`GAIN_STEP_DB`,
-  `PEDESTAL_COMMAND` u. ä. je Modell-Datei, siehe Spec §7.2) — nur Iris
-  bleibt weiterhin modellunabhängig nur für AW-UE160 verifiziert (siehe
-  `drivers/panasonic_aw.py`-Klassendocstring).
+  bei bekannter Query (`feature["query"]`/`query_on_value`, nur gesetzt, wo
+  gegen die lokalen PDFs verifiziert) sofort bei Zuweisung abgefragt
+  (`PanasonicAWDriver.query_button_feature()`, siehe Spec §9a) — ohne
+  bekannte Query bleibt der Zustand wie zuvor nur lokal getrackt, erst nach
+  dem ersten Druck bekannt. Button 2/3 sind sowohl über die Web-UI
+  (Setup-Seite-Dropdown oder Zahnrad-Popover auf der Übersicht-Seite) als
+  auch über den physischen X-Touch Extender (Solo/Mute, `midi/fader.py`,
+  siehe unten) auslösbar — beide Wege rufen dieselbe
+  `apply_button_action()`. Gain-/Pedestal-Bereich und -Kommando werden über
+  dieselbe Registry mitaufgelöst (`GAIN_MIN_DB`/`GAIN_MAX_DB`/
+  `GAIN_STEP_DB`, `PEDESTAL_COMMAND` u. ä. je Modell-Datei, siehe Spec §7.2)
+  — `GAIN_STEP_DB` wird seit 2026-07-18 auch von der Encoder-Drehung selbst
+  respektiert (`core/application.py::apply_encoder_turn`), nicht nur bei der
+  Wertanzeige. Nur Iris bleibt weiterhin modellunabhängig nur für AW-UE160
+  verifiziert (siehe `drivers/panasonic_aw.py`-Klassendocstring).
 - **Kamera-Registrierung** (`core/application.py::register_camera`): einzige
   Stelle, die `AppState.cameras/drivers/rate_limiters/mapping` zur Laufzeit
   erweitert (alle anderen Use-Cases arbeiten nur mit dem beim Start
@@ -190,10 +209,17 @@ direkt gegen `core/application.py`, ohne FastAPI. Beide nutzen
 prüft das Wire-Format des AW-UE160-Treibers (inkl. Notification-Frame-Parsing
 gegen echte, live mitgeschnittene Bytes) und das Lens-Info-Feedback,
 `tests/test_companion.py` das von `core/companion.py`, beide gegen
-`httpx.MockTransport`. `midi/fader.py` hat keine dedizierten Unit-Tests (nur
-live gegen das reale Gerät verifiziert, siehe CLAUDE.md) — reine
-MIDI-I/O-Verdrahtung ohne eigene Entscheidungslogik jenseits dessen, was
-`core/ratelimit.py`/`core/application.py` bereits abdecken.
+`httpx.MockTransport`. `tests/test_panasonic_models.py` prüft die
+Modell-Registry selbst (Auflösung per `QID`/Alias, Katalog-Korrektheit
+einzelner Modelle gegen die lokalen PDFs), `tests/test_panasonic_emulator.py`
+die CGI-Dispatch-Logik von `tools/panasonic_emulator.py`.
+`tests/test_fader.py` deckt die Solo/Mute/Select-Notenbereich→Kanal/Slot-
+Zuordnung und die LED-Velocity-Logik von `midi/fader.py` mit einem gefakten
+Output-Port ab (kein echter MIDI-Port nötig) — Fader/Touch/Encoder/Rec
+bleiben ohne dedizierte Unit-Tests, nur live gegen das reale Gerät
+verifiziert (siehe CLAUDE.md), da reine MIDI-I/O-Verdrahtung ohne eigene
+Entscheidungslogik jenseits dessen, was `core/ratelimit.py`/
+`core/application.py` bereits abdecken.
 
 ## Dev-Werkzeug
 

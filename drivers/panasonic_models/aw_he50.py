@@ -22,9 +22,15 @@ alle Werte.
 
 Query-Ergaenzung (2026-07-18, Nutzerauftrag "verdrahten inkl. Zustands-
 abfrage beim Zuweisen"): `query`/`query_on_value` bei `auto_focus` (`QAF`),
-`drs_low`/`drs_high` (`QSE:33`), `osd` (`QUS`, Antwort als `OUS:[Data]`) und
-`white_clip` (`QSA:2E`) -- alle vier direkt in der o. g. PDF als
-Request/Response-Paar verifiziert.
+`drs_low`/`drs_high` (`QSE:33`) und `osd` (`QUS`, Antwort als `OUS:[Data]`)
+-- alle drei direkt in der o. g. PDF als Request/Response-Paar verifiziert.
+
+White-Clip-Korrektur (2026-07-18, Rest-Katalog-Pruefung): `white_clip`
+(`OSA:2E`) wurde bisher faelschlich gefuehrt (aus smart_reset_work, dort
+nicht gegen diese PDF geprueft) -- §3.2.31 "White Clip settings" ist aber
+explizit **"Only supported by the AW-HE130/AW-HR140/AW-UE150"**, weder
+AW-HE50 noch AW-HE60 werden dort genannt. Der Eintrag wurde deshalb
+komplett entfernt (kein erfundenes/falsches Feature).
 """
 
 CAMERA_ID = "AW-HE50"
@@ -51,7 +57,6 @@ BUTTON_FEATURES: dict[str, dict] = {
     "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
     "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
-    "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0", "query": "QSA:2E", "query_on_value": "1"},
 }
 
 BUTTON_FEATURE_LABELS: dict[str, str] = {
@@ -60,7 +65,6 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "drs_low": "DRS: Low",
     "drs_high": "DRS: High",
     "osd": "OSD",
-    "white_clip": "White Clip",
     "awb_black": "ABB (Black)",
     "aww_white": "AWW (White)",
 }
