@@ -76,8 +76,10 @@ verifiziert, aber noch nicht an Kamera-Aktionen/Companion-SELECT angebunden
    — ohne gesetzten Port bleibt MIDI unverbunden (Spec §5.5), kein Fehler.
 
 Ohne reale Kamera zum Testen: `python tools/panasonic_emulator.py` startet
-einen lokalen AW-UE160-CGI-Emulator (Control-UI unter `--ui-port`, Default
-8080). Ohne echten X-Touch Extender zum Prüfen der rohen MIDI-Belegung:
+einen lokalen Panasonic-CGI-Emulator (Control-UI unter `--ui-port`, Default
+8080) — das simulierte Kameramodell ist im Start-Formular aus allen in
+`drivers/panasonic_models/` registrierten Modellen wählbar (Default
+AW-UE160). Ohne echten X-Touch Extender zum Prüfen der rohen MIDI-Belegung:
 `python tools/midi_monitor.py` loggt alle eingehenden Rx-Nachrichten roh
 (Dev-Werkzeug, siehe Spec §5.2 "Debug-Modus").
 
@@ -190,10 +192,16 @@ MIDI-I/O-Verdrahtung ohne eigene Entscheidungslogik jenseits dessen, was
 
 ## Dev-Werkzeug
 
-- `tools/panasonic_emulator.py` bildet die AW-UE160-CGI-Strecke lokal nach
-  (kein Produktionscode) — für manuelles Testen ohne reale Kamera. Kennt
-  aktuell keine Update-Notifications/`#LPC1` (Emulator liefert dafür `ER1`/
-  `404`, PTZ_Control loggt das nur als Warnung, siehe `connect_camera`).
+- `tools/panasonic_emulator.py` bildet die Panasonic-CGI-Strecke lokal nach
+  (kein Produktionscode) — für manuelles Testen ohne reale Kamera. Modell im
+  Start-Formular wählbar (alle in `drivers/panasonic_models/` registrierten
+  Modelle); QID-Antwort, Gain-/Pedestal-Kommandoverhalten und der
+  akzeptierte Button-Feature-Katalog richten sich danach — ein Kommando, das
+  das gewählte Modell laut den lokalen Referenz-PDFs nicht hat (z. B. `OGU`
+  bei AK-UB300 oder `knee` bei AW-HE50), liefert `ER1`, wie bei einer echten
+  Kamera ohne dieses Kommando. Kennt weiterhin keine Update-Notifications/
+  `#LPC1` (Emulator liefert dafür `ER1`/`404`, PTZ_Control loggt das nur als
+  Warnung, siehe `connect_camera`).
 - `tools/midi_monitor.py` loggt alle rohen Rx-MIDI-Nachrichten eines
   Eingangsports mit einer Interpretation gegen die in Spec §5.2 angenommene
   Belegung — für manuelles Verifizieren gegen einen realen X-Touch Extender.

@@ -24,6 +24,7 @@ def test_get_registry_loads_all_model_files() -> None:
     assert "AW-UE100" in ids
     assert "AW-UE150A" in ids
     assert "AW-UE80" in ids
+    assert "AW-HE145" in ids
     assert "AK-UB300" in ids
 
 
@@ -79,15 +80,31 @@ def test_ue150_and_ue160_share_master_pedestal_command_but_differ_in_gain() -> N
     assert (aw_ue150.GAIN_MIN_DB, aw_ue150.GAIN_MAX_DB) != (aw_ue160.GAIN_MIN_DB, aw_ue160.GAIN_MAX_DB)
 
 
-def test_ue145_does_not_inherit_gain_pedestal_from_ue150() -> None:
-    # AW-UE145 re-exportiert BUTTON_FEATURES von aw_ue150 (siehe aw_ue145.py),
-    # ist aber in keiner der beiden Referenz-PDFs fuer Gain/Pedestal gelistet
-    # ("applicable models" nennt nur AW-UE150/AW-UE155/AW-UN145) -- bewusst
-    # kein GAIN_MIN_DB/PEDESTAL_COMMAND hier, kein erfundener Wert.
+def test_ue145_is_alias_of_he145_not_a_separate_camera_id() -> None:
+    # Korrektur 2026-07-18 (Nutzerentscheid): "AW-UE145" war urspruenglich
+    # faelschlich der CAMERA_ID (aus dem Dateinamen der smart_reset_work-
+    # Quelle uebernommen), passte aber zu keiner echten QID-Antwort. Das
+    # dedizierte docs/specs/AW-UE150HE145_InterfaceSpecification_E.pdf zeigt
+    # die tatsaechlichen QID-Werte "AW-UE150" und "AW-HE145" -- "AW-UE145"
+    # ist jetzt nur noch ein Alias (siehe aw_he145.py), fuer den Fall, dass
+    # eine Kamera (fehlerhaft?) diesen String meldet.
     module = resolve_model("AW-UE145")
     assert module is not None
-    assert not hasattr(module, "GAIN_MIN_DB")
-    assert not hasattr(module, "PEDESTAL_COMMAND")
+    assert module.CAMERA_ID == "AW-HE145"
+    assert resolve_model("AW-HE145") is module
+
+
+def test_he145_resolves_gain_pedestal_from_dedicated_pdf() -> None:
+    # Gain/Pedestal kommen aus dem oben genannten dedizierten PDF, das
+    # explizit fuer AW-UE150 UND AW-HE145 gemeinsam gilt (keine "only
+    # supported by"-Einschraenkung beim Gain/Pedestal-Abschnitt) -- daher
+    # identisch zu aw_ue150.py (nach dessen Korrektur 2026-07-18 auf
+    # GAIN_MIN_DB=-3, siehe dortiger Kommentar zum PDF-Widerspruch).
+    from drivers.panasonic_models import aw_he145, aw_ue150
+
+    assert (aw_he145.GAIN_MIN_DB, aw_he145.GAIN_MAX_DB, aw_he145.GAIN_STEP_DB) == (-3, 42, 1)
+    assert (aw_he145.GAIN_MIN_DB, aw_he145.GAIN_MAX_DB) == (aw_ue150.GAIN_MIN_DB, aw_ue150.GAIN_MAX_DB)
+    assert aw_he145.PEDESTAL_COMMAND == aw_ue150.PEDESTAL_COMMAND == "OSJ:0F"
 
 
 def test_ak_ub300_has_pedestal_but_no_gain_module_constants() -> None:
@@ -95,3 +112,90 @@ def test_ak_ub300_has_pedestal_but_no_gain_module_constants() -> None:
     assert module is not None
     assert not hasattr(module, "GAIN_MIN_DB")
     assert module.PEDESTAL_COMMAND == "OSG:4A"
+
+
+# --- DRS/Knee-Korrektur 2026-07-18 (Nutzerauftrag: Button-Kataloge gegen
+# Kapitel 8/9 der jeweiligen PDFs verifizieren) -- bestehende, aus
+# smart_reset_work uebernommene Eintraege waren fuer diese beiden Features
+# durchgaengig als einfache Toggles kodiert, obwohl sie laut PDF mehrwertige
+# Cycles sind (oder, bei "knee" auf AW-HE120, gar nicht existieren). ---
+
+_DRS_3VALUE_CYCLE = {
+    "kind": "cycle",
+    "cycle": [
+        {"label": "OFF", "cmd": ["OSE:33:0"]},
+        {"label": "LOW", "cmd": ["OSE:33:1"]},
+        {"label": "HIGH", "cmd": ["OSE:33:3"]},
+    ],
+}
+_DRS_4VALUE_CYCLE = {
+    "kind": "cycle",
+    "cycle": [
+        {"label": "OFF", "cmd": ["OSE:33:0"]},
+        {"label": "LOW", "cmd": ["OSE:33:1"]},
+        {"label": "MID", "cmd": ["OSE:33:2"]},
+        {"label": "HIGH", "cmd": ["OSE:33:3"]},
+    ],
+}
+_KNEE_CYCLE = {
+    "kind": "cycle",
+    "cycle": [
+        {"label": "OFF", "cmd": ["OSA:2D:0"]},
+        {"label": "Manual", "cmd": ["OSA:2D:1"]},
+        {"label": "Auto", "cmd": ["OSA:2D:2"]},
+    ],
+}
+
+
+def test_drs_is_three_value_cycle_for_he_low_tier_group() -> None:
+    # HDIntegratedCamera_InterfaceSpecifications-E.pdf, DRS-Tabelle fuer
+    # "AW-HE50/AW-HE60/AW-HE40/AW-UE70/AW-HE42": nur 0/1/3 (Off/Low/High),
+    # Data-Wert 2 ist fuer diese Gruppe nicht dokumentiert.
+    for model in ("AW-HE50", "AW-HE60", "AW-HE40", "AW-HE42", "AW-UE70"):
+        module = resolve_model(model)
+        assert module is not None, model
+        assert module.BUTTON_FEATURES["drs"] == _DRS_3VALUE_CYCLE, model
+
+
+def test_drs_is_four_value_cycle_for_higher_tier_group() -> None:
+    # Dieselbe PDF, DRS-Tabelle fuer "AW-HE120/AW-HE130/AW-HR140/AW-UE150":
+    # volle 4 Werte (Off/Low/Mid/High). Gilt laut den jeweils dedizierten
+    # PDFs auch fuer AW-UE100 und AW-UE80/UE50/UE40/UE30.
+    for model in (
+        "AW-HE120", "AW-HE130", "AW-HR140",
+        "AW-UE150A", "AW-HE145",
+        "AW-UE100", "AW-UE80", "AW-UE50", "AW-UE40", "AW-UE30",
+    ):
+        module = resolve_model(model)
+        assert module is not None, model
+        assert module.BUTTON_FEATURES["drs"] == _DRS_4VALUE_CYCLE, model
+
+
+def test_knee_absent_from_he120_not_supported_per_pdf() -> None:
+    # §3.2.30 "Knee settings": Knee Mode ist explizit "Only supported by the
+    # AW-HE130/AW-HR140/AW-UE150/AK-UB300" -- AW-HE120 wird dort NICHT
+    # genannt, der Katalog hatte ihn vorher faelschlich als Toggle.
+    module = resolve_model("AW-HE120")
+    assert module is not None
+    assert "knee" not in module.BUTTON_FEATURES
+
+
+def test_knee_is_three_value_cycle_where_supported() -> None:
+    # Dieselbe PDF-Stelle nennt AW-HE130/AW-HR140/AW-UE150/AK-UB300 als
+    # Knee-faehig (0=OFF/1=MANUAL/2=AUTO); AW-UE100 hat das laut seinem
+    # eigenen dedizierten PDF ebenfalls in exakt dieser Kodierung.
+    for model in ("AW-HE130", "AW-HR140", "AW-UE150A", "AW-HE145", "AK-UB300", "AW-UE100"):
+        module = resolve_model(model)
+        assert module is not None, model
+        assert module.BUTTON_FEATURES["knee"] == _KNEE_CYCLE, model
+
+
+def test_knee_not_guessed_for_ue80_group_despite_menu_entry() -> None:
+    # Kap. 8 der AW-UE80UE50UE40-PDF listet "Knee mode OSA:2D" als
+    # existierendes Menu, aber die Werte-/Label-Tabelle liess sich nicht
+    # sauber extrahieren -- bewusst kein erfundener Cycle, "knee" bleibt
+    # abwesend (siehe aw_ue80.py-Kommentar, CLAUDE.md Offene Punkte).
+    for model in ("AW-UE80", "AW-UE50", "AW-UE40", "AW-UE30"):
+        module = resolve_model(model)
+        assert module is not None, model
+        assert "knee" not in module.BUTTON_FEATURES, model

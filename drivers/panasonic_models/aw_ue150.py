@@ -6,21 +6,36 @@ so in der Quelle gefuehrt, "AW-UE150" ist dort ein Alias, keine
 Tippabweichung. Einziges hier portiertes Modell mit "adaptive_matrix"; Knee
 ist wie bei AW-UE160 ein 3-Stufen-Cycle statt Toggle.
 
-Gain/Pedestal (`HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/
-§3.2.14, "applicable models": AW-UE150/AW-UE155/AW-UN145 -- deckt also genau
-CAMERA_ID + CAMERA_ID_ALIASES hier ab): Gain kontinuierlich 0-42dB (OGU
-08h=0dB .. 32h=42dB, gleiche Tabelle wie AW-HR140) -- ACHTUNG, das ist NICHT
-dieselbe Gain-Formel wie AW-UE160 (dort -6..+12dB, eigene PDF-Quelle).
-Pedestal ueber `OSJ:0F`/`QSJ:0F` Master Pedestal, Bereich -200..+200,
-Data = 0x800 + Wert -- explizit "Only enabled for the AW-UE150" laut
-Batch-Tabelle, gleiches Kommando/Format wie bei AW-UE160.
+Gain/Pedestal: urspruenglich aus `HDIntegratedCamera_InterfaceSpecifications-
+E.pdf` §3.2.6/§3.2.14 (2020, Multi-Modell-PDF, "applicable models":
+AW-UE150/AW-UE155/AW-UN145 -- deckt also genau CAMERA_ID + CAMERA_ID_ALIASES
+hier ab) verifiziert mit Gain 0-42dB (OGU 08h=0dB .. 32h=42dB). **Korrektur
+2026-07-18 (Nutzerentscheid):** zwei neuere, dedizierte PDFs widersprechen
+dem: `docs/specs/AW-UE150HE145_InterfaceSpecification_E.pdf` (2022,
+"AW-UE150/AW-HE145", siehe auch `aw_he145.py`) UND
+`docs/specs/AW-UE150A_InterfaceSpecification_E.pdf` (2025, explizit nur fuer
+"AW-UE150A", Model Number-Tabelle bestaetigt `OID:AW-UE150A`) zeigen
+uebereinstimmend einen WEITEREN Bereich -3..+42dB (Anker 05h=-3dB ..
+08h=0dB .. 2Ch=36dB .. 32h=42dB) -- 2 von 3 Quellen stimmen ueberein, nur
+die aelteste/generischste (2020) weicht ab. Die neueren, modellspezifischen
+Quellen wurden als massgeblich gewaehlt, GAIN_MIN_DB ist daher jetzt -3
+(nicht mehr 0). ACHTUNG, das ist trotzdem NICHT dieselbe Gain-Formel wie
+AW-UE160 (dort -6..+12dB, eigene PDF-Quelle mit anderem Maximum). Pedestal
+ueber `OSJ:0F`/`QSJ:0F` Master Pedestal, Bereich -200..+200, Data = 0x800 +
+Wert -- in ALLEN DREI PDF-Quellen identisch, kein
+Widerspruch, gleiches Kommando/Format wie bei AW-UE160/AW-HE145.
+
+DRS-Korrektur (2026-07-18, alle drei o. g. PDFs uebereinstimmend): 4-Werte-
+Cycle (0=Off/1=Low/2=Mid/3=High) statt Toggle -- vorher faelschlich
+`{"kind": "toggle", ...}` aus smart_reset_work uebernommen. `knee` war
+bereits korrekt als 3-Werte-Cycle gefuehrt, keine Aenderung noetig.
 """
 
 CAMERA_ID = "AW-UE150A"
 CAMERA_ID_ALIASES = ["AW-UE150", "AW-UE155", "AW-UN145"]
 DISPLAY_NAME = "Panasonic AW-UE150A"
 
-GAIN_MIN_DB = 0
+GAIN_MIN_DB = -3
 GAIN_MAX_DB = 42
 GAIN_STEP_DB = 1
 
@@ -38,7 +53,15 @@ BUTTON_FEATURES: dict[str, dict] = {
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
-    "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
+    "drs": {
+        "kind": "cycle",
+        "cycle": [
+            {"label": "OFF", "cmd": ["OSE:33:0"]},
+            {"label": "LOW", "cmd": ["OSE:33:1"]},
+            {"label": "MID", "cmd": ["OSE:33:2"]},
+            {"label": "HIGH", "cmd": ["OSE:33:3"]},
+        ],
+    },
     "knee": {
         "kind": "cycle",
         "cycle": [

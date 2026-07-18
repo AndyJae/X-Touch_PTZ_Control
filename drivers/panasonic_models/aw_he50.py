@@ -9,6 +9,14 @@ Gain/Pedestal (`HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/
 (OGU 08h=0dB .. 1Ah=18dB, disabled bei FullAuto -> ER3); Pedestal ueber das
 aeltere `OTP`/`QTP`-Kommando (nicht `OSJ:0F` wie bei UE150/UE160), Bereich
 -10..+10, Data = 0x96 + Wert*15 (Ankerpunkte 000h=-10/096h=0/12Ch=+10).
+
+DRS-Korrektur (2026-07-18, Quelle: dieselbe PDF §3.2.x "DRS", Tabelle fuer
+"AW-HE50/AW-HE60/AW-HE40/AW-UE70/AW-HE42"): kein einfacher Toggle, sondern
+ein 3-Werte-Cycle (0=Off/1=Low/3=High -- Data-Wert 2 ist fuer diese
+Modellgruppe nicht belegt/dokumentiert, laut PDF disabled bei FullAuto ->
+ER3). Vorher faelschlich als `{"kind": "toggle", "on": "OSE:33:1",
+"off": "OSE:33:0"}` gefuehrt (aus smart_reset_work uebernommen, dort nicht
+gegen diese PDF geprueft).
 """
 
 CAMERA_ID = "AW-HE50"
@@ -32,7 +40,14 @@ BUTTON_FEATURES: dict[str, dict] = {
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
-    "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
+    "drs": {
+        "kind": "cycle",
+        "cycle": [
+            {"label": "OFF", "cmd": ["OSE:33:0"]},
+            {"label": "LOW", "cmd": ["OSE:33:1"]},
+            {"label": "HIGH", "cmd": ["OSE:33:3"]},
+        ],
+    },
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
     "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
 }

@@ -8,6 +8,13 @@ Gain/Pedestal (`HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/
 §3.2.14): Gain kontinuierlich 0-36dB (OGU 08h=0dB .. 2Ch=36dB, 1dB-Schritte);
 Pedestal ueber `OTP`/`QTP`, Bereich -150..+150, Data = 0x96 + Wert -- gleiche
 Pedestal-Familie wie AW-HE120/AW-HR140.
+
+DRS/Knee-Korrektur (2026-07-18, dieselbe PDF, §3.2.30 "Knee settings" +
+DRS-Tabelle): `drs` ist ein 4-Werte-Cycle (0=Off/1=Low/2=Mid/3=High) statt
+Toggle. `knee` (`OSA:2D`) ist laut §3.2.30 explizit "Only supported by the
+AW-HE130/AW-HR140/AW-UE150/AK-UB300" -- fuer AW-HE130 also korrekt
+vorhanden, aber als 3-Werte-Cycle (0=OFF/1=MANUAL/2=AUTO), nicht als
+Toggle (vorher faelschlich `{"kind": "toggle", ...}` aus smart_reset_work).
 """
 
 CAMERA_ID = "AW-HE130"
@@ -31,8 +38,23 @@ BUTTON_FEATURES: dict[str, dict] = {
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
-    "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
-    "knee": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0"},
+    "drs": {
+        "kind": "cycle",
+        "cycle": [
+            {"label": "OFF", "cmd": ["OSE:33:0"]},
+            {"label": "LOW", "cmd": ["OSE:33:1"]},
+            {"label": "MID", "cmd": ["OSE:33:2"]},
+            {"label": "HIGH", "cmd": ["OSE:33:3"]},
+        ],
+    },
+    "knee": {
+        "kind": "cycle",
+        "cycle": [
+            {"label": "OFF", "cmd": ["OSA:2D:0"]},
+            {"label": "Manual", "cmd": ["OSA:2D:1"]},
+            {"label": "Auto", "cmd": ["OSA:2D:2"]},
+        ],
+    },
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
     "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
 }

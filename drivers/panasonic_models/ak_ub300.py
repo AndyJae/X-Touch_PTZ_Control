@@ -22,6 +22,20 @@ Pedestal (§3.2.14): eigenes `OSG:4A`/`QSG:4A`-Kommando, Bereich -99..+99,
 Data = 0x80 + Wert (Ankerpunkte 1Dh=-99/80h=0/E3h=+99) -- diese Formel ist
 mit dem einfachen zentrierten Set/Step-Interface kompatibel, daher hier
 (anders als Gain) doch abgebildet.
+
+Knee-Korrektur (2026-07-18, §3.2.30 "Knee settings"): Knee Mode ist dort
+explizit "Only supported by the AW-HE130/AW-HR140/AW-UE150/AK-UB300" mit
+3 Werten (0=OFF/1=MANUAL/2=AUTO, `OSA:2D`) -- AK-UB300 nutzt denselben
+Top-Level-Befehl wie die AW-Modelle (nur die abhaengigen Knee-Point/-Slope-
+Werte haben eine eigene, AK-UB300-spezifische Kodierung, die hier nicht
+relevant ist). Bisher faelschlich als Toggle gefuehrt, jetzt 3-Werte-Cycle.
+
+`drs` (`OSE:33`) bewusst NICHT angefasst: die DRS-Tabelle derselben PDF
+nennt nur "AW-HE50/AW-HE60/AW-HE40/AW-UE70/AW-HE42" (3 Werte) und
+"AW-HE120/AW-HE130/AW-HR140/AW-UE150" (4 Werte) -- AK-UB300 wird dort in
+keiner der beiden Gruppen erwaehnt. Ob/wie AK-UB300 DRS ueberhaupt
+unterstuetzt, ist damit unbestaetigt; der bisherige Toggle wird deshalb
+weder bestaetigt noch korrigiert (kein erfundener Wert in beide Richtungen).
 """
 
 CAMERA_ID = "AK-UB300"
@@ -41,7 +55,14 @@ BUTTON_FEATURES: dict[str, dict] = {
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
-    "knee": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0"},
+    "knee": {
+        "kind": "cycle",
+        "cycle": [
+            {"label": "OFF", "cmd": ["OSA:2D:0"]},
+            {"label": "Manual", "cmd": ["OSA:2D:1"]},
+            {"label": "Auto", "cmd": ["OSA:2D:2"]},
+        ],
+    },
     "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
     "super_gain": {"kind": "toggle", "on": "OSI:28:1", "off": "OSI:28:0"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},

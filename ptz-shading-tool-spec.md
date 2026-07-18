@@ -111,7 +111,7 @@ PTZ_Control/
 │   ├── templates/              # Jinja2-Templates
 │   └── static/                 # app.css/app.js, images/ (Logo)
 ├── tools/
-│   └── panasonic_emulator.py  # Lokaler AW-UE160-CGI-Emulator (Dev-Werkzeug)
+│   └── panasonic_emulator.py  # Lokaler Panasonic-CGI-Emulator, Modell waehlbar (Dev-Werkzeug)
 └── tests/
     ├── test_application.py
     ├── test_bus.py
@@ -330,11 +330,19 @@ und Solo-LED blinken lassen (UI-Hinweis "AGC aktiv").
 
 **Modellabhängige Gain-/Pedestal-Daten (`drivers/panasonic_models/*.py`,
 Quelle: `HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/§3.2.14,
-für AW-UE160 zusätzlich `AW-UE160_InterfaceSpecification_E.pdf` Kap. 9):**
-Die obige Tabelle zeigt nur AW-UE160. `OGU`/`QGU` selbst (Data = 0x08 + dB,
-80h = AGC) ist laut beiden PDFs modellübergreifend identisch — nur Bereich/
-Schrittweite variieren und kommen per Modell-Registry aus `GAIN_MIN_DB`/
-`GAIN_MAX_DB`/`GAIN_STEP_DB`:
+für AW-UE160 zusätzlich `AW-UE160_InterfaceSpecification_E.pdf` Kap. 9, für
+AW-UE100 das dedizierte `AW-UE100_InterfaceSpecification_E.pdf` Kap. 9
+"Command List", für AW-UE80/UE50/UE40/UE30 das dedizierte
+`AW-UE80UE50UE40_InterfaceSpecification_E.pdf` Kap. 9, für AW-UE150/
+AW-HE145 zusätzlich/korrigierend das dedizierte
+`AW-UE150HE145_InterfaceSpecification_E.pdf` Kap. 9 sowie (jüngste, 2025,
+ausschließlich AW-UE150A) `AW-UE150A_InterfaceSpecification_E.pdf` Kap. 9 —
+diese vier zuletzt genannten PDFs wurden erst nachträglich ins Repo gelegt,
+siehe CLAUDE.md Offene Punkte, Korrekturen 2026-07-18):** Die obige Tabelle zeigt
+nur AW-UE160. `OGU`/`QGU` selbst (Data = 0x08 + dB, 80h = AGC) ist laut
+allen PDFs modellübergreifend identisch — nur Bereich/Schrittweite variieren
+und kommen per Modell-Registry aus `GAIN_MIN_DB`/`GAIN_MAX_DB`/
+`GAIN_STEP_DB`:
 
 | Modell(e) | Gain-Bereich | Schrittweite |
 |---|---|---|
@@ -342,27 +350,39 @@ Schrittweite variieren und kommen per Modell-Registry aus `GAIN_MIN_DB`/
 | AW-HE50/AW-HE60 | 0…18dB | 3dB (nur diskrete Stufen) |
 | AW-HE120 | 0…18dB | 1dB |
 | AW-HE130 | 0…36dB | 1dB |
-| AW-HR140/AW-UE150(A) | 0…42dB | 1dB |
+| AW-HR140 | 0…42dB | 1dB |
+| AW-UE150(A)/AW-HE145(+Alias AW-UE145) | −3…+42dB | 1dB (2022er + 2025er dediziertes PDF stimmen ueberein, widersprechen aber dem aelteren 2020er Multi-Modell-PDF, das fuer AW-UE150 0…+42dB nennt — neuere Quellen gewaehlt, siehe `aw_ue150.py`/`aw_he145.py`) |
+| AW-UE100/AW-UE80/UE50/UE40/UE30 | 0…42dB | 1dB (nur 0…36dB, wenn "Super Gain" aus ist — Kopplung hier nicht durchgesetzt) |
 | AW-HE40/AW-UE70/AW-HE42 | 0…48dB | 3dB (nur diskrete Stufen) |
 | AK-UB300 | — | kein `OGU` (siehe unten) |
-| AW-UE100/UE80/UE30/40/50/UE145 | — | in keiner der beiden PDFs dokumentiert |
+
+Damit hat inzwischen jedes registrierte Modell Gain-Daten — ausser AK-UB300
+(strukturell anderes `OGS`-Schema, siehe unten).
 
 Pedestal ist dagegen NICHT dasselbe Kommando für alle Modelle — drei
 Kommandofamilien (`PEDESTAL_COMMAND`/`PEDESTAL_QUERY_COMMAND` je Modell-Datei):
 
 | Kommando | Modell(e) | Bereich | Data-Formel |
 |---|---|---|---|
-| `OSJ:0F`/`QSJ:0F` (Master Pedestal) | AW-UE160, AW-UE150(A) | −200…+200 | 0x800 + Wert |
+| `OSJ:0F`/`QSJ:0F` (Master Pedestal) | AW-UE160, AW-UE150(A), AW-HE145, AW-UE100, AW-UE80/UE50/UE40/UE30 | −200…+200 | 0x800 + Wert |
 | `OTP`/`QTP` | AW-HE50/HE60/HE40/UE70/HE42 | −10…+10 | 0x96 + Wert×15 |
 | `OTP`/`QTP` | AW-HE120/HE130/HR140 | −150…+150 | 0x96 + Wert |
 | `OSG:4A`/`QSG:4A` | AK-UB300 | −99…+99 | 0x80 + Wert |
 
+Bei Pedestal hat jedes registrierte Modell (inkl. AK-UB300) Daten — hier gibt
+es also keine Luecke mehr.
+
 `PanasonicAWDriver.set_pedestal()`/`step_pedestal()`/`_query_pedestal()`
 lesen Kommando, Zentraldatenwert, Skalierung und Hex-Breite aus dem per
 Modell-Registry aufgelösten Modul (`_apply_model_catalog()`) statt fest
-`OSJ:0F` zu verwenden. Modelle ohne Eintrag in einer der beiden PDFs haben
-weder Gain- noch Pedestal-Konstanten — Encoder zeigt dafür keinen
-Wertebereich (kein erfundener Fallback).
+`OSJ:0F` zu verwenden. Ein (aktuell nicht mehr vorkommendes, aber weiterhin
+moeglich, falls ein noch unbekanntes Modell auftaucht) Modell ohne Eintrag
+in einer der lokalen PDFs haette weder Gain- noch Pedestal-Konstanten —
+Encoder zeigt dafür keinen Wertebereich (kein erfundener Fallback); Zeile 2
+der Kanal-Anzeige zeigt in diesem Fall explizit "n/a" statt stillschweigend
+auf die Camera-Status-
+Anzeige zurückzufallen (`_encoder_function_unsupported()` in
+`core/application.py`, Bugfix 2026-07-18).
 
 **Gain-Sonderfall AK-UB300:** hat kein `OGU`/`QGU` — stattdessen `OGS`
 (Gain-Auswahl LOW/MID/HIGH/S.GAIN1-3) + `OSA:50`/`OSA:51`/`OSA:52` (dB-Werte
@@ -571,8 +591,11 @@ AW-HE42 (AW-HE75/68, Katalog = AW-HE40); AW-UE70 (AW-UN70, AW-UE65/63,
 Katalog = AW-HE40); AW-HE120 (AW-HE125, AW-HE120W/K); AW-HE130 (AW-HE135,
 AW-HE130W/K); AW-HR140 (AW-HR140E/N); AW-UE100 (keine Aliases); AW-UE150A
 (AW-UE150, AW-UE155, AW-UN145 — CAMERA_ID ist bewusst "AW-UE150A", "AW-UE150"
-ist dort nur ein Alias, kein Tippfehler); AW-UE145 (AW-UE150HE/145, Katalog =
-AW-UE150A); AW-UE80 (keine Aliases); AW-UE30/UE40/UE50 (je Katalog =
+ist dort nur ein Alias, kein Tippfehler); AW-HE145 (AW-UE145/AW-UE150HE/
+AW-UE150HE145 — CAMERA_ID war urspruenglich faelschlich "AW-UE145", per
+`docs/specs/AW-UE150HE145_InterfaceSpecification_E.pdf` auf die echte
+QID-Antwort "AW-HE145" korrigiert (2026-07-18), "AW-UE145" blieb als Alias
+erhalten; Katalog = AW-UE150A); AW-UE80 (keine Aliases); AW-UE30/UE40/UE50 (je Katalog =
 AW-UE80); AK-UB300 (AK-UB300GJ/EJ — AK-Serie, nicht AW; weicht beim
 Gain-Befehl ab, siehe §7.2, betrifft aber nicht diesen Katalog).
 

@@ -181,12 +181,22 @@ def test_apply_model_catalog_resolves_known_model() -> None:
     # Spec §9a, Modell-Registry-Umbau: BUTTON_FEATURES ist seitdem
     # modellabhaengig statt fest auf AW-UE160 -- AW-HE50 hat laut Quelle
     # (drivers/panasonic_models/aw_he50.py, portiert aus smart_reset_work)
-    # z.B. keinen "knee"-Eintrag, im Unterschied zu AW-UE160.
+    # z.B. keinen "knee"-Eintrag, im Unterschied zu AW-UE160. `drs` ist ein
+    # 3-Werte-Cycle (0=Off/1=Low/3=High, Data-Wert 2 nicht belegt), siehe
+    # HDIntegratedCamera_InterfaceSpecifications-E.pdf-Verifikation
+    # 2026-07-18 in aw_he50.py.
     driver = PanasonicAWDriver(host="127.0.0.1", port=80)
     driver.model = "AW-HE50"
     driver._apply_model_catalog()
 
-    assert driver.BUTTON_FEATURES["drs"] == {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"}
+    assert driver.BUTTON_FEATURES["drs"] == {
+        "kind": "cycle",
+        "cycle": [
+            {"label": "OFF", "cmd": ["OSE:33:0"]},
+            {"label": "LOW", "cmd": ["OSE:33:1"]},
+            {"label": "HIGH", "cmd": ["OSE:33:3"]},
+        ],
+    }
     assert "knee" not in driver.BUTTON_FEATURES
     assert driver.BUTTON_FEATURE_LABELS["drs"] == "DRS"
 
@@ -263,6 +273,40 @@ def test_apply_model_catalog_resolves_gain_pedestal_for_he120_wide_pedestal_rang
     assert (driver.pedestal_center_data, driver.pedestal_scale) == (0x96, 1)
 
 
+def test_apply_model_catalog_resolves_gain_pedestal_for_ue100() -> None:
+    # AW-UE100 hat ein eigenes dediziertes Referenz-PDF
+    # (docs/specs/AW-UE100_InterfaceSpecification_E.pdf, nachtraeglich ins
+    # Repo gelegt) -- Gain-Ankerpunkte/-Bereich sind zufaellig identisch zu
+    # AW-HR140/AW-UE150A, Pedestal-Kommando identisch zu AW-UE150A/AW-UE160
+    # (OSJ:0F), aber eigenstaendig aus dieser PDF verifiziert, nicht davon
+    # abgeleitet.
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-UE100"
+    driver._apply_model_catalog()
+
+    assert (driver.gain_min_db, driver.gain_max_db, driver.gain_step_db) == (0, 42, 1)
+    assert driver.pedestal_command == "OSJ:0F"
+    assert driver.pedestal_query_command == "QSJ:0F"
+    assert (driver.pedestal_min, driver.pedestal_max) == (-200, 200)
+    assert driver.pedestal_center_data == 0x800
+
+
+def test_apply_model_catalog_resolves_gain_pedestal_for_ue80_and_aliases() -> None:
+    # AW-UE80/UE50/UE40/UE30 teilen sich ein dediziertes PDF
+    # (docs/specs/AW-UE80UE50UE40_InterfaceSpecification_E.pdf, deckt laut
+    # eigener "applicable models"-Angabe alle vier ab) -- gleiche Werte wie
+    # AW-UE100, aber aus dieser eigenen Quelle verifiziert.
+    for model in ("AW-UE80", "AW-UE50", "AW-UE40", "AW-UE30"):
+        driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+        driver.model = model
+        driver._apply_model_catalog()
+
+        assert (driver.gain_min_db, driver.gain_max_db, driver.gain_step_db) == (0, 42, 1), model
+        assert driver.pedestal_command == "OSJ:0F", model
+        assert driver.pedestal_query_command == "QSJ:0F", model
+        assert (driver.pedestal_min, driver.pedestal_max) == (-200, 200), model
+
+
 def test_apply_model_catalog_ak_ub300_has_pedestal_but_no_gain() -> None:
     # AK-UB300 nutzt fuer Gain ein strukturell anderes Region-Select-Schema
     # (OGS + OSA:50/51/52), das nicht in set_gain_db(db)/step_gain(delta)
@@ -280,16 +324,19 @@ def test_apply_model_catalog_ak_ub300_has_pedestal_but_no_gain() -> None:
     assert (driver.pedestal_center_data, driver.pedestal_scale, driver.pedestal_data_width) == (0x80, 1, 2)
 
 
-def test_apply_model_catalog_undocumented_model_has_no_gain_pedestal() -> None:
-    # AW-UE100 hat einen Button-Katalog (aus smart_reset_work portiert), kommt
-    # aber in keiner der beiden lokalen Referenz-PDFs fuer Gain/Pedestal vor.
+def test_apply_model_catalog_resolves_gain_pedestal_for_he145_via_ue145_alias() -> None:
+    # Korrektur 2026-07-18: "AW-UE145" war urspruenglich die (falsche)
+    # CAMERA_ID, ist jetzt nur noch Alias von "AW-HE145" (echte QID-Antwort
+    # laut docs/specs/AW-UE150HE145_InterfaceSpecification_E.pdf) -- der per
+    # QID erkannte String "AW-UE145" muss trotzdem weiterhin auf denselben
+    # Katalog/dieselben Gain-/Pedestal-Werte aufloesen.
     driver = PanasonicAWDriver(host="127.0.0.1", port=80)
-    driver.model = "AW-UE100"
+    driver.model = "AW-UE145"
     driver._apply_model_catalog()
 
     assert driver.BUTTON_FEATURES  # Button-Katalog ist vorhanden
-    assert driver.gain_min_db is None
-    assert driver.pedestal_command is None
+    assert (driver.gain_min_db, driver.gain_max_db, driver.gain_step_db) == (-3, 42, 1)
+    assert driver.pedestal_command == "OSJ:0F"
 
 
 def test_set_pedestal_uses_otp_command_for_he50() -> None:
@@ -340,8 +387,11 @@ def test_step_gain_clamps_to_he50_range() -> None:
 
 
 def test_set_pedestal_raises_when_model_has_no_pedestal_data() -> None:
+    # Mittlerweile hat jedes registrierte Modell (ausser AK-UB300, das aber
+    # Pedestal ueber OSG:4A hat) Pedestal-Daten -- dieser Pfad wird also nur
+    # noch fuer ein unbekanntes/nicht aufloesbares Modell durchlaufen.
     driver = _build_driver(lambda request: httpx.Response(200, text=""))
-    driver.model = "AW-UE100"  # nicht in den Referenz-PDFs dokumentiert
+    driver.model = "SOME-UNKNOWN-CAMERA"
     driver._apply_model_catalog()
 
     with pytest.raises(CameraCommandError):

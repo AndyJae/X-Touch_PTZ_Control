@@ -9,6 +9,11 @@ Gain/Pedestal (`HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/
 0-48dB (OGU 08h=0dB .. 38h=48dB, disabled bei FullAuto -> ER3); Pedestal
 ueber das aeltere `OTP`/`QTP`-Kommando (nicht `OSJ:0F`), Bereich -10..+10,
 Data = 0x96 + Wert*15 -- gleiche Pedestal-Familie wie AW-HE50/AW-HE60.
+
+DRS-Korrektur (2026-07-18, gleiche Quelle, Tabelle fuer "AW-HE50/AW-HE60/
+AW-HE40/AW-UE70/AW-HE42"): 3-Werte-Cycle (0=Off/1=Low/3=High, Data-Wert 2
+nicht belegt), nicht der bisherige einfache Toggle -- siehe aw_he50.py fuer
+denselben Befund.
 """
 
 CAMERA_ID = "AW-HE40"
@@ -39,7 +44,14 @@ BUTTON_FEATURES: dict[str, dict] = {
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
-    "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
+    "drs": {
+        "kind": "cycle",
+        "cycle": [
+            {"label": "OFF", "cmd": ["OSE:33:0"]},
+            {"label": "LOW", "cmd": ["OSE:33:1"]},
+            {"label": "HIGH", "cmd": ["OSE:33:3"]},
+        ],
+    },
     "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
     "night_mode": {"kind": "toggle", "on": "OSI:1A:1", "off": "OSI:1A:0"},

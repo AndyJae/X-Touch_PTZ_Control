@@ -556,6 +556,32 @@ def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int] | No
     return function_name, confirmed + state.encoder_pending_delta.get(channel_index, 0)
 
 
+def _encoder_function_unsupported(state: AppState, channel_index: int) -> str | None:
+    """Aktive Funktion, wenn sie `gain`/`pedestal` ist UND das verbundene
+    Kameramodell dafuer laut den lokalen Referenz-PDFs gar keine Daten hat
+    (`_encoder_value_range()` liefert dann `None`, siehe
+    `drivers/panasonic_models/*.py` -- z. B. AW-UE80 fuer beides, AK-UB300
+    nur fuer Gain) -- sonst `None`. Unterscheidet dieses "vom Modell nicht
+    unterstuetzt" (Bugreport 2026-07-18: Button 1 wechselte sichtbar auf
+    GAIN/PEDESTAL, aber die Wertanzeige blieb stumm beim Camera-Status-Inhalt
+    haengen) von "Wert nur gerade nicht bekannt" (z. B. Kamera nicht
+    verbunden, AGC aktiv) -- letzteres faellt weiterhin auf die bisherige
+    Iris-%/Kameraname-Anzeige zurueck, siehe `channel_display_text`/
+    `channel_line1_text`."""
+    function_name = _ENCODER_FUNCTIONS[state.encoder_function_index.get(channel_index, 0) % len(_ENCODER_FUNCTIONS)]
+    if function_name not in _ENCODER_STATE_FIELDS:
+        return None
+    entry = state.mapping.get_channel("fader", channel_index)
+    if entry is None:
+        return None
+    driver = state.drivers.get(entry.camera_id)
+    if driver is None:
+        return None
+    if _encoder_value_range(driver, function_name) is not None:
+        return None
+    return function_name
+
+
 def _iris_percent_text(value: float | None) -> str:
     """Platzhalter-Anzeige (Spec §5.3 nennt F-Nummer, die Hex->F-Nummer-
     Tabelle ist laut Spec aber nicht vollstaendig dokumentiert, siehe
@@ -585,9 +611,14 @@ def channel_display_text(state: AppState, channel_index: int, iris: float | None
     Scribble-Strip (`midi/fader.py`) und Web-UI zeigen exakt denselben Wert
     ueber dieselbe Funktion, kein eigenes Web-UI-Format mehr. Bei
     `camera_status` die Iris-%, bei `gain`/`pedestal` der jeweilige
-    Funktionswert (siehe `encoder_preview`)."""
+    Funktionswert (siehe `encoder_preview`) -- oder "n/a", wenn das Modell
+    diese Funktion gar nicht unterstuetzt (`_encoder_function_unsupported()`,
+    Nutzerentscheid 2026-07-18: explizit statt stillschweigend auf die
+    Iris-%-Anzeige zurueckzufallen)."""
     preview = encoder_preview(state, channel_index)
     if preview is None:
+        if _encoder_function_unsupported(state, channel_index) is not None:
+            return "n/a"
         return _iris_percent_text(iris)
     function_name, value = preview
     return _encoder_value_text(function_name, value)
@@ -598,9 +629,15 @@ def channel_line1_text(state: AppState, channel_index: int, camera_name: str | N
     der Kameraname (bisheriges Verhalten), bei `gain`/`pedestal` stattdessen
     der Funktionsname (GAIN/PEDESTAL), damit sofort erkennbar ist, worauf
     sich der Wert in Zeile 2 (`channel_display_text`) bezieht -- ohne das
-    waere z. B. "+45" ohne Kontext mehrdeutig (Gain in dB? Pedestal-Digit?)."""
+    waere z. B. "+45" ohne Kontext mehrdeutig (Gain in dB? Pedestal-Digit?).
+    Zeigt den Funktionsnamen auch dann, wenn das Modell die Funktion gar
+    nicht unterstuetzt (`_encoder_function_unsupported()`) -- sonst waere
+    Zeile 2 "n/a" ohne erkennbaren Bezug."""
     preview = encoder_preview(state, channel_index)
     if preview is None:
+        unsupported = _encoder_function_unsupported(state, channel_index)
+        if unsupported is not None:
+            return unsupported.upper()
         return camera_name or ""
     function_name, _ = preview
     return function_name.upper()

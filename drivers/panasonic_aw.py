@@ -117,13 +117,14 @@ class PanasonicAWDriver(CameraDriver):
     Modell-Modul. Pedestal hat dagegen laut
     `HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.14 DREI
     unterschiedliche Kommandofamilien je nach Modell (`OSJ:0F` Master
-    Pedestal bei AW-UE150/AW-UE160, `OTP`/`QTP` bei AW-HE50/60/120/130/HR140/
-    HE40/UE70/HE42, `OSG:4A` bei AK-UB300) -- deshalb kommen Kommando,
-    Zentraldatenwert, Skalierung und Hex-Breite hier vollstaendig aus dem
-    Modell-Modul (`pedestal_command` u. ae., siehe `_apply_model_catalog()`).
-    Modelle ohne Eintrag in einer der beiden PDFs (z. B. AW-UE100/UE80/
-    UE30/40/50/UE145) haben bewusst KEINE Gain-/Pedestal-Werte -- Encoder
-    zeigt fuer diese dann keinen Wertebereich (kein erfundener Fallback).
+    Pedestal bei AW-UE150/AW-UE160/AW-UE100, `OTP`/`QTP` bei AW-HE50/60/120/
+    130/HR140/HE40/UE70/HE42, `OSG:4A` bei AK-UB300) -- deshalb kommen
+    Kommando, Zentraldatenwert, Skalierung und Hex-Breite hier vollstaendig
+    aus dem Modell-Modul (`pedestal_command` u. ae., siehe
+    `_apply_model_catalog()`). Modelle ohne Eintrag in einer der lokalen
+    Referenz-PDFs (z. B. AW-UE80/UE30/40/50/UE145) haben bewusst KEINE
+    Gain-/Pedestal-Werte -- Encoder zeigt fuer diese dann keinen
+    Wertebereich (kein erfundener Fallback).
     """
 
     # Kamera-Feature-Buttons (Spec §9a: Button-2/3-Aktionen kommen aus der
@@ -131,9 +132,13 @@ class PanasonicAWDriver(CameraDriver):
     # Definition, portiert aus dem externen Referenzprojekt
     # C:\smart_reset_work\camera_plugins\panasonic\*.py (dort UI_BUTTONS/
     # UI_BUTTON_LABELS, laut deren CLAUDE.md gegen reale Panasonic-Interface-
-    # Specs verifiziert). NICHT unabhängig gegen die lokalen PDF-Referenzen
-    # (docs/specs/) nachverifiziert — PDF-Rendering (poppler/pdftoppm) war in
-    # dieser Umgebung nicht verfügbar.
+    # Specs verifiziert). Ursprünglich NICHT unabhängig gegen die lokalen
+    # PDF-Referenzen (docs/specs/) nachverifiziert (PDF-Rendering war zu
+    # Beginn nicht verfügbar) -- seit 2026-07-18 (`pdftotext`, siehe
+    # CLAUDE.md Offene Punkte) sind `drs`/`knee` für alle Modelle mit
+    # vorhandener PDF gegengeprüft (und korrigiert, wo falsch); der Rest des
+    # Katalogs (auto_focus/auto_iris/awb/aww/osd/white_clip/matrix/...) ist
+    # weiterhin nur gegen smart_reset_work verifiziert, nicht gegen die PDFs.
     #
     # Seit dem Modell-Registry-Umbau (§9a, Nutzerentscheid) sind das keine
     # festen Klassenattribute mehr, sondern Instanzattribute, die `connect()`

@@ -5,20 +5,59 @@ UI_BUTTONS/UI_BUTTON_LABELS. Keine CAMERA_ID_ALIASES in der Quelle -- die
 verwandten Modelle UE30/UE40/UE50 sind dort eigene, sehr kleine Module mit
 demselben Befehlssatz (siehe aw_ue30.py/aw_ue40.py/aw_ue50.py).
 
-Gain/Pedestal: AW-UE80 (und UE30/UE40/UE50) kommt in keiner der beiden
-lokalen Referenz-PDFs vor -- daher bewusst KEIN GAIN_*/PEDESTAL_* hier (kein
-erfundener Wert). Siehe CLAUDE.md Offene Punkte.
+Gain/Pedestal (Quelle: `docs/specs/AW-UE80UE50UE40_InterfaceSpecification_
+E.pdf`, dediziertes Dokument fuer "AW-UE80/UE50/UE40/UE30" gemeinsam -- gilt
+also fuer alle vier hier gefuehrten Modelle, siehe aw_ue30.py/aw_ue40.py/
+aw_ue50.py): Gain (`OGU`/`QGU`) kontinuierlich 08h=0dB .. 1Ah=18dB ..
+32h=42dB (1dB-Schritte), 80h=AGC -- identische Ankerpunkte wie AW-HR140/
+AW-UE150A/AW-UE100. Maximalwert an "Super Gain" (`OSI:28`, hier nicht als
+Button-Feature portiert) gekoppelt: 0-36dB wenn aus, 0-42dB wenn an (wie bei
+AW-UE100) -- diese Kopplung wird hier nicht durchgesetzt. Pedestal ueber
+`OSJ:0F`/`QSJ:0F` Master Pedestal, Data 738h=-200/800h=0/8C8h=+200 --
+identisches Kommando/Format wie AW-UE100/AW-UE150A/AW-UE160.
+
+DRS-Korrektur (2026-07-18, dieselbe PDF, Kap. 9): `drs` (`OSE:33`) ist ein
+4-Werte-Cycle (0=Off/1=Low/2=Mid/3=High), kein Toggle -- wie bei AW-UE100/
+AW-HE120/130/HR140/AW-UE150A.
+
+**Offener Punkt:** Kap. 8 ("Menu-Command Correspondance Table") dieser PDF
+listet "Knee mode OSA:2D" als vorhandenes Menu, im Unterschied zum
+bisherigen Katalog (kein `knee`-Eintrag). Die genaue Werte-/Label-Tabelle
+(Kap. 9) liess sich aus dieser PDF beim Verifizieren nicht sauber extrahieren
+(Tabellenlayout unklar/OCR-Kollision) -- ob 2-, 3- oder mehr Werte, ist
+NICHT bestaetigt. Deshalb hier bewusst NICHT ergaenzt (kein erfundener
+Wert), siehe CLAUDE.md Offene Punkte.
 """
 
 CAMERA_ID = "AW-UE80"
 DISPLAY_NAME = "Panasonic AW-UE80"
+
+GAIN_MIN_DB = 0
+GAIN_MAX_DB = 42
+GAIN_STEP_DB = 1
+
+PEDESTAL_COMMAND = "OSJ:0F"
+PEDESTAL_QUERY_COMMAND = "QSJ:0F"
+PEDESTAL_MIN = -200
+PEDESTAL_MAX = 200
+PEDESTAL_CENTER_DATA = 0x800
+PEDESTAL_SCALE = 1
+PEDESTAL_DATA_WIDTH = 3
 
 BUTTON_FEATURES: dict[str, dict] = {
     "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0"},
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
     "awb_black": {"kind": "trigger", "cmd": "OAS"},
     "aww_white": {"kind": "trigger", "cmd": "OWS"},
-    "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
+    "drs": {
+        "kind": "cycle",
+        "cycle": [
+            {"label": "OFF", "cmd": ["OSE:33:0"]},
+            {"label": "LOW", "cmd": ["OSE:33:1"]},
+            {"label": "MID", "cmd": ["OSE:33:2"]},
+            {"label": "HIGH", "cmd": ["OSE:33:3"]},
+        ],
+    },
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0"},
     "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0"},
 }
