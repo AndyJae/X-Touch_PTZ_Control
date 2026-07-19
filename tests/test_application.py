@@ -102,6 +102,78 @@ def test_connect_camera_publishes_connection_changed(monkeypatch) -> None:
     assert received == [{"camera_id": "cam1"}]
 
 
+def test_driver_feature_changed_event_updates_state_and_publishes(monkeypatch) -> None:
+    # Simuliert eine extern (z. B. Kamera-eigenes Web-UI) ausgeloeste
+    # Aenderung, die ueber den Update-Notification-Kanal beim Treiber
+    # ankommt (siehe PanasonicAWDriver._handle_notification()) -- die
+    # Anwendungsschicht (_wire_camera_events) muss cam_state.feature_states
+    # aktualisieren und denselben "feature_changed"-Event publizieren wie
+    # bei einer lokal ausgeloesten Aktion (apply_button_action).
+    state = _build_state(monkeypatch)
+    received = []
+
+    async def on_feature_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("feature_changed", on_feature_changed)
+
+    async def scenario() -> None:
+        await connect_camera(state, "cam1")
+        driver = state.drivers["cam1"]
+        driver.subscribed_callback({"type": "feature_changed", "key": "drs", "enabled": True})
+        await asyncio.sleep(0)
+
+    _run(scenario())
+
+    cam_state = state.state_store.get_camera("cam1")
+    assert cam_state.feature_states["drs"] is True
+    assert received == [{"camera_id": "cam1", "key": "drs"}]
+
+
+def test_driver_gain_changed_event_updates_state_and_publishes(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    received = []
+
+    async def on_gain_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("gain_changed", on_gain_changed)
+
+    async def scenario() -> None:
+        await connect_camera(state, "cam1")
+        driver = state.drivers["cam1"]
+        driver.subscribed_callback({"type": "gain_changed", "value": 6})
+        await asyncio.sleep(0)
+
+    _run(scenario())
+
+    cam_state = state.state_store.get_camera("cam1")
+    assert cam_state.gain_db == 6
+    assert received == [{"camera_id": "cam1", "value": 6}]
+
+
+def test_driver_pedestal_changed_event_updates_state_and_publishes(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    received = []
+
+    async def on_pedestal_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("pedestal_changed", on_pedestal_changed)
+
+    async def scenario() -> None:
+        await connect_camera(state, "cam1")
+        driver = state.drivers["cam1"]
+        driver.subscribed_callback({"type": "pedestal_changed", "value": -50})
+        await asyncio.sleep(0)
+
+    _run(scenario())
+
+    cam_state = state.state_store.get_camera("cam1")
+    assert cam_state.pedestal == -50
+    assert received == [{"camera_id": "cam1", "value": -50}]
+
+
 def test_apply_iris_clamps_and_calls_driver(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))

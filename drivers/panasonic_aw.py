@@ -94,14 +94,48 @@ def _extract_value(body: str) -> str | None:
     return value or None
 
 
+def _decode_gain_data(data: int) -> int | None:
+    """Gain-Kodierung (Data = 0x08 + db, 0x80 = AGC), geteilt zwischen
+    `_query_gain_db()` und der Update-Notification-Auswertung
+    (`_handle_notification()`), da beide dieselbe Antwort-/Notification-
+    Kodierung `OGU:[Data]` dekodieren (§4.2/§7.2)."""
+    if data == _GAIN_AGC_DATA:
+        return None
+    return data - _GAIN_ZERO_DB_DATA
+
+
+def _match_toggle_feature(body: str, features: dict[str, dict]) -> tuple[str, bool] | None:
+    """Ordnet eine Update-Notification-Payload (§4.2, exakt derselbe
+    Kommando-String wie beim Senden, siehe HDIntegratedCamera_
+    InterfaceSpecifications-E.pdf Fig. 4-4/4-5) einem Toggle-Feature aus
+    `BUTTON_FEATURES` zu, indem `body` gegen jedes bekannte `on`/`off`-
+    Kommando verglichen wird. Kein Treffer (z. B. Kommando ausserhalb des
+    Katalogs) -> `None`, kein erfundener Zustand."""
+    for key, feature in features.items():
+        if feature.get("kind") != "toggle":
+            continue
+        for enabled, commands in ((True, feature.get("on")), (False, feature.get("off"))):
+            if commands is None:
+                continue
+            command_list = commands if isinstance(commands, list) else [commands]
+            if body in command_list:
+                return key, enabled
+    return None
+
+
 class PanasonicAWDriver(CameraDriver):
     """AW-Serie (Referenz AW-UE160) über CGI/HTTP, §7 der Spec.
 
     Notification-Feedback-Kanal (§7.3): Lens-Info (#LPC1, nur Iris) ist über
     `start_lens_feedback()`/`stop_lens_feedback()` implementiert, siehe dort.
     Update-Notifications für andere Ereignisse (`OAW`, `OWS` etc., §7.3.1)
-    laufen technisch über denselben Kanal, werden hier aber (noch) nicht
-    ausgewertet -- `_handle_notification()` reagiert nur auf `lPI`-Payloads.
+    laufen technisch über denselben Kanal und werden seit 2026-07-19 auch
+    ausgewertet (Beleg: Kap. 4 der HDIntegratedCamera_
+    InterfaceSpecifications-E.pdf, referenziert aus
+    RemoteControllerInterfaceSpecifications-E.pdf §4.1.1) -- `_handle_
+    notification()` gleicht die Payload neben `lPI` zusaetzlich gegen
+    bekannte Toggle-Feature-/Gain-/Pedestal-Kommandos ab, siehe dortiger
+    Docstring.
 
     **Scope-Grenze nach dem Modell-Registry-Umbau (§9a):** `BUTTON_FEATURES`/
     `BUTTON_FEATURE_LABELS` sowie Gain/Pedestal-Bereich/-Kommando (siehe
@@ -281,7 +315,21 @@ class PanasonicAWDriver(CameraDriver):
 
     async def _handle_notification(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Jede Notification kommt als eigene, kurzlebige TCP-Verbindung mit
-        genau einem Frame (live gegen die reale Kamera verifiziert)."""
+        genau einem Frame (live gegen die reale Kamera verifiziert).
+
+        Ueber denselben, bereits fuer Lens-Info (`lPI`) registrierten
+        Update-Notification-Kanal (§7.3.1) meldet die Kamera laut
+        HDIntegratedCamera_InterfaceSpecifications-E.pdf Kap. 4 JEDE
+        Aenderung eines Steuerkommandos -- unabhaengig davon, ob sie von
+        PTZ_Control selbst oder einem anderen Terminal (z. B. der
+        Kamera-eigenen Web-UI) ausgeloest wurde (Fig. 4-5). Die Payload ist
+        dabei exakt derselbe Kommando-String wie beim Senden (z. B.
+        'OGU:08'), deshalb reicht ein Abgleich gegen die bereits bekannten
+        Kommandos aus BUTTON_FEATURES/Gain/Pedestal -- kein neues Parsing
+        noetig. Laut Kap. 4.3.1 (Remarks) loesen einige Kommandos (OSD-Menue-
+        Navigation, Pan/Tilt/Zoom/Focus/Iris, One-Touch-Focus, Contrast,
+        Iris volume) KEINE Notification aus; das betrifft hier keinen der
+        geprueften Katalog-Eintraege."""
         try:
             frame = await reader.read(65536)
         finally:
@@ -294,6 +342,34 @@ class PanasonicAWDriver(CameraDriver):
         if iris is not None:
             for callback in self._callbacks:
                 callback({"type": "iris_changed", "value": iris})
+            return
+        toggle_match = _match_toggle_feature(body, self.BUTTON_FEATURES)
+        if toggle_match is not None:
+            key, enabled = toggle_match
+            for callback in self._callbacks:
+                callback({"type": "feature_changed", "key": key, "enabled": enabled})
+            return
+        if body.startswith("OGU:"):
+            value = _extract_value(body)
+            if value is not None:
+                try:
+                    gain_db = _decode_gain_data(int(value, 16))
+                except ValueError:
+                    gain_db = None
+                if gain_db is not None:
+                    for callback in self._callbacks:
+                        callback({"type": "gain_changed", "value": gain_db})
+            return
+        if self.pedestal_command is not None and body.startswith(f"{self.pedestal_command}:"):
+            value = _extract_value(body)
+            if value is not None:
+                try:
+                    pedestal = self._decode_pedestal_data(int(value, 16))
+                except ValueError:
+                    pedestal = None
+                if pedestal is not None:
+                    for callback in self._callbacks:
+                        callback({"type": "pedestal_changed", "value": pedestal})
 
     async def _heartbeat_loop(self) -> None:
         try:
@@ -546,10 +622,17 @@ class PanasonicAWDriver(CameraDriver):
         value = _extract_value(body)
         if value is None:
             return None
-        data = int(value, 16)
-        if data == _GAIN_AGC_DATA:
+        return _decode_gain_data(int(value, 16))
+
+    def _decode_pedestal_data(self, data: int) -> int | None:
+        """Pedestal-Kodierung des verbundenen Modells (`pedestal_center_data`/
+        `pedestal_scale`, siehe `_apply_model_catalog()`), geteilt zwischen
+        `_query_pedestal()` und der Update-Notification-Auswertung
+        (`_handle_notification()`) -- beide dekodieren dieselbe `[Data]` aus
+        Query-Antwort bzw. Notification-Payload (§4.2)."""
+        if self.pedestal_center_data is None or self.pedestal_scale is None:
             return None
-        return data - _GAIN_ZERO_DB_DATA
+        return (data - self.pedestal_center_data) // self.pedestal_scale
 
     async def _query_pedestal(self) -> int | None:
         # Abfrage-Kommando kommt aus dem per Modell-Registry aufgeloesten
@@ -575,7 +658,7 @@ class PanasonicAWDriver(CameraDriver):
             data = int(value, 16)
         except ValueError:
             return None
-        return (data - self.pedestal_center_data) // self.pedestal_scale
+        return self._decode_pedestal_data(data)
 
     async def _query_nd(self) -> int | None:
         try:

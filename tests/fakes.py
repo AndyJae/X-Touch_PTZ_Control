@@ -50,6 +50,11 @@ class FakeCameraDriver:
         self.query_button_feature_result: bool | None = None
         self.step_gain_calls: list[int] = []
         self.step_pedestal_calls: list[int] = []
+        # Von core.application._wire_camera_events() registrierter Callback --
+        # Tests rufen ihn direkt auf, um extern ausgeloeste Kamera-Events
+        # (Update-Notification-Kanal, siehe drivers/panasonic_aw.py) zu
+        # simulieren, ohne echtes TCP/HTTP.
+        self.subscribed_callback = None
 
     async def connect(self) -> None:
         self._connected = True
@@ -116,4 +121,4 @@ class FakeCameraDriver:
         )
 
     def subscribe(self, callback) -> None:
-        pass
+        self.subscribed_callback = callback

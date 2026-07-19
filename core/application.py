@@ -131,15 +131,23 @@ def build_app_state(config: AppConfig, config_path: str = "config.yaml") -> AppS
 def _subscribe_snapshot_broadcast(state: AppState) -> None:
     """Web-UI ist nur ein Consumer des EventBus, kein Sonderfall: reagiert auf
     Kamera-Domain-Events (`iris_changed`, `connection_changed`, `error`,
-    `feature_changed`) mit einem vollen State-Broadcast an alle WS-Clients.
-    Ein späterer MIDI-Consumer (Motorfader-/LED-Feedback, Spec §5.4) würde
-    dieselben Topics abonnieren, ohne dass dieser Code angefasst werden
-    müsste."""
+    `feature_changed`, `config_changed`, `gain_changed`, `pedestal_changed`)
+    mit einem vollen State-Broadcast an alle WS-Clients. Ein späterer
+    MIDI-Consumer (Motorfader-/LED-Feedback, Spec §5.4) würde dieselben
+    Topics abonnieren, ohne dass dieser Code angefasst werden müsste."""
 
     async def _on_camera_event(_payload: dict) -> None:
         await state.broadcast({"type": "snapshot", "channels": channel_snapshot(state)})
 
-    for topic in ("iris_changed", "connection_changed", "error", "feature_changed", "config_changed"):
+    for topic in (
+        "iris_changed",
+        "connection_changed",
+        "error",
+        "feature_changed",
+        "config_changed",
+        "gain_changed",
+        "pedestal_changed",
+    ):
         state.event_bus.subscribe(topic, _on_camera_event)
 
 
@@ -156,15 +164,33 @@ def _channel_config(state: AppState, channel_index: int) -> BankChannelConfig | 
 def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -> None:
     """Bruecke Treiber-Events (`subscribe()`, sync per ABC §6) auf den
     EventBus (async) -- damit reagieren Web-UI und MIDI-Motorfader auch auf
-    Iris-Aenderungen, die nicht von PTZ_Control selbst ausgeloest wurden
-    (z. B. Kamera-eigenes Web-UI), siehe `drivers/panasonic_aw.py`s
-    Lens-Info-Feedback (§7.3)."""
+    Aenderungen, die nicht von PTZ_Control selbst ausgeloest wurden (z. B.
+    Kamera-eigenes Web-UI), siehe `drivers/panasonic_aw.py`s
+    Lens-Info-Feedback (§7.3) sowie die generische Update-Notification-
+    Auswertung (§4.2 der HD Integrated Camera Interface Specifications) in
+    `_handle_notification()` fuer Toggle-Features/Gain/Pedestal."""
 
     def on_event(event: dict) -> None:
-        if event.get("type") == "iris_changed":
+        event_type = event.get("type")
+        if event_type == "iris_changed":
             state.state_store.get_camera(camera_id).iris = event["value"]
             asyncio.create_task(
                 state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": event["value"]})
+            )
+        elif event_type == "feature_changed":
+            state.state_store.get_camera(camera_id).feature_states[event["key"]] = event["enabled"]
+            asyncio.create_task(
+                state.event_bus.publish("feature_changed", {"camera_id": camera_id, "key": event["key"]})
+            )
+        elif event_type == "gain_changed":
+            state.state_store.get_camera(camera_id).gain_db = event["value"]
+            asyncio.create_task(
+                state.event_bus.publish("gain_changed", {"camera_id": camera_id, "value": event["value"]})
+            )
+        elif event_type == "pedestal_changed":
+            state.state_store.get_camera(camera_id).pedestal = event["value"]
+            asyncio.create_task(
+                state.event_bus.publish("pedestal_changed", {"camera_id": camera_id, "value": event["value"]})
             )
 
     driver.subscribe(on_event)

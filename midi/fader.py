@@ -36,15 +36,20 @@ zurueck, sobald man loslaesst -- deshalb Teil dieser ersten Verdrahtung und
 nicht erst der spaeteren Resync/Hotplug-Stufe.
 
 Tx Scribble Strips: Vollabzug aller 8 Strips bei `connection_changed`/
-`feature_changed`/`config_changed`. `iris_changed` aktualisiert dagegen
-gezielt nur die eine betroffene Zeile 2 (kein Vollabzug bei jedem Iris-Tick,
-sonst unnoetiger SysEx-Traffic waehrend des Fader-Ziehens). Zeile 2 zeigt
-laut Spec §5.3 eigentlich die F-Nummer -- die Hex->F-Nummer-Tabelle ist laut
-Spec aber nicht vollstaendig dokumentiert (siehe Kommentar an
-PanasonicAWDriver._query_f_number), daher als Platzhalter die Iris-% bis
-diese Umrechnung nachgeruestet wird.
+`feature_changed`/`config_changed`/`gain_changed`/`pedestal_changed`.
+`iris_changed` aktualisiert dagegen gezielt nur die eine betroffene Zeile 2
+(kein Vollabzug bei jedem Iris-Tick, sonst unnoetiger SysEx-Traffic waehrend
+des Fader-Ziehens). Zeile 2 zeigt laut Spec §5.3 eigentlich die F-Nummer --
+die Hex->F-Nummer-Tabelle ist laut Spec aber nicht vollstaendig dokumentiert
+(siehe Kommentar an PanasonicAWDriver._query_f_number), daher als
+Platzhalter die Iris-% bis diese Umrechnung nachgeruestet wird.
+`gain_changed`/`pedestal_changed` kommen wie `feature_changed` sowohl von
+eigenen Aktionen als auch von extern (z. B. Kamera-eigenes Web-UI)
+ausgeloesten Aenderungen -- siehe `PanasonicAWDriver._handle_notification()`
+und die generische Update-Notification-Auswertung dort (§4.2 der
+HD Integrated Camera Interface Specifications).
 
-Tx Solo/Mute-LED: dieselben drei Events wie die Scribble Strips loesen einen
+Tx Solo/Mute-LED: dieselben Events wie die Scribble Strips loesen einen
 Vollabzug beider LEDs aller 8 Kanaele aus (`_refresh_button_leds()`) -- kein
 eigenes Event noetig, `apply_button_action()`/`assign_channel_button()`
 publizieren bereits `feature_changed`/`config_changed`. Nutzerentscheid:
@@ -135,7 +140,13 @@ class XTouchFader:
         if self._output_port_name is not None:
             self._out_port = mido.open_output(self._output_port_name)
             self._state.event_bus.subscribe("iris_changed", self._on_iris_changed)
-            for topic in ("connection_changed", "feature_changed", "config_changed"):
+            for topic in (
+                "connection_changed",
+                "feature_changed",
+                "config_changed",
+                "gain_changed",
+                "pedestal_changed",
+            ):
                 self._state.event_bus.subscribe(topic, self._on_scribble_relevant_event)
             LOGGER.info("MIDI-Ausgang verbunden: %s", self._output_port_name)
             await self._resync_from_state()

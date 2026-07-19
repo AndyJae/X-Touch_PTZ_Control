@@ -120,10 +120,11 @@ Treiber           drivers/base.py       CameraDriver-Interface (ABC)
   validiert (`load_config()` wirft `ConfigError` mit Pfad ins YAML bei
   Fehlern, Spec §4).
 - **EventBus**: Domain-Events (`iris_changed`, `connection_changed`, `error`,
-  `feature_changed`, `config_changed`) laufen über `core/bus.py`. Web-UI und
-  MIDI sind gleichwertige Consumer desselben Bus — der WebSocket-Broadcast
-  und `midi/fader.py`s Motorfader-/Scribble-Strip-Feedback abonnieren
-  dieselben Topics unabhängig voneinander.
+  `feature_changed`, `config_changed`, `gain_changed`, `pedestal_changed`)
+  laufen über `core/bus.py`. Web-UI und MIDI sind gleichwertige Consumer
+  desselben Bus — der WebSocket-Broadcast und `midi/fader.py`s
+  Motorfader-/Scribble-Strip-Feedback abonnieren dieselben Topics
+  unabhängig voneinander.
 - **Anwendungsschicht**: `core/application.py` kennt FastAPI nur an der
   einen Stelle, an der WebSocket-Clients benachrichtigt werden — Routing und
   Templates gehören nicht hierher. Dadurch ist die eigentliche
@@ -162,6 +163,20 @@ Treiber           drivers/base.py       CameraDriver-Interface (ABC)
   eine reale AW-UE160 verifiziert. Kein Teil der `CameraDriver`-ABC (wie
   `BUTTON_FEATURES`) — ein Treiber ohne Unterstützung liefert einfach keine
   externen Iris-Updates.
+- **Generische Update-Notification-Auswertung** (`_handle_notification()`,
+  seit 2026-07-19, Beleg: Kap. 4 der `HDIntegratedCamera_
+  InterfaceSpecifications-E.pdf`): derselbe, oben beschriebene
+  Notification-Kanal meldet laut dieser PDF JEDE Kommandoänderung — im
+  selben `Command:Value`-Format wie die CGI-Antwort (z. B. `OGU:08`),
+  unabhängig davon, ob PTZ_Control selbst oder ein anderes Terminal (z. B.
+  Kamera-eigenes Web-UI) die Änderung ausgelöst hat. `_handle_notification()`
+  gleicht die Payload deshalb zusätzlich zu `lPI` gegen bekannte
+  Toggle-Feature-Kommandos (`BUTTON_FEATURES`), Gain (`OGU`) und Pedestal
+  (modellabhängiges Kommando) ab und feuert `feature_changed`/
+  `gain_changed`/`pedestal_changed`-Callbacks, die `core/application.py`
+  auf gleichnamige EventBus-Topics brückt. Nur gegen synthetische
+  Notification-Frames in Unit-Tests verifiziert, nicht live gegen eine
+  reale Kamera.
 - **Kamera-Feature-Buttons** (Spec §9a): Katalog (`BUTTON_FEATURES`/
   `BUTTON_FEATURE_LABELS`) lebt nicht mehr fest auf `PanasonicAWDriver`,
   sondern in `drivers/panasonic_models/` — eine Datei pro Kameramodell

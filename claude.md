@@ -497,9 +497,41 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
 - Hotplug/Reconnect für den MIDI-Port (Spec §5.5) nicht implementiert
 - Web-UI-Port-Auswahl für MIDI (Setup-Seite) ist weiterhin ein statisches Mockup, nicht mit
   echten `mido`-Ports verbunden — Port kommt aktuell nur aus `config.yaml`
-- Update-Notifications für andere Ereignisse als Iris (`OAW`, `OWS` etc., Spec §7.3.1) laufen
+- ~~Update-Notifications für andere Ereignisse als Iris (`OAW`, `OWS` etc., Spec §7.3.1) laufen
   technisch über denselben neuen Notification-Kanal, werden aber nicht ausgewertet
-  (`PanasonicAWDriver._handle_notification` reagiert nur auf `lPI`)
+  (`PanasonicAWDriver._handle_notification` reagiert nur auf `lPI`)~~ **Umgesetzt (2026-07-19,
+  Nutzerauftrag nach Beleg durch `RemoteControllerInterfaceSpecifications-E.pdf` §4/Fig. 4-5,
+  die auf Kap. 4 "Camera information update notification" der
+  `HDIntegratedCamera_InterfaceSpecifications-E.pdf` verweist):** Kap. 4 dieser PDF bestätigt,
+  dass der bereits registrierte Update-Notification-Kanal (`/cgi-bin/event?connect=start`, siehe
+  `start_lens_feedback()`) JEDE Kommandoänderung meldet — im selben `Command:Value`-Format wie
+  die CGI-Antwort (z. B. `OGU:08`) — unabhängig davon, ob sie von PTZ_Control selbst oder einem
+  anderen Terminal (z. B. Kamera-eigenes Web-UI) ausgelöst wurde (Fig. 4-5). Ausnahmen laut
+  Kap. 4.3.1 (keine Notification): OSD-Menü-Navigation, Pan/Tilt/Zoom/Focus/Iris-Kommandos,
+  `OSE:69`/`OSD:48`/`ORV` — betrifft keinen der ausgewerteten Katalog-Einträge.
+  `PanasonicAWDriver._handle_notification()` gleicht die Payload jetzt zusätzlich zu `lPI` gegen
+  drei weitere Fälle ab (kein neues Parsing nötig, da der Payload-String bereits bekannten
+  Kommandos entspricht): Toggle-Features aus `BUTTON_FEATURES` (`_match_toggle_feature()`,
+  exakter String-Abgleich gegen `on`/`off`), Gain (`OGU:[Data]`, geteilte Dekodierung
+  `_decode_gain_data()` mit `_query_gain_db()`) und Pedestal (`self.pedestal_command:[Data]`,
+  geteilte Dekodierung `_decode_pedestal_data()` mit `_query_pedestal()`). Neue Callback-Typen
+  `feature_changed`/`gain_changed`/`pedestal_changed` werden in `core/application.py
+  ._wire_camera_events()` auf gleichnamige EventBus-Topics gebrückt (aktualisieren
+  `cam_state.feature_states`/`gain_db`/`pedestal`) — beide Topics sind in
+  `_subscribe_snapshot_broadcast()` (WS-Broadcast) sowie in `midi/fader.py`s
+  `_on_scribble_relevant_event`-Abonnements (Scribble-Strip- und Button-LED-Vollabzug) ergänzt.
+  Getestet in `tests/test_panasonic.py` (u. a. `test_handle_notification_fires_feature_changed_
+  for_single_command_toggle`, `test_handle_notification_fires_feature_changed_for_command_list_
+  toggle`, `test_handle_notification_fires_gain_changed`, `test_handle_notification_gain_agc_
+  fires_no_callback`, `test_handle_notification_fires_pedestal_changed`,
+  `test_handle_notification_pedestal_ignored_for_model_without_pedestal_command`) und
+  `tests/test_application.py` (`test_driver_feature_changed_event_updates_state_and_publishes`,
+  `test_driver_gain_changed_event_updates_state_and_publishes`,
+  `test_driver_pedestal_changed_event_updates_state_and_publishes`). Volle Testsuite jetzt 236
+  Tests (vorher 225), keine Regression. **Nicht verifiziert:** live gegen eine reale Kamera (nur
+  gegen die synthetischen Notification-Frames in den Unit-Tests) — insbesondere, ob die Kamera
+  bei Mehrfach-Kommando-Toggles (z. B. AW-UE160 Knee, zwei Kommandos pro Zielzustand) tatsächlich
+  je eine separate Notification pro Kommando sendet, wie hier angenommen.
 - ~~Setup-Seite zeigte den Companion-Button als "Saved"/`is-connected` rein anhand von
   `companion.host` (Config-Vorhandensein) -- Bugreport 2026-07-18: Button zeigte "Saved"
   auch dann, wenn Companion beim App-Start gar nicht lief~~ **Behoben (2026-07-18):** neues

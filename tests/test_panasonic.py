@@ -699,6 +699,106 @@ def test_start_lens_feedback_registers_and_enables_lpc1() -> None:
     _run(scenario())
 
 
+def _build_notification_frame(payload: str) -> bytes:
+    """Synthetisches Notification-Frame (Header-Reserves als Nullbytes, da
+    fuer die reine Payload-Auswertung irrelevant) -- Layout wie bei den
+    echten `_REAL_LPI_FRAME`/`_REAL_LPC1_ACK_FRAME`-Captures oben (22B
+    Reserve, 2B Big-Endian-Size = Payload-Laenge+8, 4B Reserve, Payload,
+    24B Reserve)."""
+    payload_bytes = payload.encode("ascii")
+    size = len(payload_bytes) + 8
+    return b"\x00" * 22 + size.to_bytes(2, "big") + b"\x00" * 4 + payload_bytes + b"\x00" * 24
+
+
+def test_handle_notification_fires_feature_changed_for_single_command_toggle() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OSA:0D:1")), _FakeWriter()))
+
+    assert events == [{"type": "feature_changed", "key": "drs", "enabled": True}]
+
+
+def test_handle_notification_fires_feature_changed_for_off_command() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OSA:0D:0")), _FakeWriter()))
+
+    assert events == [{"type": "feature_changed", "key": "drs", "enabled": False}]
+
+
+def test_handle_notification_fires_feature_changed_for_command_list_toggle() -> None:
+    # AW-UE160s "knee_manual" braucht laut Katalog zwei Kommandos fuer "on"
+    # (["OSL:45:1", "OSA:2D:1"]) -- die Kamera meldet vermutlich jedes
+    # geaenderte Kommando als eigene Notification, hier wird nur eines davon
+    # zugestellt.
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OSA:2D:1")), _FakeWriter()))
+
+    assert events == [{"type": "feature_changed", "key": "knee_manual", "enabled": True}]
+
+
+def test_handle_notification_unknown_command_fires_no_callback() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("XYZ:1")), _FakeWriter()))
+
+    assert events == []
+
+
+def test_handle_notification_fires_gain_changed() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OGU:0E")), _FakeWriter()))
+
+    assert events == [{"type": "gain_changed", "value": 6}]
+
+
+def test_handle_notification_gain_agc_fires_no_callback() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OGU:80")), _FakeWriter()))
+
+    assert events == []
+
+
+def test_handle_notification_fires_pedestal_changed() -> None:
+    # AW-UE160: PEDESTAL_COMMAND="OSJ:0F", CENTER_DATA=0x800, SCALE=1 --
+    # Data 0x864 -> (0x864 - 0x800) // 1 == 100.
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OSJ:0F:864")), _FakeWriter()))
+
+    assert events == [{"type": "pedestal_changed", "value": 100}]
+
+
+def test_handle_notification_pedestal_ignored_for_model_without_pedestal_command() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    driver.model = "AW-UNKNOWN-MODEL"
+    driver._apply_model_catalog()
+    assert driver.pedestal_command is None
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OSJ:0F:864")), _FakeWriter()))
+
+    assert events == []
+
+
 def test_stop_lens_feedback_sends_lpc0_and_deregisters() -> None:
     seen: list[str] = []
 
