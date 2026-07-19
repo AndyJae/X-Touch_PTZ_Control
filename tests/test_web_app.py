@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -32,8 +34,22 @@ def client(monkeypatch, tmp_path):
         "build_driver",
         lambda camera: FakeCameraDriver(camera.host, camera.port),
     )
-    with TestClient(web_app.app) as test_client:
-        yield test_client
+    # LOG_BUFFER haengt an einem prozessweiten Logger (core/log_buffer.py) --
+    # ohne Reset wuerden Log-Zeilen aus vorherigen Tests hier sichtbar bleiben.
+    web_app.LOG_BUFFER.clear()
+    # Ausserhalb von main.py (das per logging.basicConfig(level=config.global_
+    # .log_level) konfiguriert) hat der Root-Logger keinen expliziten Level
+    # (Default WARNING) -- Tests wuerden INFO-Log-Zeilen sonst nie sehen,
+    # obwohl der dokumentierte Default (log_level: INFO, siehe config.yaml-
+    # Beispiel Spec §4) sie im echten Betrieb zeigen wuerde.
+    root_logger = logging.getLogger()
+    previous_level = root_logger.level
+    root_logger.setLevel(logging.INFO)
+    try:
+        with TestClient(web_app.app) as test_client:
+            yield test_client
+    finally:
+        root_logger.setLevel(previous_level)
 
 
 def test_surface_page_returns_ok(client) -> None:
@@ -54,6 +70,26 @@ def test_config_page_returns_ok(client) -> None:
 def test_logs_page_returns_ok(client) -> None:
     response = client.get("/logs")
     assert response.status_code == 200
+
+
+def test_logs_page_shows_captured_log_entries(client) -> None:
+    logging.getLogger("ptz_control.web").info("test-marker-info")
+    response = client.get("/logs")
+    assert "test-marker-info" in response.text
+
+
+def test_logs_page_filters_by_level(client) -> None:
+    logging.getLogger("ptz_control.web").warning("test-marker-warning")
+    logging.getLogger("ptz_control.web").error("test-marker-error")
+    response = client.get("/logs", params={"level": "ERROR"})
+    assert "test-marker-error" in response.text
+    assert "test-marker-warning" not in response.text
+
+
+def test_logs_page_unknown_level_falls_back_to_all(client) -> None:
+    logging.getLogger("ptz_control.web").info("test-marker-fallback")
+    response = client.get("/logs", params={"level": "NOT-A-LEVEL"})
+    assert "test-marker-fallback" in response.text
 
 
 def test_camera_connects_during_startup(client) -> None:

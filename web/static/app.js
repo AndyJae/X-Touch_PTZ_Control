@@ -518,6 +518,20 @@ function initFaderDrag(ws) {
     });
 }
 
+// Logs-Ansicht (Spec §10 Punkt 4): Level-Auswahl laedt die Seite mit dem
+// gewaehlten Level als Query-Parameter neu, Server filtert serverseitig.
+function initLogLevelFilter() {
+    const select = document.querySelector("[data-log-level-filter]");
+    if (!select) {
+        return;
+    }
+    select.addEventListener("change", () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set("level", select.value);
+        window.location.href = url.toString();
+    });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     initEncoderFunctionSelect();
     initCameraConnectButtons();
@@ -525,6 +539,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initButtonAssignmentSelects();
     initCompanionConfigForm();
     initCompanionTargetInputs();
+    initLogLevelFilter();
 
     if (document.querySelector(".surface-channel")) {
         const ws = connectSurfaceSocket();

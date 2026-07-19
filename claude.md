@@ -31,6 +31,15 @@ Alle Implementierungs- und Änderungsentscheidungen müssen sich auf diese Spezi
 - Änderungen sollten, wo möglich, durch kleine, reale Tests abgesichert werden.
 - Keine Test-Only-Methoden in Production-Code einbauen.
 - Mocking nur dann, wenn es die echte Interaktion korrekt abbildet und der Zweck nachvollziehbar ist.
+- **Nutzerentscheid 2026-07-19:** für manuelle/Live-Verifikation gegen einen simulierten
+  Kamera-CGI-Server zuerst den externen Emulator unter `C:\Panasonic_PTZ_Emulator` verwenden
+  (siehe „Externer Test-Emulator" unten), nicht mehr zuerst das eingebaute
+  `tools/panasonic_emulator.py`. Das eingebaute Tool bleibt vorerst bestehen (siehe dortiges
+  `TODO.md` Abschnitt 6: Umstellung/Entfernen ist ein eigener, noch nicht erfolgter Schritt in
+  diesem Repo, erst wenn das externe Tool nachweislich alle bisher genutzten Testfälle
+  abdeckt) — bei Bedarf oder wenn der externe Emulator eine benötigte Kameramodell-/
+  Kommandokombination (noch) nicht abbildet, darf weiterhin auf `tools/panasonic_emulator.py`
+  zurückgegriffen werden, das dann aber explizit als Ausweichlösung benennen.
 
 ### 5) Keine Erfindung von „gebräuchlichen“ Strukturen
 - Neue Module, Methoden, Konfigurationsfelder oder Befehle nur dann hinzufügen, wenn sie in der Spezifikation ausdrücklich vorgesehen oder unmittelbar nötig für ein bereits spezifiziertes Verhalten sind.
@@ -49,6 +58,8 @@ Alle Implementierungs- und Änderungsentscheidungen müssen sich auf diese Spezi
 - `httpx` für Kamera-HTTP
 - FastAPI + HTMX + WebSocket
 - YAML + `pydantic` v2
+- `pystray` + `Pillow` für den System-Tray-Prozesseinstieg (`main.py`, Nutzerentscheid
+  2026-07-19, siehe Spec §11 und Offene Punkte)
 
 ### Kernarchitektur
 - Core/EventBus
@@ -56,6 +67,24 @@ Alle Implementierungs- und Änderungsentscheidungen müssen sich auf diese Spezi
 - Camera-Drivers
 - Web-UI
 - State-Store / Mapping-Engine / Rate-Limiter
+
+### Externer Test-Emulator
+- Eigenständiges Repo `C:\Panasonic_PTZ_Emulator` (separat von PTZ_Control, keine
+  Laufzeit-Abhängigkeit in beide Richtungen) — soll laut dessen eigenem `CLAUDE.md`
+  künftig sowohl von `PTZ_Control` als auch von `smart_reset_work`/`smart-reset-browser`
+  als gemeinsamer externer Test-Prozess genutzt werden, statt dass jede App ihre eigene
+  Emulator-Kopie pflegt.
+- Start: `python main.py [--host 127.0.0.1] [--ui-port 8080] [--port 8081] [--model AW-UE160]`
+  (im `.venv` des Emulator-Repos) startet die Control-UI unter `http://127.0.0.1:8080/`.
+  Der eigentliche Kamera-CGI-Server (Standard-Port `8081`, passend zu den in `config.yaml`
+  üblicherweise verwendeten Testkameras) läuft NICHT automatisch mit, sondern muss über die
+  Control-UI (Modell wählen, „Server starten") oder per `POST /start` (Form-Felder
+  `model_id`, `port`) einzeln gestartet werden.
+- Deckt laut dessen `CLAUDE.md`/`TODO.md` sowohl das Doppelpunkt-Protokoll
+  (`O<sub>:addr:value`/`Q<sub>:addr`) als auch die doppelpunktlosen `#AXI`/`#GI`/`#R`-Befehle
+  ab, inkl. modellabhängiger Gain-/Pedestal-Simulation und Update-Notification-Push — Stand
+  2026-07-19 durch 43 eigene Tests des Emulator-Repos abgedeckt (dort verifizieren, nicht
+  hier annehmen, falls sich das ändert).
 
 ### Referenz-Driver
 - Panasonic AW-Serie, besonders AW-UE160 — Iris-Wertebereich/-Kodierung ist
@@ -557,6 +586,54 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   Log die neue Warnung `Companion (localhost:8888) nicht erreichbar`; nach Start eines
   Test-Listeners auf 8888 und erneutem Speichern über `POST /api/companion/config` zeigte die
   Seite korrekt `class="is-connected"` / `Saved`.
+- ~~`web/templates/logs.html` (Spec §10 Punkt 4: "Log-Ansicht: letzte 200 Zeilen, Filter nach
+  Level") war ein reines Mockup mit fest einprogrammierten Beispielzeilen, ohne Verbindung zu
+  echten Log-Ausgaben~~ **Umgesetzt (2026-07-19):** neues `core/log_buffer.py` mit
+  `RingBufferHandler` (`logging.Handler`, `deque(maxlen=200)`) haengt sich beim Modul-Import an
+  den `ptz_control`-Elternlogger (erfasst damit alle `ptz_control.*`-Logger im Projekt) und
+  haelt dessen letzte 200 Eintraege (Zeit/Level/Message) im Speicher vor -- unabhaengig davon,
+  ob die App ueber `main.py` oder direkt als `web.app.app` (Tests) laeuft. `GET /logs`
+  (`web/app.py`) akzeptiert jetzt `?level=`, filtert serverseitig auf diesen Level und
+  schwerwiegendere (Standard-Logging-Semantik, `ALL` zeigt alles; unbekannter Wert faellt auf
+  `ALL` zurueck) und rendert die echten Eintraege statt der bisherigen Festwerte.
+  `web/static/app.js` (`initLogLevelFilter()`) laedt die Seite bei Level-Auswahl mit dem neuen
+  Query-Parameter neu (kein AJAX, konsistent mit dem bisher rein serverseitig gerenderten
+  Charakter dieser Seite). Wie bei `log_level` in `config.yaml` filtert die Level-Auswahl nur,
+  was der jeweilige Logger ueberhaupt durchlaesst (effektiver Logger-Level, i. d. R. durch
+  `main.py`s `logging.basicConfig(level=config.global_.log_level)` gesetzt) -- die Ansicht kann
+  keine Eintraege unterhalb dieses konfigurierten Levels zeigen, selbst wenn `DEBUG` im Filter
+  ausgewaehlt ist. Getestet in `tests/test_web_app.py`
+  (`test_logs_page_shows_captured_log_entries`, `test_logs_page_filters_by_level`,
+  `test_logs_page_unknown_level_falls_back_to_all`); zusaetzlich per TestClient-Skript live
+  gegen echte Startup-/Test-Log-Zeilen verifiziert (INFO-Startzeile + WARNING erschienen bei
+  `ALL`, ERROR-Filter zeigte korrekt "Keine Log-Eintraege" ohne vorhandene ERROR-Zeile). 239
+  Tests bestehen (vorher 236), keine Regression. **Nicht Teil dieser Aenderung:** "Ein Logfile
+  pro Session" (Spec §2, Begruendungsspalte) -- es gibt weiterhin keine Datei-basierte
+  Persistenz, nur den In-Memory-Ringpuffer; dafuer existiert kein Config-Feld fuer einen
+  Dateipfad (weder in Spec §4 noch im bisherigen Code), daher hier bewusst nicht erfunden.
+- **System-Tray-Icon beim App-Start (Nutzerauftrag 2026-07-19):** `main.py` 1:1 nach dem
+  bereits umgesetzten Vorbild in `C:\smart_reset_work\web_main.py` portiert (siehe Spec §11
+  für die volle Beschreibung) -- Mutex-Singleton-Check, uvicorn im Hintergrund-Thread statt
+  blockierend, automatisches Öffnen des Standardbrowsers, `pystray`-Icon
+  (`Images/Icon.ico`) im Hauptthread mit „Open" (Linksklick/Default) und „Quit"
+  (Rechtsklick-Menü, stoppt Server + `os._exit(0)`), Windows-11-Rechtsklick-Patch aus dem
+  Vorbild übernommen. Neue Abhängigkeiten `pystray>=0.19.0`/`Pillow>=11.0.0` in
+  `requirements.txt`/`pyproject.toml` ergänzt und im `.venv` installiert (`pystray==0.19.5`,
+  `Pillow==12.3.0`). **Verifiziert:** Icon lädt via PIL (`Images/Icon.ico`, 64×64 PNG-in-ICO),
+  Live-Start gegen die echte `config.yaml` (5 konfigurierte Kameras, MIDI-Port
+  „X-Touch-Ext") -- Web-UI unter `127.0.0.1:8600` erreichbar (`GET /` → 200), Companion-/
+  MIDI-Warnungen liefen wie erwartet ins Log statt den Start abzubrechen, `webbrowser.open()`
+  öffnete nachweislich einen neuen Chrome-Prozess (Prozessliste: zwei neue `chrome`-Prozesse
+  direkt nach dem `python`-Start), kein Absturz/keine Tray-Fehler-MessageBox während der
+  Laufzeit. Mutex-Kollisionslogik isoliert verifiziert (`CreateMutexW` mit demselben Namen
+  während die echte Instanz lief lieferte `GetLastError() == 183`
+  `ERROR_ALREADY_EXISTS`, exakt der Pfad, der die "läuft bereits"-Meldung auslöst) --
+  ein echter zweiter Prozessstart wurde bewusst NICHT ausgelöst, da `MessageBoxW` dabei
+  einen blockierenden Dialog auf dem Desktop der Nutzerin/des Nutzers öffnet. Prozess danach
+  sauber gestoppt (Port 8600 wieder frei). **Nicht verifiziert:** das per-Klick-Verhalten des
+  Tray-Icons selbst (Open/Quit-Menüeintrag tatsächlich anklicken) sowie der Windows-11-
+  Rechtsklick-Patch -- beides erfordert eine echte Nutzerinteraktion mit dem sichtbaren
+  Tray-Icon, nicht headless prüfbar.
 
 ## Abschlussregel
 

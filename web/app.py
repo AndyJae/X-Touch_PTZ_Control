@@ -39,6 +39,7 @@ from core.application import (
 )
 from core.companion import CompanionError, is_reachable
 from core.config import load_config
+from core.log_buffer import LOG_BUFFER
 from midi.fader import XTouchFader
 
 LOGGER = logging.getLogger("ptz_control.web")
@@ -154,9 +155,30 @@ async def config_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request=request, name="config.html", context={"active_page": "config"})
 
 
+_LOG_LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"]
+
+
 @app.get("/logs", response_class=HTMLResponse)
 async def logs_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request=request, name="logs.html", context={"active_page": "logs"})
+    """Spec §10 Punkt 4: letzte 200 Zeilen, Filter nach Level. `level=ALL`
+    zeigt alles, jeder andere Wert diesen Level und schwerwiegendere
+    (Standard-Logging-Semantik: WARNING zeigt auch ERROR)."""
+    selected_level = request.query_params.get("level", "ALL").upper()
+    if selected_level not in _LOG_LEVELS:
+        selected_level = "ALL"
+    min_level = (
+        logging.getLevelNamesMapping()[selected_level] if selected_level != "ALL" else logging.DEBUG
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="logs.html",
+        context={
+            "active_page": "logs",
+            "levels": _LOG_LEVELS,
+            "selected_level": selected_level,
+            "entries": LOG_BUFFER.entries(min_level),
+        },
+    )
 
 
 @app.post("/api/channels/{channel_index}/camera/disconnect")

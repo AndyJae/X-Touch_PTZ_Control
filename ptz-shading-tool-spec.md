@@ -709,6 +709,19 @@ Kein Auth in v1 (Betrieb im geschlossenen Produktionsnetz); Bind auf
 Shutdown (SIGINT/SIGTERM): `#LPC0` je Kamera, Notification-Deregister,
 MIDI-Reset (Fader auf 0, Strips leeren), Ports schließen.
 
+**System-Tray (Nutzerentscheid 2026-07-19, 1:1 nach dem bereits umgesetzten
+Vorbild in `C:\smart_reset_work\web_main.py` portiert):** `main.py` prüft
+zuerst per benanntem Windows-Mutex (`Global\PTZControlApp_SingleInstance`),
+ob bereits eine Instanz läuft (Meldung + Exit, falls ja), startet uvicorn
+danach in einem Hintergrund-Thread statt blockierend im Hauptthread und
+öffnet nach kurzer Wartezeit automatisch den Standardbrowser auf der
+Web-UI-URL. Der Hauptthread hält ein `pystray`-Icon (`Images/Icon.ico`) im
+System Tray: Linksklick/„Open" öffnet erneut den Browser, „Quit" (Rechtsklick-
+Kontextmenü) stoppt den uvicorn-Server und beendet den Prozess (`os._exit(0)`,
+damit der Mutex sicher freigegeben wird). Enthält denselben Windows-11-
+Patch wie das Vorbild (`SetForegroundWindow`/`TrackPopupMenuEx` reagiert ohne
+kürzliche Thread-Nutzereingabe sonst nicht auf Rechtsklicks).
+
 ---
 
 ## 12. Roadmap (nach v1, nur zur Abgrenzung)
