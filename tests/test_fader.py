@@ -18,10 +18,10 @@ import asyncio
 from types import SimpleNamespace
 
 import core.application as core_application
-from core.application import AppState, build_app_state
+from core.application import AppState, build_app_state, disconnect_camera
 from core.companion import CompanionError
 from core.config import AppConfig
-from midi.fader import XTouchFader, _MUTE_NOTE_BASE, _SELECT_NOTE_BASE, _SOLO_NOTE_BASE
+from midi.fader import XTouchFader, _MUTE_NOTE_BASE, _REC_NOTE_BASE, _SELECT_NOTE_BASE, _SOLO_NOTE_BASE
 from tests.fakes import FakeCameraDriver
 
 
@@ -39,11 +39,14 @@ class FakeOutPort:
 
 # button2 -> "drs" (Toggle, siehe drivers/panasonic_models/aw_ue160.py, von
 # FakeCameraDriver wiederverwendet); button3 bewusst unbelegt (No-Op-Test);
-# companion-Ziel fuer den Select-Test.
+# companion-Ziel fuer den Select-Test. cam2/Kanal 2 bewusst NICHT verbunden
+# (siehe _build_fader) -- deckt den Nutzerentscheid ab, dass Rec/Select nur
+# auf Kanaelen mit tatsaechlich verbundener Kamera leuchten duerfen.
 TEST_CONFIG = AppConfig.model_validate(
     {
         "cameras": [
             {"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9999},
+            {"id": "cam2", "name": "CAM 2", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9998},
         ],
         "banks": [
             {
@@ -53,7 +56,11 @@ TEST_CONFIG = AppConfig.model_validate(
                         "camera": "cam1",
                         "buttons": {"button2": "drs"},
                         "companion": {"page": 1, "row": 0, "column": 2},
-                    }
+                    },
+                    {
+                        "camera": "cam2",
+                        "companion": {"page": 1, "row": 0, "column": 3},
+                    },
                 ],
             }
         ],
@@ -72,6 +79,9 @@ def _build_fader(monkeypatch) -> tuple[XTouchFader, AppState, FakeOutPort]:
     )
     state = build_app_state(TEST_CONFIG, config_path="config.yaml")
     _run(state.drivers["cam1"].connect())
+    # cam2 bleibt absichtlich getrennt (kein .connect()) -- Kanal 2 hat damit
+    # eine zugewiesene, aber nicht verbundene Kamera (anders als Kanal 8,
+    # das ueberhaupt keine hat).
 
     fader = XTouchFader(state, "fake-in", "fake-out")
     out_port = FakeOutPort()
@@ -81,6 +91,7 @@ def _build_fader(monkeypatch) -> tuple[XTouchFader, AppState, FakeOutPort]:
     # echten Port, hier nicht Testgegenstand).
     for topic in ("connection_changed", "feature_changed", "config_changed"):
         state.event_bus.subscribe(topic, fader._on_scribble_relevant_event)
+    state.event_bus.subscribe("connection_changed", fader._on_connection_changed)
     return fader, state, out_port
 
 
@@ -169,3 +180,83 @@ def test_refresh_button_leds_reflects_unknown_state_as_off(monkeypatch) -> None:
 
     led_msgs = [m for m in out_port.sent if m.type == "note_on" and m.note == _SOLO_NOTE_BASE]
     assert led_msgs[-1].velocity == 0
+
+
+def test_rec_led_only_on_for_channel_with_connected_camera(monkeypatch) -> None:
+    # Nutzerentscheid 2026-07-20: Rec hat keine On/Off-Logik (waehlt nur die
+    # Encoder-Funktion), leuchtet aber NUR auf Kanaelen mit tatsaechlich
+    # verbundener Kamera -- Kanal 1 (cam1 verbunden) an, Kanal 2 (cam2
+    # zugewiesen, aber nicht verbunden) und Kanal 8 (ueberhaupt keine Kamera)
+    # aus.
+    fader, _state, out_port = _build_fader(monkeypatch)
+
+    fader._refresh_button_leds()
+
+    def last_velocity(offset: int) -> int:
+        led_msgs = [m for m in out_port.sent if m.type == "note_on" and m.note == _REC_NOTE_BASE + offset]
+        return led_msgs[-1].velocity
+
+    assert last_velocity(0) == 127  # Kanal 1: cam1 verbunden
+    assert last_velocity(1) == 0  # Kanal 2: cam2 zugewiesen, aber nicht verbunden
+    assert last_velocity(7) == 0  # Kanal 8: keine Kamera zugewiesen
+
+
+def test_select_led_off_when_companion_not_connected(monkeypatch) -> None:
+    # Nutzerentscheid 2026-07-20: Select leuchtet nur, wenn Companion
+    # verbunden ist (AppState.companion_connected) -- TEST_CONFIG setzt das
+    # nicht, Default ist False.
+    fader, state, out_port = _build_fader(monkeypatch)
+    assert state.companion_connected is False
+
+    _run(fader._handle(_note_on(_SELECT_NOTE_BASE + 0)))
+
+    led_msgs = [m for m in out_port.sent if m.type == "note_on" and m.note == _SELECT_NOTE_BASE]
+    assert led_msgs[-1].velocity == 0
+
+
+def test_select_led_requires_connected_camera_on_that_channel(monkeypatch) -> None:
+    # Nutzerentscheid 2026-07-20: Select leuchtet nur auf Kanaelen mit
+    # tatsaechlich verbundener Kamera -- Kanal 2 hat cam2 zugewiesen, aber
+    # cam2 ist in _build_fader() bewusst nicht verbunden.
+    fader, state, out_port = _build_fader(monkeypatch)
+    state.companion_connected = True
+
+    _run(fader._handle(_note_on(_SELECT_NOTE_BASE + 1)))  # Kanal 2
+
+    led_msgs = [m for m in out_port.sent if m.type == "note_on" and m.note == _SELECT_NOTE_BASE + 1]
+    assert led_msgs[-1].velocity == 0
+
+
+def test_select_led_lights_only_last_pressed_channel_when_companion_connected(monkeypatch) -> None:
+    fader, state, out_port = _build_fader(monkeypatch)
+    _run(state.drivers["cam2"].connect())  # beide Kanaele verbunden, um das Umschalten zu testen
+    state.companion_connected = True
+
+    _run(fader._handle(_note_on(_SELECT_NOTE_BASE + 0)))  # Kanal 1
+
+    ch1_msgs = [m for m in out_port.sent if m.type == "note_on" and m.note == _SELECT_NOTE_BASE]
+    assert ch1_msgs[-1].velocity == 127
+
+    _run(fader._handle(_note_on(_SELECT_NOTE_BASE + 1)))  # Kanal 2
+
+    ch1_msgs = [m for m in out_port.sent if m.type == "note_on" and m.note == _SELECT_NOTE_BASE]
+    ch2_msgs = [m for m in out_port.sent if m.type == "note_on" and m.note == _SELECT_NOTE_BASE + 1]
+    assert ch1_msgs[-1].velocity == 0
+    assert ch2_msgs[-1].velocity == 127
+
+
+def test_disconnecting_camera_drives_motor_fader_to_zero(monkeypatch) -> None:
+    # Bugreport 2026-07-20: Motorfader blieb beim Trennen einer Kamera auf
+    # der zuletzt bekannten Position stehen -- disconnect_camera() setzt
+    # cam_state.iris jetzt auf 0.0 zurueck, _on_connection_changed() faehrt
+    # den Motor entsprechend.
+    fader, state, out_port = _build_fader(monkeypatch)
+    state.state_store.get_camera("cam1").iris = 1.0
+    fader._send_fader_position(1, 1.0)  # Ausgangsposition: ganz oben
+    out_port.sent.clear()
+
+    _run(disconnect_camera(state, "cam1"))
+
+    pitch_msgs = [m for m in out_port.sent if m.type == "pitchwheel" and m.channel == 0]
+    assert pitch_msgs, "kein Pitchbend fuer Kanal 1 nach dem Trennen gesendet"
+    assert pitch_msgs[-1].pitch == fader._protocol.normalized_to_pitchbend(0.0) - 8192

@@ -12,7 +12,9 @@ aw_ue50.py): Gain (`OGU`/`QGU`) kontinuierlich 08h=0dB .. 1Ah=18dB ..
 32h=42dB (1dB-Schritte), 80h=AGC -- identische Ankerpunkte wie AW-HR140/
 AW-UE150A/AW-UE100. Maximalwert an "Super Gain" (`OSI:28`, hier nicht als
 Button-Feature portiert) gekoppelt: 0-36dB wenn aus, 0-42dB wenn an (wie bei
-AW-UE100) -- diese Kopplung wird hier nicht durchgesetzt. Pedestal ueber
+AW-UE100) -- seit Nutzerauftrag 2026-07-20 durchgesetzt (live gegen eine
+echte AW-UE100 verifiziert, siehe aw_ue100.py und
+PanasonicAWDriver.effective_gain_max_db). Pedestal ueber
 `OSJ:0F`/`QSJ:0F` Master Pedestal, Data 738h=-200/800h=0/8C8h=+200 --
 identisches Kommando/Format wie AW-UE100/AW-UE150A/AW-UE160.
 
@@ -42,6 +44,11 @@ DISPLAY_NAME = "Panasonic AW-UE80"
 GAIN_MIN_DB = 0
 GAIN_MAX_DB = 42
 GAIN_STEP_DB = 1
+# Super-Gain-Kopplung (Nutzerauftrag 2026-07-20, live gegen AW-UE100
+# verifiziert, siehe aw_ue100.py): 36dB statt 42dB, solange Super Gain
+# (`OSI:28`) aus ist.
+GAIN_MAX_DB_SUPER_GAIN_OFF = 36
+SUPER_GAIN_QUERY_COMMAND = "QSI:28"
 
 PEDESTAL_COMMAND = "OSJ:0F"
 PEDESTAL_QUERY_COMMAND = "QSJ:0F"

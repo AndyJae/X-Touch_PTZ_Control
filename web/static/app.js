@@ -99,6 +99,7 @@ function initCameraConnectButtons() {
 
         button.addEventListener("click", async () => {
             const isConnected = button.classList.contains("is-connected");
+            const originalText = button.textContent;
             button.disabled = true;
             button.textContent = isConnected ? "Disconnecting…" : "Connecting…";
             try {
@@ -118,9 +119,14 @@ function initCameraConnectButtons() {
                     return;
                 }
                 const data = await res.json();
-                button.textContent = data.error || "Error";
+                // Nutzerauftrag 2026-07-20 (z. B. doppelt eingetragene IP,
+                // siehe register_camera()): Fehler als echtes Popup zeigen,
+                // nicht nur stumm im Button-Text verstecken.
+                alert(data.error || "Error");
+                button.textContent = originalText;
             } catch (err) {
-                button.textContent = "Connection error";
+                alert("Connection error");
+                button.textContent = originalText;
             } finally {
                 button.disabled = false;
             }
@@ -489,12 +495,14 @@ function initFaderDrag(ws) {
         };
 
         let dragging = false;
+        let lastValue = 0;
 
         track.addEventListener("pointerdown", (evt) => {
             if (!isActive()) return;
             dragging = true;
             track.setPointerCapture(evt.pointerId);
             const value = valueFromEvent(evt);
+            lastValue = value;
             paint(value);
             send(value, false);
         });
@@ -502,19 +510,35 @@ function initFaderDrag(ws) {
         track.addEventListener("pointermove", (evt) => {
             if (!dragging) return;
             const value = valueFromEvent(evt);
+            lastValue = value;
             paint(value);
             send(value, false);
         });
 
-        const release = (evt) => {
+        track.addEventListener("pointerup", (evt) => {
             if (!dragging) return;
             dragging = false;
             const value = valueFromEvent(evt);
+            lastValue = value;
             paint(value);
             send(value, true);
-        };
-        track.addEventListener("pointerup", release);
-        track.addEventListener("pointercancel", release);
+        });
+
+        // Bugreport 2026-07-20: der Fader sprang manchmal hart auf 100%,
+        // ohne dass die Maus tatsaechlich dort war. Ursache: pointercancel
+        // (feuert bei abgebrochenen Interaktionen, z.B. Fokuswechsel/OS-
+        // Unterbrechung) liefert laut Pointer-Events-Spec KEINE verlaessliche
+        // Position -- wurde hier bisher genauso wie pointerup behandelt und
+        // dessen (unzuverlaessige) Koordinaten als finaler Wert interpretiert.
+        // Bei einem Abbruch stattdessen beim letzten tatsaechlich bekannten
+        // Wert (aus pointerdown/-move) bleiben, statt der Cancel-Position zu
+        // vertrauen.
+        track.addEventListener("pointercancel", () => {
+            if (!dragging) return;
+            dragging = false;
+            paint(lastValue);
+            send(lastValue, true);
+        });
     });
 }
 

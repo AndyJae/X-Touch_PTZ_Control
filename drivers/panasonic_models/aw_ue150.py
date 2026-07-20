@@ -47,6 +47,13 @@ DISPLAY_NAME = "Panasonic AW-UE150A"
 GAIN_MIN_DB = -3
 GAIN_MAX_DB = 42
 GAIN_STEP_DB = 1
+# Super-Gain-Kopplung (Nutzerauftrag 2026-07-20, Quelle: AW-UE150HE145_
+# InterfaceSpecification_E.pdf, "Auto, -3dB~36dB" wenn Super Gain aus,
+# "Auto, -3dB~42dB" wenn an -- nur die Obergrenze aendert sich, nicht die
+# Untergrenze; live nur gegen AW-UE100 verifiziert, nicht gegen eine echte
+# AW-UE150A/HE145): 36dB statt 42dB, solange Super Gain (`OSI:28`) aus ist.
+GAIN_MAX_DB_SUPER_GAIN_OFF = 36
+SUPER_GAIN_QUERY_COMMAND = "QSI:28"
 
 PEDESTAL_COMMAND = "OSJ:0F"
 PEDESTAL_QUERY_COMMAND = "QSJ:0F"

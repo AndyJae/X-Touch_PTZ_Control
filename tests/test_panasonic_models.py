@@ -107,6 +107,34 @@ def test_he145_resolves_gain_pedestal_from_dedicated_pdf() -> None:
     assert aw_he145.PEDESTAL_COMMAND == aw_ue150.PEDESTAL_COMMAND == "OSJ:0F"
 
 
+def test_super_gain_coupling_present_for_documented_models() -> None:
+    # Nutzerauftrag 2026-07-20, live gegen eine echte AW-UE100 verifiziert:
+    # Werte >36dB werden von der Kamera per ER3 abgelehnt, wenn Super Gain
+    # (OSI:28) aus ist -- GAIN_MAX_DB (42) gilt nur, wenn Super Gain an ist.
+    from drivers.panasonic_models import (
+        aw_he145,
+        aw_ue30,
+        aw_ue40,
+        aw_ue50,
+        aw_ue80,
+        aw_ue100,
+        aw_ue150,
+    )
+
+    for module in (aw_ue100, aw_ue80, aw_ue30, aw_ue40, aw_ue50, aw_ue150, aw_he145):
+        assert module.GAIN_MAX_DB_SUPER_GAIN_OFF == 36, module
+        assert module.SUPER_GAIN_QUERY_COMMAND == "QSI:28", module
+
+
+def test_super_gain_coupling_absent_for_ue160_not_documented_in_its_pdf() -> None:
+    # AW-UE160_InterfaceSpecification_E.pdf erwaehnt "Super Gain" an keiner
+    # Stelle -- kein erfundener Wert fuer dieses Modell.
+    from drivers.panasonic_models import aw_ue160
+
+    assert getattr(aw_ue160, "GAIN_MAX_DB_SUPER_GAIN_OFF", None) is None
+    assert getattr(aw_ue160, "SUPER_GAIN_QUERY_COMMAND", None) is None
+
+
 def test_ak_ub300_has_pedestal_but_no_gain_module_constants() -> None:
     module = resolve_model("AK-UB300")
     assert module is not None

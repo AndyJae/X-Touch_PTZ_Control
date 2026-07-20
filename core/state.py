@@ -9,6 +9,11 @@ class CameraState:
     iris_f_number: str | None = None
     auto_iris: bool | None = None
     gain_db: int | None = None
+    # `None` = unbekannt/nicht gelesen, `True` = Auto/AGC aktiv (Data=0x80,
+    # Nutzerauftrag 2026-07-20, live gegen AW-UE160 UND AW-UE100 bestaetigt --
+    # ein regulaerer dritter Gain-Zustand, kein Fehler), `False` = manueller
+    # Modus (`gain_db` gueltig). Siehe drivers/panasonic_aw.py::step_gain().
+    gain_auto: bool | None = None
     pedestal: int | None = None
     nd_index: int | None = None
     bars: bool | None = None

@@ -9,6 +9,7 @@ from drivers.panasonic_models.aw_ue80 import (  # noqa: F401
     BUTTON_FEATURE_LABELS,
     BUTTON_FEATURES,
     GAIN_MAX_DB,
+    GAIN_MAX_DB_SUPER_GAIN_OFF,
     GAIN_MIN_DB,
     GAIN_STEP_DB,
     PEDESTAL_CENTER_DATA,
@@ -18,6 +19,7 @@ from drivers.panasonic_models.aw_ue80 import (  # noqa: F401
     PEDESTAL_MIN,
     PEDESTAL_QUERY_COMMAND,
     PEDESTAL_SCALE,
+    SUPER_GAIN_QUERY_COMMAND,
 )
 
 CAMERA_ID = "AW-UE40"

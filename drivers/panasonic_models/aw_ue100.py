@@ -27,6 +27,12 @@ Projektkonvention (CLAUDE.md) weiterhin aus `C:\\smart_reset_work`; ein
 zusaetzliches Feature waere eine eigene Entscheidung ausserhalb des
 aktuellen Auftrags.
 
+Super-Gain-Kopplung DOCH durchgesetzt (Nutzerauftrag 2026-07-20, live gegen
+eine echte AW-UE100 mit Super Gain aus verifiziert: `OGU`-Werte >36dB
+werden von der Kamera per `ER3` abgelehnt): `GAIN_MAX_DB_SUPER_GAIN_OFF`/
+`SUPER_GAIN_QUERY_COMMAND` liefern die schmalere Obergrenze, wenn Super
+Gain aus ist -- siehe `PanasonicAWDriver.effective_gain_max_db`.
+
 DRS/Knee-Korrektur (2026-07-18, Nutzerauftrag "Button-Kataloge gegen
 Kapitel 8 verifizieren", Quelle: Kap. 8 "Menu-Command Correspondance Table"
 + Kap. 9 "Command List" dieser PDF): bestehende, aus smart_reset_work
@@ -49,6 +55,10 @@ DISPLAY_NAME = "Panasonic AW-UE100"
 GAIN_MIN_DB = 0
 GAIN_MAX_DB = 42
 GAIN_STEP_DB = 1
+# Super-Gain-Kopplung (Nutzerauftrag 2026-07-20, live verifiziert): 36dB
+# statt 42dB, solange Super Gain (`OSI:28`) aus ist.
+GAIN_MAX_DB_SUPER_GAIN_OFF = 36
+SUPER_GAIN_QUERY_COMMAND = "QSI:28"
 
 PEDESTAL_COMMAND = "OSJ:0F"
 PEDESTAL_QUERY_COMMAND = "QSJ:0F"

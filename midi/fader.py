@@ -33,7 +33,13 @@ WebSocket-Broadcast abonniert (siehe core/bus.py-Docstring: MIDI und Web-UI
 sind gleichwertige Publisher/Subscriber). Ohne dieses Tx bleibt der
 Motorfader auf der zuletzt bekannten Position stehen und federt dorthin
 zurueck, sobald man loslaesst -- deshalb Teil dieser ersten Verdrahtung und
-nicht erst der spaeteren Resync/Hotplug-Stufe.
+nicht erst der spaeteren Resync/Hotplug-Stufe. Zusaetzlich (Bugreport
+2026-07-20): `connection_changed` faehrt den Motorfader auf 0, wenn eine
+Kamera ueber die Setup-Seite getrennt wird (`disconnect_camera()` setzt
+`cam_state.iris` dafuer auf 0.0 zurueck) bzw. beim (Re-)Connect auf den
+echten Kamerawert -- sonst blieb der Fader beim Trennen auf der zuletzt
+gefahrenen Position stehen, obwohl `apply_iris()` Kamerabefehle fuer einen
+getrennten Kanal ohnehin schon verwirft.
 
 Tx Scribble Strips: Vollabzug aller 8 Strips bei `connection_changed`/
 `feature_changed`/`config_changed`/`gain_changed`/`pedestal_changed`.
@@ -49,14 +55,22 @@ ausgeloesten Aenderungen -- siehe `PanasonicAWDriver._handle_notification()`
 und die generische Update-Notification-Auswertung dort (§4.2 der
 HD Integrated Camera Interface Specifications).
 
-Tx Solo/Mute-LED: dieselben Events wie die Scribble Strips loesen einen
-Vollabzug beider LEDs aller 8 Kanaele aus (`_refresh_button_leds()`) -- kein
+Tx Rec/Solo/Mute/Select-LED: dieselben Events wie die Scribble Strips loesen
+einen Vollabzug aller vier LED-Typen aus (`_refresh_button_leds()`) -- kein
 eigenes Event noetig, `apply_button_action()`/`assign_channel_button()`
-publizieren bereits `feature_changed`/`config_changed`. Nutzerentscheid:
-Zustand rein binaer (OFF=Licht aus, ON=Licht an), kein Blinken. Select hat
-keine LED-Ansteuerung -- SELECT ist eine einmalige Companion-Aktion ohne
-Dauerzustand (siehe `trigger_companion_select()`-Docstring in
-core/application.py), es gibt nichts, das eine LED anzeigen koennte."""
+publizieren bereits `feature_changed`/`config_changed`. Solo/Mute:
+Nutzerentscheid, Zustand rein binaer (OFF=Licht aus, ON=Licht an), kein
+Blinken. Rec (Nutzerentscheid 2026-07-20): leuchtet dauerhaft auf allen 8
+Kanaelen -- Rec hat keine On/Off-Logik, sondern waehlt nur die ueber den
+Encoder einstellbare Funktion, die LED zeigt lediglich "hier ist eine
+Encoder-Funktion waehlbar" an. Select (Nutzerentscheid 2026-07-20): leuchtet
+nur, wenn Companion verbunden ist (`AppState.companion_connected`), und dann
+immer nur auf dem zuletzt gedrueckten Kanal (`_last_select_channel`,
+Instanzzustand dieser Klasse, kein Teil von AppState) -- Select selbst bleibt
+weiterhin eine einmalige Companion-Aktion ohne Dauerzustand (siehe
+`trigger_companion_select()`-Docstring in core/application.py), die LED
+zeigt hier rein die zuletzt gedrueckte Taste, nicht einen Erfolgs-/
+Fehlerzustand des Companion-Triggers."""
 
 from __future__ import annotations
 
@@ -132,6 +146,7 @@ class XTouchFader:
         self._task: asyncio.Task[None] | None = None
         self._touch_active: dict[int, bool] = {}
         self._last_value: dict[int, float] = {}
+        self._last_select_channel: int | None = None
 
     async def start(self) -> None:
         self._in_port = mido.open_input(self._input_port_name)
@@ -140,6 +155,7 @@ class XTouchFader:
         if self._output_port_name is not None:
             self._out_port = mido.open_output(self._output_port_name)
             self._state.event_bus.subscribe("iris_changed", self._on_iris_changed)
+            self._state.event_bus.subscribe("connection_changed", self._on_connection_changed)
             for topic in (
                 "connection_changed",
                 "feature_changed",
@@ -252,12 +268,17 @@ class XTouchFader:
         ):
             # Select: loest das hinterlegte Companion-SELECT-Ziel aus (Spec
             # §9, bewusste Erweiterung). Einmalige Aktion ohne Dauerzustand
-            # (siehe trigger_companion_select()-Docstring) -- keine LED-
-            # Ansteuerung, da kein Zustand existiert, der angezeigt werden
-            # koennte. CompanionError wird hier (anders als in der Web-Route)
-            # nur geloggt, damit ein Verbindungsfehler den Poll-Loop nicht
-            # abbricht.
+            # (siehe trigger_companion_select()-Docstring). LED zeigt seit
+            # Nutzerentscheid 2026-07-20 den zuletzt gedrueckten Kanal (nur
+            # wenn Companion verbunden ist, siehe _refresh_button_leds()) --
+            # das Nachziehen des LED-Zustands passiert unabhaengig davon, ob
+            # der Trigger selbst erfolgreich war (reine Press-Anzeige, kein
+            # Erfolgs-/Fehlerzustand). CompanionError wird hier (anders als
+            # in der Web-Route) nur geloggt, damit ein Verbindungsfehler den
+            # Poll-Loop nicht abbricht.
             channel_index = msg.note - _SELECT_NOTE_BASE + 1
+            self._last_select_channel = channel_index
+            self._refresh_button_leds()
             try:
                 await trigger_companion_select(self._state, channel_index)
             except CompanionError as exc:
@@ -300,6 +321,24 @@ class XTouchFader:
             # gilt nur fuer den Motor, nicht fuer die Strip-Anzeige unten.
             self._send_fader_position(channel_index, payload["value"])
         self._send_iris_percent_line(channel_index, payload["value"])
+
+    async def _on_connection_changed(self, payload: dict) -> None:
+        """Faehrt den Motorfader auf die aktuelle `cam_state.iris`-Position
+        nach, wenn sich der Verbindungsstatus einer Kamera aendert (Bugreport
+        2026-07-20: der Fader blieb beim Trennen einer Kamera auf der zuletzt
+        bekannten Position stehen). `disconnect_camera()` setzt `iris` dafuer
+        bereits auf 0.0 zurueck, `connect_camera()` auf den echten
+        Kamerawert -- diese Methode muss den Unterschied selbst nicht kennen,
+        sie liest nur den bereits aktualisierten Wert und sendet ihn wie
+        `_resync_from_state()` an den Motor (kein Touch-Check noetig, da eine
+        Verbindungsaenderung nie waehrend eines aktiven physischen Fader-
+        Zugs ausgeloest wird)."""
+        channel_index = self._channel_for_camera(payload["camera_id"])
+        if channel_index is None:
+            return
+        cam_state = self._state.state_store.get_camera(payload["camera_id"])
+        if cam_state.iris is not None:
+            self._send_fader_position(channel_index, cam_state.iris)
 
     def _channel_for_camera(self, camera_id: str) -> int | None:
         for channel_index, mapping in self._state.mapping.channels_for_type("fader").items():
@@ -385,21 +424,39 @@ class XTouchFader:
         self._out_port.send(_scribble_message(_SCRIBBLE_UPPER_BASE + strip * _SCRIBBLE_STRIP_CHARS, upper))
         self._out_port.send(_scribble_message(_SCRIBBLE_LOWER_BASE + strip * _SCRIBBLE_STRIP_CHARS, lower))
 
-    # --- Tx: Solo/Mute-LED (Button 2/3, Spec §5.2/§9a) --------------------
+    # --- Tx: Rec/Solo/Mute/Select-LED (Spec §5.2/§9/§9a) -------------------
 
     def _refresh_button_leds(self) -> None:
-        """Vollabzug der Solo/Mute-LED aller 8 Kanaele -- ausgeloest durch
-        dieselben Events wie die Scribble-Strips (siehe
-        `_on_scribble_relevant_event`). Zustand kommt aus derselben
-        `_channel_button_snapshot()`-Quelle, die auch die `is-on`-Klasse der
-        Web-UI setzt (Nutzerentscheid: physisches Geraet und Web-UI duerfen
-        nicht auseinanderlaufen). Unbekannter Zustand (`state: None`, noch
-        nie abgefragt/gedrueckt) zeigt wie in der Web-UI unbeleuchtet."""
+        """Vollabzug aller vier LED-Typen ueber alle 8 Kanaele -- ausgeloest
+        durch dieselben Events wie die Scribble-Strips (siehe
+        `_on_scribble_relevant_event`) sowie direkt nach einem Select-Druck.
+        Solo/Mute-Zustand kommt aus derselben `_channel_button_snapshot()`-
+        Quelle, die auch die `is-on`-Klasse der Web-UI setzt (Nutzerentscheid:
+        physisches Geraet und Web-UI duerfen nicht auseinanderlaufen).
+        Unbekannter Zustand (`state: None`, noch nie abgefragt/gedrueckt)
+        zeigt wie in der Web-UI unbeleuchtet. Rec (Nutzerentscheid
+        2026-07-20): keine Zustandsabfrage, leuchtet ohne Rücksicht auf
+        Solo/Mute-Feature-Zustand, aber nur auf Kanaelen mit tatsaechlich
+        verbundener Kamera (`ch["connected"]`, Nutzerentscheid 2026-07-20 --
+        ein Kanal ohne oder mit nur getrennter Kamera hat keine Encoder-
+        Funktion, die Rec waehlen koennte). Select (Nutzerentscheid
+        2026-07-20): leuchtet nur auf `_last_select_channel`, nur wenn
+        `AppState.companion_connected` gesetzt ist, UND nur wenn dieser Kanal
+        ebenfalls eine verbundene Kamera hat -- alle anderen Kanaele aus,
+        auch wenn sie zuvor mal der zuletzt gedrueckte waren oder Companion
+        gerade nicht verbunden ist."""
         for ch in channel_snapshot(self._state):
+            self._send_button_led(ch["index"], _REC_NOTE_BASE, ch["connected"])
             for slot, note_base in (("button2", _SOLO_NOTE_BASE), ("button3", _MUTE_NOTE_BASE)):
                 assigned = ch["buttons"][slot]
                 on = bool(assigned and assigned["state"])
                 self._send_button_led(ch["index"], note_base, on)
+            select_on = (
+                ch["connected"]
+                and self._state.companion_connected
+                and ch["index"] == self._last_select_channel
+            )
+            self._send_button_led(ch["index"], _SELECT_NOTE_BASE, select_on)
 
     def _send_button_led(self, channel_index: int, note_base: int, on: bool) -> None:
         if self._out_port is None:

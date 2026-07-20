@@ -21,8 +21,15 @@ Gain/Pedestal (Quelle: das oben genannte dedizierte PDF, Kap. 9 "Command
 List" -- gilt laut Dokument gemeinsam fuer AW-UE150 UND AW-HE145, keine
 "only supported by"-Einschraenkung beim Gain-/Pedestal-Abschnitt gefunden):
 Gain (`OGU`/`QGU`) kontinuierlich 05h=-3dB .. 08h=0dB .. 32h=+42dB (1dB-
-Schritte), 80h=AGC; Maximalwert an "Super Gain" gekoppelt (0..36dB wenn aus,
--3..42dB wenn an, wie bei AW-UE100/UE80 -- Kopplung hier nicht durchgesetzt).
+Schritte), 80h=AGC; Maximalwert an "Super Gain" gekoppelt. **Korrigiert
+(Nutzerauftrag 2026-07-20):** hier stand faelschlich "0..36dB wenn aus,
+-3..42dB wenn an" (aus dem UE100/UE80-Muster uebernommen, ohne diese PDF
+direkt zu pruefen) -- die PDF-Tabelle (Kap. 9 "Command List", Zeile "Gain")
+zeigt tatsaechlich **-3..36dB wenn Super Gain aus, -3..42dB wenn an** --
+nur die Obergrenze aendert sich, die Untergrenze bleibt -3 in beiden
+Faellen. Seit diesem Datum durchgesetzt (live nur gegen AW-UE100
+verifiziert, nicht gegen eine echte AW-UE150A/HE145, siehe
+`PanasonicAWDriver.effective_gain_max_db`).
 Pedestal ueber `OSJ:0F`/`QSJ:0F` Master Pedestal, Data 738h=-200/800h=0/
 8C8h=+200 -- identisch zu AW-UE150A/AW-UE100/AW-UE80/AW-UE160.
 
@@ -42,6 +49,8 @@ DISPLAY_NAME = "Panasonic AW-HE145"
 GAIN_MIN_DB = -3
 GAIN_MAX_DB = 42
 GAIN_STEP_DB = 1
+GAIN_MAX_DB_SUPER_GAIN_OFF = 36
+SUPER_GAIN_QUERY_COMMAND = "QSI:28"
 
 PEDESTAL_COMMAND = "OSJ:0F"
 PEDESTAL_QUERY_COMMAND = "QSJ:0F"

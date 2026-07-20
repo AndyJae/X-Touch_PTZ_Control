@@ -25,7 +25,13 @@ TEST_CONFIG = AppConfig.model_validate(
 
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
-    monkeypatch.setattr(web_app, "load_config", lambda path="config.yaml": TEST_CONFIG)
+    # Bugfix 2026-07-20: `TEST_CONFIG` ist ein einziges Modul-Objekt, das ohne
+    # Kopie ueber alle Tests hinweg geteilt wurde -- register_camera() mutiert
+    # `state.config.cameras` aber direkt (`state.config.cameras = [...]`),
+    # wodurch z.B. per Test registrierte Kameras stillschweigend in spaetere,
+    # unabhaengige Tests durchsickerten (entdeckt, weil ein neuer Test exakt
+    # das pruefte). `model_copy(deep=True)` gibt jedem Test eine frische Kopie.
+    monkeypatch.setattr(web_app, "load_config", lambda path="config.yaml": TEST_CONFIG.model_copy(deep=True))
     # Verhindert, dass Tests, die register_camera/assign_channel_button ueber
     # die echte Route ausloesen, in die reale config.yaml des Repos schreiben.
     monkeypatch.setattr(web_app, "_CONFIG_PATH", str(tmp_path / "config.yaml"))
@@ -373,9 +379,12 @@ def test_trigger_companion_select_endpoint_error_returns_502(client, monkeypatch
 
 
 def test_register_camera_endpoint_creates_and_connects(client) -> None:
+    # Bewusst eine andere IP als cam1 (127.0.0.1:9999 in TEST_CONFIG) --
+    # sonst greift die Duplikat-IP-Pruefung aus register_camera(), siehe
+    # test_register_camera_endpoint_duplicate_ip_returns_400_with_popup_message.
     response = client.post(
         "/api/channels/2/camera",
-        json={"name": "CAM 2", "host": "127.0.0.1", "port": 8082},
+        json={"name": "CAM 2", "host": "127.0.0.2", "port": 8082},
     )
 
     assert response.status_code == 200
@@ -384,7 +393,7 @@ def test_register_camera_endpoint_creates_and_connects(client) -> None:
     assert body["model"] == "AW-UE160"
 
     driver = web_app.app.state.ptz.drivers["cam2"]
-    assert driver.host == "127.0.0.1"
+    assert driver.host == "127.0.0.2"
     assert driver.port == 8082
 
 
@@ -392,6 +401,22 @@ def test_register_camera_endpoint_empty_host_returns_400(client) -> None:
     response = client.post("/api/channels/2/camera", json={"name": "", "host": "", "port": ""})
 
     assert response.status_code == 400
+
+
+def test_register_camera_endpoint_duplicate_ip_returns_400_with_popup_message(client) -> None:
+    # Bugreport 2026-07-20: cam1 in TEST_CONFIG nutzt bereits 127.0.0.1:9999
+    # -- Kanal 2 darf dieselbe IP nicht registrieren duerfen (geteilter
+    # Kamerazustand wie Lens-Info-Push, siehe CLAUDE.md Offene Punkte).
+    # Bewusst ein ANDERER Port als bei cam1, um zu zeigen, dass die Pruefung
+    # rein auf der IP beruht, nicht auf Host+Port zusammen.
+    response = client.post(
+        "/api/channels/2/camera",
+        json={"name": "CAM 2", "host": "127.0.0.1", "port": 8082},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "Camera is already connected, please select another camera"
+    assert "cam2" not in web_app.app.state.ptz.drivers
 
 
 def test_available_channel_buttons_endpoint_returns_connected_models_catalog(client) -> None:

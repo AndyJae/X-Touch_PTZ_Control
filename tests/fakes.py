@@ -31,6 +31,11 @@ class FakeCameraDriver:
     gain_step_db = _aw_ue160_model.GAIN_STEP_DB
     pedestal_min = _aw_ue160_model.PEDESTAL_MIN
     pedestal_max = _aw_ue160_model.PEDESTAL_MAX
+    # AW-UE160-Katalog hat keine Super-Gain-Kopplung (Nutzerauftrag
+    # 2026-07-20, siehe drivers/panasonic_aw.py::effective_gain_max_db) --
+    # Tests, die das simulieren wollen, setzen `gain_max_db_super_gain_off`/
+    # `gain_super_gain_on` auf der Instanz.
+    gain_max_db_super_gain_off: int | None = None
 
     def __init__(self, host: str, port: int = 80) -> None:
         self.host = host
@@ -39,6 +44,13 @@ class FakeCameraDriver:
         self._connected = False
         self.iris = 0.0
         self.gain_db = 0
+        self.gain_auto = False
+        # Simuliert eine kameraseitige Ablehnung (z. B. ER3, siehe
+        # AW-UE100 mit Super Gain aus: Werte >36dB, obwohl GAIN_MAX_DB=42) --
+        # einmalig, wird beim naechsten step_gain()-Aufruf geworfen und dann
+        # zurueckgesetzt.
+        self.raise_on_next_step_gain: Exception | None = None
+        self.gain_super_gain_on: bool | None = None
         self.pedestal = 0
         self.set_iris_calls: list[float] = []
         self.button_feature_calls: list[tuple[str, bool | None]] = []
@@ -67,6 +79,12 @@ class FakeCameraDriver:
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def effective_gain_max_db(self) -> int | None:
+        if self.gain_max_db_super_gain_off is not None and self.gain_super_gain_on is not True:
+            return self.gain_max_db_super_gain_off
+        return self.gain_max_db
+
     async def set_iris(self, value: float) -> None:
         self.set_iris_calls.append(value)
         self.iris = value
@@ -75,12 +93,35 @@ class FakeCameraDriver:
         pass
 
     async def set_gain_db(self, db: int) -> None:
-        pass
+        self.gain_db = db
+        self.gain_auto = False
 
-    async def step_gain(self, delta_db: int) -> int:
+    async def set_gain_auto(self) -> None:
+        self.gain_db = None
+        self.gain_auto = True
+
+    async def step_gain(self, delta_db: int) -> tuple[int | None, bool]:
+        # Auto/AGC-Verhalten (Nutzerauftrag 2026-07-20) spiegelt
+        # drivers/panasonic_aw.py::step_gain() -- siehe dort fuer die live
+        # gegen AW-UE160/AW-UE100 bestaetigte Grenzuebergangs-Logik.
         self.step_gain_calls.append(delta_db)
-        self.gain_db += delta_db
-        return self.gain_db
+        if self.raise_on_next_step_gain is not None:
+            exc = self.raise_on_next_step_gain
+            self.raise_on_next_step_gain = None
+            raise exc
+        if self.gain_auto:
+            if delta_db <= 0:
+                return None, True
+            self.gain_db = min(self.effective_gain_max_db, self.gain_min_db + (delta_db - 1))
+            self.gain_auto = False
+            return self.gain_db, False
+        new_db = self.gain_db + delta_db
+        if new_db < self.gain_min_db:
+            self.gain_db = None
+            self.gain_auto = True
+            return None, True
+        self.gain_db = min(self.effective_gain_max_db, new_db)
+        return self.gain_db, False
 
     async def set_pedestal(self, value: int) -> None:
         pass
@@ -117,7 +158,12 @@ class FakeCameraDriver:
 
     async def get_state(self) -> CameraState:
         return CameraState(
-            iris=self.iris, auto_iris=False, gain_db=self.gain_db, pedestal=self.pedestal, nd_index=0
+            iris=self.iris,
+            auto_iris=False,
+            gain_db=self.gain_db,
+            gain_auto=self.gain_auto,
+            pedestal=self.pedestal,
+            nd_index=0,
         )
 
     def subscribe(self, callback) -> None:

@@ -183,9 +183,13 @@ def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -
                 state.event_bus.publish("feature_changed", {"camera_id": camera_id, "key": event["key"]})
             )
         elif event_type == "gain_changed":
-            state.state_store.get_camera(camera_id).gain_db = event["value"]
+            cam_state = state.state_store.get_camera(camera_id)
+            cam_state.gain_db = event["value"]
+            cam_state.gain_auto = event.get("auto", False)
             asyncio.create_task(
-                state.event_bus.publish("gain_changed", {"camera_id": camera_id, "value": event["value"]})
+                state.event_bus.publish(
+                    "gain_changed", {"camera_id": camera_id, "value": event["value"], "auto": cam_state.gain_auto}
+                )
             )
         elif event_type == "pedestal_changed":
             state.state_store.get_camera(camera_id).pedestal = event["value"]
@@ -231,12 +235,22 @@ async def disconnect_camera(state: AppState, camera_id: str) -> None:
     """Trennt eine Kamera manuell (Setup-Tabelle: "Connect Camera" im
     verbundenen Zustand erneut geklickt -> Entkoppeln). Die Registrierung in
     `config.yaml` bleibt bestehen, nur die Laufzeitverbindung wird
-    geschlossen -- ein erneutes "Connect Camera" verbindet wieder."""
+    geschlossen -- ein erneutes "Connect Camera" verbindet wieder.
+
+    Setzt `iris` auf 0.0 zurueck (Bugreport 2026-07-20: Motorfader blieb
+    sonst auf der zuletzt bekannten Position stehen, obwohl keine Kamera
+    mehr verbunden ist) -- `midi/fader.py::_on_connection_changed()` fährt
+    den physischen Motorfader daraufhin auf 0, die Web-UI zeigt denselben
+    Wert über den normalen Snapshot-Broadcast. Ein erneutes Connect
+    überschreibt `iris` sofort wieder mit dem echten Kamerawert
+    (`connect_camera()` -> `get_state()`)."""
     driver = state.drivers.get(camera_id)
     if driver is None:
         return
     await driver.disconnect()
-    state.state_store.get_camera(camera_id).error = None
+    cam_state = state.state_store.get_camera(camera_id)
+    cam_state.error = None
+    cam_state.iris = 0.0
     await state.event_bus.publish("connection_changed", {"camera_id": camera_id})
 
 
@@ -249,12 +263,21 @@ async def register_camera(
     Kamera-Stammdaten (Nutzerentscheid) -- die freie YAML-Ansicht aus §10.3
     ist davon nicht betroffen. Kamera-ID ist deterministisch `cam{channel}`,
     da die Tabelle kein eigenes ID-Feld hat; erneuter Aufruf für denselben
-    Kanal aktualisiert damit dieselbe Kamera statt eine zweite anzulegen."""
+    Kanal aktualisiert damit dieselbe Kamera statt eine zweite anzulegen.
+
+    Lehnt eine IP ab, die bereits einem ANDEREN Kanal zugeordnet ist
+    (Bugreport 2026-07-20: zwei Kanäle auf derselben physischen Kamera
+    teilen sich unbemerkt Zustand wie Lens-Info-Push, Gain, Pedestal --
+    siehe CLAUDE.md Offene Punkte) -- derselbe Host für denselben Kanal
+    (erneutes Connect/Update) bleibt erlaubt."""
     if not 1 <= channel_index <= 8:
         raise ValueError(f"Kanal außerhalb 1-8: {channel_index}")
     if not host:
         raise ValueError("Host darf nicht leer sein")
     camera_id = f"cam{channel_index}"
+    duplicate = next((c for c in state.config.cameras if c.host == host and c.id != camera_id), None)
+    if duplicate is not None:
+        raise ValueError("Camera is already connected, please select another camera")
 
     camera_cfg = CameraConfig(
         id=camera_id,
@@ -418,9 +441,15 @@ def _encoder_value_range(driver: CameraDriver | None, function_name: str) -> tup
     (-6..+12dB/-200..+200) annahm. `None` heisst "kein Treiber" oder "Modell
     ohne bekannten Wertebereich" (z. B. unbekanntes Modell oder eines der
     Modelle ohne Gain-/Pedestal-Eintrag in den beiden Referenz-PDFs) -- kein
-    erfundener Fallback."""
+    erfundener Fallback. `gain`s Obergrenze ist `effective_gain_max_db`
+    (Nutzerauftrag 2026-07-20) statt des statischen `gain_max_db` -- bei
+    Modellen mit Super-Gain-Kopplung (aw_ue100.py/aw_ue80.py/aw_ue150.py/
+    aw_he145.py) 36dB statt 42dB, solange Super Gain nicht als "an"
+    bestaetigt ist (live gegen AW-UE100 verifiziert: Werte >36dB werden von
+    der Kamera per ER3 abgelehnt)."""
     if function_name == "gain":
-        lo, hi = getattr(driver, "gain_min_db", None), getattr(driver, "gain_max_db", None)
+        lo = getattr(driver, "gain_min_db", None)
+        hi = getattr(driver, "effective_gain_max_db", None)
     elif function_name == "pedestal":
         lo, hi = getattr(driver, "pedestal_min", None), getattr(driver, "pedestal_max", None)
     else:
@@ -518,7 +547,8 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
 
     state.encoder_saved[channel_index] = False
 
-    multiplier = _encoder_multiplier(state, channel_index, time.monotonic())
+    now = time.monotonic()
+    multiplier = _encoder_multiplier(state, channel_index, now)
     # Modelle mit `GAIN_STEP_DB` > 1 (z. B. AW-HE50/60/HE40/UE70/HE42: nur
     # 3dB-Schritte laut PDF) akzeptieren keine beliebigen Zwischenwerte -- ein
     # Tick muss deshalb um einen vollen Schritt bewegen, nicht immer um 1dB
@@ -531,28 +561,81 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
 
     cam_state = state.state_store.get_camera(camera_id)
     confirmed = getattr(cam_state, field_name, None)
-    if confirmed is None:
+    gain_auto = function_name == "gain" and cam_state.gain_auto
+    if confirmed is None and not gain_auto:
         state.encoder_pending_delta[channel_index] = pending
+        return
+
+    step_method = getattr(driver, _ENCODER_STEP_METHODS[function_name], None)
+
+    if gain_auto:
+        # Aktuell in Gain-Auto/AGC (Data=0x80, Nutzerauftrag 2026-07-20,
+        # live gegen AW-UE160 UND AW-UE100 bestaetigt): kein numerischer
+        # Ist-Wert vorhanden, deshalb kein Rate-Limiter/Delta-Clamping wie
+        # unten -- Hochdrehen (pending>0) verlaesst Auto, Runterdrehen bleibt
+        # in Auto (kein tieferer Zustand). Der Ausstieg selbst verhaelt sich
+        # dabei genauso proportional/beschleunigt wie jedes andere Drehen
+        # (Nutzerentscheid 2026-07-20, revidiert -- kein Sonder-"Verschlucken"
+        # der ganzen Drehbewegung mehr): `step_gain()` behandelt Auto intern
+        # als virtuelle Position "eine Stufe unter gain_min_db" und landet
+        # bei `gain_min_db + (pending-1)`, geclampt auf
+        # `effective_gain_max_db`. Bewusst OHNE Rate-Limiter: der
+        # Auto<->Manuell-Uebergang ist eine seltene Grenzueberschreitung,
+        # kein kontinuierliches Ziehen wie bei Iris/normalem Gain-Drehen.
+        if pending <= 0 or step_method is None:
+            state.encoder_pending_delta[channel_index] = min(pending, 0)
+            return
+        try:
+            new_db, new_auto = await step_method(pending)
+        except CameraCommandError as exc:
+            cam_state.error = str(exc)
+            # Bugreport 2026-07-20: ein von der Kamera abgelehnter Wert
+            # (z. B. ER3, siehe naechster Punkt) durfte das "pending"-Delta
+            # nicht stehen lassen -- sonst zeigt die naechste Vorschau
+            # (encoder_preview()) einen nie tatsaechlich erreichten Wert.
+            state.encoder_pending_delta[channel_index] = 0
+            await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
+            return
+        cam_state.gain_db = new_db
+        cam_state.gain_auto = new_auto
+        cam_state.error = None
+        state.encoder_pending_delta[channel_index] = 0
         return
 
     value_range = _encoder_value_range(driver, function_name)
     proposed = confirmed + pending
     if value_range is not None:
-        proposed = max(value_range[0], min(value_range[1], proposed))
+        # Gain-Unterschreitung des Minimums NICHT auf das Minimum clampen
+        # (Nutzerauftrag 2026-07-20) -- ein weiteres Herunterdrehen unter
+        # `gain_min_db` soll stattdessen in Auto wechseln (siehe
+        # PanasonicAWDriver.step_gain()); der obere Rand bleibt geclampt.
+        if not (function_name == "gain" and proposed < value_range[0]):
+            proposed = max(value_range[0], min(value_range[1], proposed))
 
     limiter = state.encoder_rate_limiters.get(camera_id)
-    step_method = getattr(driver, _ENCODER_STEP_METHODS[function_name], None)
     if limiter is None or step_method is None or not limiter.should_send(proposed):
         state.encoder_pending_delta[channel_index] = proposed - confirmed
         return
 
     try:
-        new_value = await step_method(proposed - confirmed)
+        result = await step_method(proposed - confirmed)
     except CameraCommandError as exc:
         cam_state.error = str(exc)
+        # Bugreport 2026-07-20 (live gegen AW-UE100 mit Super Gain aus:
+        # Werte >36dB werden von der Kamera mit ER3 abgelehnt, siehe
+        # drivers/panasonic_models/aw_ue100.py) -- ein abgelehnter Wert darf
+        # das "pending"-Delta nicht stehen lassen, sonst zeigt die naechste
+        # Vorschau (encoder_preview()) einen nie tatsaechlich erreichten Wert
+        # (das war die Ursache der faelschlich "+42" angezeigten Vorschau).
+        state.encoder_pending_delta[channel_index] = 0
         await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
         return
-    setattr(cam_state, field_name, new_value)
+    if function_name == "gain":
+        new_db, new_auto = result
+        cam_state.gain_db = new_db
+        cam_state.gain_auto = new_auto
+    else:
+        setattr(cam_state, field_name, result)
     cam_state.error = None
     state.encoder_pending_delta[channel_index] = 0
     # Bewusst KEIN "feature_changed"-Event hier (anders als commit_encoder_value
@@ -584,7 +667,7 @@ async def commit_encoder_value(state: AppState, channel_index: int) -> None:
     )
 
 
-def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int] | None:
+def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int | None] | None:
     """Aktive Encoder-Funktion + aktueller Wert (letzter bestaetigter
     Kamerawert + ein evtl. noch vom Rate-Limiter zurueckgehaltenes Delta,
     siehe `apply_encoder_turn`) fuer Scribble-Strip (midi/fader.py) und
@@ -592,7 +675,11 @@ def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int] | No
     wenn die aktive Funktion ein reiner Anzeige-Eintrag ohne State-Feld ist
     (z. B. `camera_status`, Spec-Nutzerentscheid: dann zeigt das Display
     stattdessen Kamera-Name+Blende) oder der Ist-Wert (noch) nicht bekannt
-    ist."""
+    ist. Der Wert selbst ist `None`, wenn `gain` gerade in Auto/AGC ist
+    (Nutzerauftrag 2026-07-20) -- anders als eine komplett unbekannte
+    Funktion liefert diese Funktion dann trotzdem ein Tupel (Zeile 1 zeigt
+    weiterhin "GAIN"), `_encoder_value_text()`/`_channel_encoder_snapshot()`
+    behandeln den `None`-Wert als "AUTO"."""
     function_name = _ENCODER_FUNCTIONS[state.encoder_function_index.get(channel_index, 0) % len(_ENCODER_FUNCTIONS)]
     field_name = _ENCODER_STATE_FIELDS.get(function_name)
     if field_name is None:
@@ -601,6 +688,8 @@ def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int] | No
     if entry is None:
         return None
     cam_state = state.state_store.get_camera(entry.camera_id)
+    if function_name == "gain" and cam_state.gain_auto:
+        return function_name, None
     confirmed = getattr(cam_state, field_name, None)
     if confirmed is None:
         return None
@@ -643,7 +732,7 @@ def _iris_percent_text(value: float | None) -> str:
     return f"{round(value * 100)}%"
 
 
-def _encoder_value_text(function_name: str, value: int) -> str:
+def _encoder_value_text(function_name: str, value: int | None) -> str:
     """Kompakte Darstellung des aktiven Encoder-Werts (7-Zeichen-Limit des
     Scribble-Strips, Spec §5.3 -- kein LED-Ring verfuegbar, siehe
     midi/fader.py-Modul-Docstring). Kein Funktions-Praefix (G/P) mehr --
@@ -652,7 +741,11 @@ def _encoder_value_text(function_name: str, value: int) -> str:
     redundant. `gain` ist der einzige mit physikalischer Einheit (dB);
     `pedestal` ist bei der AW-UE160 ein unitloser Rohwert -200..+200
     (`AW-UE160_InterfaceSpecification_E.pdf` Kap. 9 `OSJ:0F`), keine
-    Prozentangabe."""
+    Prozentangabe. `value` ist `None`, wenn `gain` in Auto/AGC ist
+    (Nutzerauftrag 2026-07-20, siehe `encoder_preview()`) -- zeigt dann
+    "AUTO" statt eines dB-Werts."""
+    if value is None:
+        return "AUTO"
     suffix = "dB" if function_name == "gain" else ""
     return f"{value:+d}{suffix}"
 

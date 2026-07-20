@@ -53,6 +53,16 @@ _NOTIFY_HEARTBEAT_TIMEOUT = 90.0
 
 
 def _parse_notification_payload(frame: bytes) -> str | None:
+    """Payload-Rahmen ist `\\r\\n<Kommando>\\r\\n`, aufgefuellt mit Null-Bytes
+    bis zur in `size` deklarierten Laenge (live gegen eine echte AW-UE160
+    bestaetigt, 2026-07-20, Nutzerauftrag: `OGU`/`OSJ:0F`-Notifications kamen
+    z. B. als `b'\\r\\nOGU:0D\\r\\n\\x00\\x00'` -- Null-Bytes sind KEIN
+    Whitespace fuer `str.strip()`, blieben also bisher am Ende stehen und
+    liessen `int(value, 16)` in `_handle_notification()` fehlschlagen,
+    wodurch `gain_changed`/`pedestal_changed` fuer eine externe Aenderung
+    stillschweigend nie feuerten -- Bugreport "Kamera-UI-Aenderung an Gain/
+    Pedestal wird nicht erkannt"). `strip("\\x00\\r\\n \\t")` entfernt Null-
+    Bytes und Whitespace von beiden Seiten in einem Durchgang."""
     if len(frame) < _NOTIFY_HEADER_LEN:
         return None
     size = int.from_bytes(
@@ -62,7 +72,7 @@ def _parse_notification_payload(frame: bytes) -> str | None:
     if payload_len < 0 or len(frame) < _NOTIFY_HEADER_LEN + payload_len:
         return None
     payload = frame[_NOTIFY_HEADER_LEN : _NOTIFY_HEADER_LEN + payload_len]
-    return payload.decode("ascii", errors="replace").strip()
+    return payload.decode("ascii", errors="replace").strip("\x00\r\n \t")
 
 
 def _parse_lens_info_iris(body: str) -> float | None:
@@ -94,14 +104,18 @@ def _extract_value(body: str) -> str | None:
     return value or None
 
 
-def _decode_gain_data(data: int) -> int | None:
-    """Gain-Kodierung (Data = 0x08 + db, 0x80 = AGC), geteilt zwischen
-    `_query_gain_db()` und der Update-Notification-Auswertung
+def _decode_gain_data(data: int) -> tuple[int | None, bool]:
+    """Gain-Kodierung (Data = 0x08 + db, 0x80 = Auto/AGC), geteilt zwischen
+    `_query_gain_state()` und der Update-Notification-Auswertung
     (`_handle_notification()`), da beide dieselbe Antwort-/Notification-
-    Kodierung `OGU:[Data]` dekodieren (§4.2/§7.2)."""
+    Kodierung `OGU:[Data]` dekodieren (§4.2/§7.2). Auto ist seit
+    Nutzerauftrag 2026-07-20 ein regulaerer dritter Gain-Zustand (live gegen
+    AW-UE160 UND AW-UE100 bestaetigt, siehe CLAUDE.md), kein Fehler-/
+    Unbekannt-Zustand mehr -- Rueckgabe (dB-Wert oder `None` bei Auto,
+    ist_auto)."""
     if data == _GAIN_AGC_DATA:
-        return None
-    return data - _GAIN_ZERO_DB_DATA
+        return None, True
+    return data - _GAIN_ZERO_DB_DATA, False
 
 
 def _match_toggle_feature(body: str, features: dict[str, dict]) -> tuple[str, bool] | None:
@@ -228,6 +242,19 @@ class PanasonicAWDriver(CameraDriver):
         self.pedestal_center_data: int | None = None
         self.pedestal_scale: int | None = None
         self.pedestal_data_width: int | None = None
+        # Super-Gain-Kopplung (Nutzerauftrag 2026-07-20, live gegen AW-UE100
+        # verifiziert: Werte >36dB werden per ER3 abgelehnt, wenn Super Gain
+        # aus ist) -- nur bei Modellen mit `GAIN_MAX_DB_SUPER_GAIN_OFF`
+        # gesetzt (siehe _apply_model_catalog()), sonst bleibt beides `None`
+        # und `effective_gain_max_db` liefert unveraendert `gain_max_db`.
+        self.gain_max_db_super_gain_off: int | None = None
+        self.super_gain_query_command: str | None = None
+        # Zwischengespeicherter Super-Gain-Zustand, aufgefrischt bei jedem
+        # get_state()-Aufruf (Connect UND Encoder-Funktionswechsel auf
+        # "gain", siehe core/application.py::cycle_encoder_function()) --
+        # `None` heisst "noch nicht abgefragt/nicht lesbar", wird dann
+        # konservativ wie "aus" behandelt (schmalere Obergrenze).
+        self.gain_super_gain_on: bool | None = None
 
     # --- Lifecycle -----------------------------------------------------
 
@@ -259,6 +286,10 @@ class PanasonicAWDriver(CameraDriver):
         self.pedestal_center_data = getattr(module, "PEDESTAL_CENTER_DATA", None) if module else None
         self.pedestal_scale = getattr(module, "PEDESTAL_SCALE", None) if module else None
         self.pedestal_data_width = getattr(module, "PEDESTAL_DATA_WIDTH", None) if module else None
+        self.gain_max_db_super_gain_off = (
+            getattr(module, "GAIN_MAX_DB_SUPER_GAIN_OFF", None) if module else None
+        )
+        self.super_gain_query_command = getattr(module, "SUPER_GAIN_QUERY_COMMAND", None) if module else None
 
     async def disconnect(self) -> None:
         await self.stop_lens_feedback()
@@ -328,8 +359,19 @@ class PanasonicAWDriver(CameraDriver):
         Kommandos aus BUTTON_FEATURES/Gain/Pedestal -- kein neues Parsing
         noetig. Laut Kap. 4.3.1 (Remarks) loesen einige Kommandos (OSD-Menue-
         Navigation, Pan/Tilt/Zoom/Focus/Iris, One-Touch-Focus, Contrast,
-        Iris volume) KEINE Notification aus; das betrifft hier keinen der
-        geprueften Katalog-Eintraege."""
+        Iris volume) KEINE Notification aus.
+
+        **Live widerlegt (2026-07-20, echte AW-UE160):** frueher stand hier
+        die Annahme, das beträfe keinen der geprueften Katalog-Eintraege --
+        das ist falsch. `auto_focus` (`OAF`) und `auto_iris` (`ORS`) wurden
+        direkt per CGI umgeschaltet (Kamera-UI bestaetigte den neuen Wert),
+        aber weder die Solo- noch die Mute-LED (beide auf diese Features
+        gemappt) reagierten -- die Kamera sendet fuer diese beiden Kommandos
+        also tatsaechlich KEINE Notification, passend zur "Focus/Iris"-
+        Ausnahme in Kap. 4.3.1. Betroffene Katalog-Eintraege bekommen dadurch
+        nur beim naechsten expliziten Query (Zuweisung/App-Neustart) einen
+        aktuellen Wert, nie push-basiert bei externer Aenderung -- siehe
+        CLAUDE.md Offene Punkte."""
         try:
             frame = await reader.read(65536)
         finally:
@@ -353,12 +395,12 @@ class PanasonicAWDriver(CameraDriver):
             value = _extract_value(body)
             if value is not None:
                 try:
-                    gain_db = _decode_gain_data(int(value, 16))
+                    gain_db, gain_auto = _decode_gain_data(int(value, 16))
                 except ValueError:
-                    gain_db = None
-                if gain_db is not None:
+                    gain_db, gain_auto = None, None
+                if gain_auto is not None:
                     for callback in self._callbacks:
-                        callback({"type": "gain_changed", "value": gain_db})
+                        callback({"type": "gain_changed", "value": gain_db, "auto": gain_auto})
             return
         if self.pedestal_command is not None and body.startswith(f"{self.pedestal_command}:"):
             value = _extract_value(body)
@@ -394,6 +436,38 @@ class PanasonicAWDriver(CameraDriver):
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def effective_gain_max_db(self) -> int | None:
+        """Tatsaechlich nutzbare Gain-Obergrenze -- bei Modellen mit
+        dokumentierter Super-Gain-Kopplung (`gain_max_db_super_gain_off`,
+        siehe `_apply_model_catalog()`: aw_ue100.py/aw_ue80.py (+UE30/40/50)/
+        aw_ue150.py/aw_he145.py) 36dB statt `gain_max_db` (42dB), solange
+        Super Gain nicht positiv als "an" bestaetigt ist (Nutzerauftrag
+        2026-07-20, live gegen eine echte AW-UE100 verifiziert: Werte >36dB
+        werden von der Kamera per `ER3` abgelehnt, wenn Super Gain aus ist).
+        Unbekannter Zustand (`gain_super_gain_on` ist `None`, noch nicht
+        abgefragt) wird konservativ wie "aus" behandelt, um ER3-Ablehnungen
+        zu vermeiden. Modelle ohne diese Kopplung (`gain_max_db_super_gain_off`
+        ist `None`) liefern unveraendert `gain_max_db`."""
+        if self.gain_max_db_super_gain_off is not None and self.gain_super_gain_on is not True:
+            return self.gain_max_db_super_gain_off
+        return self.gain_max_db
+
+    async def _query_super_gain(self) -> bool | None:
+        if self.super_gain_query_command is None:
+            return None
+        try:
+            body = await self._request("aw_cam", self.super_gain_query_command)
+        except CameraCommandError:
+            return None
+        value = _extract_value(body)
+        if value is None:
+            return None
+        try:
+            return int(value, 16) == 1
+        except ValueError:
+            return None
+
     # --- Steuerung -------------------------------------------------------
 
     async def set_iris(self, value: float) -> None:
@@ -407,22 +481,49 @@ class PanasonicAWDriver(CameraDriver):
         data = _GAIN_ZERO_DB_DATA + db
         await self._request("aw_cam", f"OGU:{data:02X}")
 
-    async def step_gain(self, delta_db: int) -> int:
-        current = await self._query_gain_db()
-        if current is None:
-            # AGC aktiv (80h) oder nicht lesbar — Spec §7.2: Steps ignorieren,
-            # Solo-LED blinken lassen ist Mapping-Engine-Aufgabe, nicht Treiber.
-            raise CameraCommandError(
-                "gain step ignored: AGC active or gain unreadable",
-                command="OGU",
-            )
+    async def set_gain_auto(self) -> None:
+        """Gain "Auto"/AGC (Data=0x80) -- Nutzerauftrag 2026-07-20, live
+        gegen AW-UE160 UND AW-UE100 bestaetigt (siehe CLAUDE.md): regulaerer
+        dritter Gain-Zustand, kein Fehler."""
+        await self._request("aw_cam", f"OGU:{_GAIN_AGC_DATA:02X}")
+
+    async def step_gain(self, delta_db: int) -> tuple[int | None, bool]:
+        """Rueckgabe (neuer dB-Wert oder `None` bei Auto, ist_auto). Auto
+        (Data=0x80) ist seit Nutzerauftrag 2026-07-20 ein regulaerer dritter
+        Gain-Zustand am unteren Ende (live gegen AW-UE160 UND AW-UE100
+        bestaetigt, siehe CLAUDE.md): Herunterdrehen unter `gain_min_db`
+        wechselt in Auto, Hochdrehen aus Auto verlaesst Auto wieder.
+
+        Der Ausstieg selbst ist proportional zum Dreh-Delta -- Auto wird
+        dafuer als virtuelle Position "eine Stufe unter `gain_min_db`"
+        behandelt (Nutzerentscheid 2026-07-20, revidiert: eine erste Version
+        liess dabei jede Drehbewegung nach dem Ausstieg bewusst verwerfen
+        und immer exakt bei `gain_min_db` landen, das fuehlte sich aber
+        anders an als normales Drehen bei anderen Werten -- jetzt landet ein
+        kraeftiges/schnelles Hochdrehen genauso proportional weiter oben wie
+        bei jedem anderen Wert, nur weiterhin auf `effective_gain_max_db`
+        geclampt). Weiteres Herunterdrehen waehrend Auto ist ein No-Op (kein
+        tieferer Zustand als Auto)."""
+        current_db, current_auto = await self._query_gain_state()
+        if current_db is None and not current_auto:
+            raise CameraCommandError("gain step ignored: gain unreadable", command="OGU")
         if self.gain_min_db is None or self.gain_max_db is None:
             raise CameraCommandError(
                 "gain step ignored: no gain range known for this model", command="OGU"
             )
-        new_db = max(self.gain_min_db, min(self.gain_max_db, current + delta_db))
+        if current_auto:
+            if delta_db <= 0:
+                return None, True
+            new_db = min(self.effective_gain_max_db, self.gain_min_db + (delta_db - 1))
+            await self.set_gain_db(new_db)
+            return new_db, False
+        new_db = current_db + delta_db
+        if new_db < self.gain_min_db:
+            await self.set_gain_auto()
+            return None, True
+        new_db = min(self.effective_gain_max_db, new_db)
         await self.set_gain_db(new_db)
-        return new_db
+        return new_db, False
 
     async def set_pedestal(self, value: int) -> None:
         if (
@@ -565,11 +666,21 @@ class PanasonicAWDriver(CameraDriver):
 
     async def get_state(self) -> CameraState:
         iris, auto_iris = await self._query_iris()
+        gain_db, gain_auto = await self._query_gain_state()
+        # Aktualisiert den zwischengespeicherten Super-Gain-Zustand (siehe
+        # `effective_gain_max_db`) -- get_state() wird sowohl bei connect()
+        # als auch bei jedem Wechsel der Encoder-Funktion auf "gain"
+        # aufgerufen (core/application.py::cycle_encoder_function()), damit
+        # bleibt dieser Cache ohne zusaetzliche Wiring-Stelle einigermassen
+        # frisch, ohne bei jedem einzelnen Encoder-Tick erneut abzufragen.
+        if self.super_gain_query_command is not None:
+            self.gain_super_gain_on = await self._query_super_gain()
         return CameraState(
             iris=iris,
             iris_f_number=await self._query_f_number(),
             auto_iris=auto_iris,
-            gain_db=await self._query_gain_db(),
+            gain_db=gain_db,
+            gain_auto=gain_auto,
             pedestal=await self._query_pedestal(),
             nd_index=await self._query_nd(),
             bars=None,  # QBR-Response-Format nicht in Spec definiert (nur Query-Name, §11)
@@ -613,15 +724,17 @@ class PanasonicAWDriver(CameraDriver):
             return None
         return _extract_value(body)
 
-    async def _query_gain_db(self) -> int | None:
-        # QGU als Query-Kommando ist laut Spec §14 Punkt 2 unbestaetigt.
+    async def _query_gain_state(self) -> tuple[int | None, bool | None]:
+        # QGU als Query-Kommando live gegen AW-UE160 verifiziert (Spec §14
+        # Punkt 2, siehe CLAUDE.md). Rueckgabe (dB-Wert oder None bei Auto,
+        # ist_auto -- None heisst hier "nicht lesbar", nicht Auto).
         try:
             body = await self._request("aw_cam", "QGU")
         except CameraCommandError:
-            return None
+            return None, None
         value = _extract_value(body)
         if value is None:
-            return None
+            return None, None
         return _decode_gain_data(int(value, 16))
 
     def _decode_pedestal_data(self, data: int) -> int | None:

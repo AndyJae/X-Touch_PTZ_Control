@@ -405,7 +405,13 @@ dieses Modell). Pedestal (`OSG:4A`) ist davon unabhängig und implementiert.
 2. **Lens-Info:** `#LPC1` → `lPI[ZZZ][FFF][III]` alle 300 ms (Zoom/Fokus/Iris,
    je 3 Hex-Digits, Iris 555h–FFFh). Primäre Quelle für Fader-Feedback,
    da Iris-Bewegungen NICHT als Update-Notification kommen (`#AXI` hat laut
-   Spec kein Update-Notification-Flag).
+   Spec kein Update-Notification-Flag). **Live bestätigt (2026-07-20, echte
+   AW-UE160):** dieselbe Ausnahme gilt auch für die Auto/Manual-Umschaltung
+   `OAF` (Auto Focus) und `ORS` (Auto Iris) — beide per CGI direkt an der
+   Kamera umgeschaltet, aber keine Notification empfangen (Solo-/Mute-LED
+   blieben unverändert). Externe Änderungen dieser beiden Features werden
+   von PTZ_Control deshalb nur beim nächsten expliziten Query erkannt
+   (Zuweisung/Reconnect), nicht push-basiert.
 3. **F-Nummer für Scribble Strip:** `QIF` pollen, aber nur gedrosselt
    (1×/s, und nur wenn sich `lPI`-Iriswert geändert hat).
 
@@ -529,8 +535,9 @@ konfiguriert. Implementierung: `core/companion.py`.
 
 **Status: Modell-Registry mit 17 Panasonic-Modellen umgesetzt (Nutzerentscheid).
 Physische X-Touch-Auslösung für Button 2/3 (Solo/Mute) sowie Select (Companion) über
-`midi/fader.py` verdrahtet (Software-Logik verifiziert, LED-Tx und Kanal 2-8 noch nicht
-gegen reale Hardware getestet, siehe §14).**
+`midi/fader.py` verdrahtet. Rx für Kanal 1–8 vollständig gegen reale Hardware
+verifiziert; LED-Tx bisher nur für Solo/Kanal 1 (beide Richtungen, gegen echte
+Kamera gegengeprüft), Mute/Select-LED und Kanal 2–8 noch nicht getestet, siehe §14.**
 
 Externe Referenzquelle: `C:\smart_reset_work\camera_plugins\panasonic\*.py`
 (`UI_BUTTONS`/`UI_BUTTON_LABELS` pro Kameramodell, dort gegen reale
@@ -599,8 +606,27 @@ Ausgelöst wird die Aktion sowohl über die Button-2/3-Elemente der
 physischen X-Touch Extender: Solo (Note 8–15) und Mute (Note 16–23) rufen
 dieselbe `apply_button_action()` auf (`midi/fader.py`). LED-Feedback (OFF=aus/
 ON=an, kein Blinken) läuft über denselben Event-getriebenen Vollabzug wie die
-Scribble Strips. Software-Logik verifiziert, LED-Tx und Kanal 2–8 noch nicht
-gegen reale Hardware getestet (siehe §14).
+Scribble Strips. Rx für Kanal 1–8 vollständig hardwareverifiziert (2026-07-20).
+LED-Tx bisher nur für Solo/Kanal 1 getestet: `auto_focus` (Button 2) toggelte
+live gegen die echte Kamera zwischen `OAF:0`/`OAF:1`, LED folgte in beiden
+Richtungen exakt (an/aus, kein Blinken) — Mute/Select-LED und Kanal 2–8
+weiterhin nicht getestet (siehe §14).
+
+**Rec- und Select-LED (Nutzerauftrag 2026-07-20):** Rec (Note 0–7) leuchtet
+bei jedem LED-Vollabzug nur auf Kanälen mit tatsächlich verbundener Kamera
+(keine Feature-Zustandsabfrage, nur die Verbindung selbst) — Rec hat keine
+On/Off-Semantik, wählt nur die über den Encoder einstellbare Funktion (§9),
+ohne Kamera gibt es nichts zu wählen. Select (Note 24–31) leuchtet nur, wenn
+zusätzlich zur verbundenen Kamera auch `AppState.companion_connected`
+gesetzt ist, und dann exakt auf dem Kanal, dessen Select-Taste zuletzt
+gedrückt wurde (reiner Instanzzustand in `XTouchFader`, kein Teil von
+`AppState`) — Select selbst bleibt eine einmalige Companion-Aktion ohne
+Dauerzustand, die LED zeigt nur die zuletzt gedrückte Taste, keinen Erfolgs-
+/Fehlerzustand des Companion-Triggers. Getestet in `tests/test_fader.py`.
+Live gegen die reale Hardware verifiziert vor der Verbindungs-Einschränkung
+(Rec dauerhaft an, Select blieb bei nicht erreichbarem Companion aus); die
+Verbindungs-Einschränkung selbst bisher nur testabgesichert, nicht erneut
+live nachgeprüft (siehe §14).
 
 **Zustandsabfrage beim Zuweisen (Nutzerauftrag 2026-07-18):** Zustand war
 bisher rein lokal getrackt (kein Query-Gegenstück angenommen) und erst nach
@@ -757,20 +783,39 @@ kürzliche Thread-Nutzereingabe sonst nicht auf Rechtsklicks).
    (Kanal 1, echtes Gerät, via `tools/midi_monitor.py`): Pitchbend Kanal 1 =
    Fader 1, Note 104 = Fader-Touch 1, CC 16 = Encoder 1 drehen (relativ +),
    Note 32 = Encoder-Push 1, Note 0/8/16/24 = Rec/Solo/Mute/Select Kanal 1 —
-   exakt wie oben angenommen, keine Abweichung. Kanäle 2–8 nicht einzeln
-   geprüft (gleiches Offset-Schema angenommen, nicht verifiziert).
+   exakt wie oben angenommen, keine Abweichung. ~~Kanäle 2–8 nicht einzeln
+   geprüft (gleiches Offset-Schema angenommen, nicht verifiziert).~~
+   **Kanal 2–8 vollständig verifiziert (2026-07-20, echtes Gerät, drei
+   Durchläufe via `tools/midi_monitor.py`):** Solo 1–8 = Note 8–15, Mute 1–8
+   = Note 16–23, Select 1–8 = Note 24–31, Rec 1–8 = Note 0–7, Fader-Touch
+   1–8 = Note 104–111, Encoder 1–8 drehen = CC 16–23, Encoder-Push 1–8 =
+   Note 32–39 (je alle 8 Kanäle einzeln betätigt) — exakt wie angenommen,
+   keine Abweichung. Komplette MC-Belegung aus §5.2 jetzt über alle 8
+   Kanäle hardwareverifiziert.
 2. ~~`QGU`-Query-Kommando für Gain-Ist-Wert gegen Gerät prüfen~~ **Bestätigt durch
    Herstellerdoku** (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, Tabelle „GAIN", S. 47):
    `Request: QGU` → `Response: OGU:[Data]`, gleiche Kodierung wie Control-Befehl. Auch in
    der Multi-Modell-Spec für dieselbe Befehlsfamilie bestätigt (HDIntegratedCamera-Spec,
    Kap. 3.2.6, S. 68) — gilt für Modelle mit `OGU` (nicht AK-UB300, siehe §7.2-Hinweis).
-   **Noch unbestätigt gegen echtes Gerät** — nur Dokumenten-Beleg, kein Laufzeittest.
-3. Verhalten `#AXI` bei aktivem Auto-Iris testen (wird ignoriert oder
+   **Jetzt auch live gegen echtes Gerät verifiziert (2026-07-20):** reale AW-UE160
+   (`192.168.0.10`) liefert auf `GET /cgi-bin/aw_cam?cmd=QGU&res=1` exakt `OGU:08`,
+   `_decode_gain_data(0x08)` ergibt 0dB — passt zum tatsächlichen Default-Gain der Kamera.
+3. ~~Verhalten `#AXI` bei aktivem Auto-Iris testen (wird ignoriert oder
    schaltet Auto ab?) → bestimmt, ob Fader-Bewegung Auto-Iris deaktivieren soll
-   (empfohlen: ja, explizit `ORS:0` vor erstem `#AXI` nach Touch).
-   **Geprüft, weiterhin offen:** Weder AW-UE160_InterfaceSpecification_E.pdf noch
-   die Multi-Modell-Spec (HDIntegratedCamera_InterfaceSpecifications-E.pdf) dokumentieren
-   dieses Verhalten. Bleibt ein Punkt, der nur per echtem Gerätetest zu klären ist.
+   (empfohlen: ja, explizit `ORS:0` vor erstem `#AXI` nach Touch).~~
+   **Live verifiziert (2026-07-20, reale AW-UE160 `192.168.0.10`):** `#AXI` wird bei
+   aktivem Auto-Iris (`ORS:1`, `#GI`-Mode-Bit=1) stillschweigend **ignoriert** — kein
+   Fehler, das Kommando wird syntaktisch bestätigt (`axi600` Echo), aber `#GI` zeigt
+   danach unverändert die vom kamerainternen Auto-Algorithmus bestimmte Position, nicht
+   den gesendeten Wert (getestet mit `#AXI900` und `#AXI600` gegen eine Baseline-Iris-
+   Drift ohne `#AXI`-Kommando dazwischen, um kamerainterne Nachregelung von einer echten
+   Reaktion auf `#AXI` zu unterscheiden). Auto-Iris bleibt dabei aktiv (Mode-Bit bleibt 1)
+   — die Kamera schaltet NICHT automatisch auf manuell um. **Konsequenz (noch nicht
+   umgesetzt, eigener Punkt):** `midi/fader.py`/`core/application.py::apply_iris` senden
+   bei Fader-Touch aktuell kein `ORS:0` vor dem ersten `#AXI` — ohne das bleibt eine
+   Fader-Bewegung bei aktivem Auto-Iris derzeit wirkungslos, ohne dass die UI das
+   anzeigt. Umsetzung der empfohlenen Lösung (Touch deaktiviert Auto-Iris) ist ein
+   separater Implementierungsschritt, hier nur der Testbefund.
 4. ~~Scribble-Strip-Offsets beim Extender identisch zum X-Touch? (Extender ist
    in MC-Welt "Extender-Gerät", ggf. eigene Device-ID im SysEx-Header: 0x15
    statt 0x14 testen.)~~ **Verifiziert**: Device-ID ist `0x15` (nicht `0x14`,
@@ -827,3 +872,112 @@ kürzliche Thread-Nutzereingabe sonst nicht auf Rechtsklicks).
     konsistent über die gesamte AW-Familie (HDIntegratedCamera, Kap. 3.2.2). `get_state()`
     liefert den Wert weiterhin `None`, bis er im Treiber implementiert wird (kein
     Code-Änderung in diesem Schritt).
+12. **Externe Änderungen von `auto_focus`/`auto_iris` werden nicht live erkannt
+    (live bestätigt 2026-07-20, §7.3):** Kamera sendet für `OAF`/`ORS` keine
+    Update-Notification (Kap. 4.3.1 "Focus/Iris" ausgenommen). Solo-/Mute-LED
+    und der interne Zustand bleiben deshalb auf dem zuletzt bekannten Stand,
+    bis das Feature das nächste Mal explizit abgefragt wird (Zuweisung,
+    Reconnect). **Noch keine Lösung entschieden** — z. B. periodisches
+    Polling (`QAF`/`QRS`) für Kanäle mit einem dieser Features auf Button 2/3
+    wäre eine Option, oder bewusstes Akzeptieren der Einschränkung.
+13. ~~Select-Taste am X-Touch wirkte nach längerer Inaktivität nur beim
+    zweiten Klick~~ **Behoben (2026-07-20):** `core/companion.py::
+    press_button()` retried jetzt einmal automatisch bei `httpx.HTTPError`
+    auf den ersten Versuch — Ursache vermutlich eine vom Companion-Server
+    serverseitig bereits geschlossene, aber clientseitig noch gepoolte
+    Keep-Alive-Verbindung (`build_client()`, §9). Nur unittest-abgesichert
+    (`tests/test_companion.py`), nicht live gegen einen echten
+    Companion-Timeout nachverifiziert.
+14. **Gain "Auto" als dritter Encoder-Zustand + Super-Gain-Kopplung
+    (Nutzerauftrag 2026-07-20, live gegen AW-UE160 UND AW-UE100 verifiziert,
+    siehe §9/§7.2):** `OGU:80` ist jetzt ein regulärer Gain-Zustand am
+    unteren Rand (Sequenz `+2,+1,0,Auto` beim Runterdrehen, `Auto,0,+1,+2`
+    beim Hochdrehen), kein "unbekannt/Fehler" mehr. `CameraState.gain_auto`
+    unterscheidet das jetzt von echtem "unbekannt". Zusätzlich entdeckt:
+    `GAIN_MAX_DB=42` bei AW-UE100/UE80(+UE30/40/50)/UE150A/HE145 gilt nur bei
+    Super Gain (`OSI:28`) an — bei aus (Live-Zustand der Test-UE100) liegt
+    die echte Obergrenze bei 36dB (Werte darüber: `ER3`). Neue Konstanten
+    `GAIN_MAX_DB_SUPER_GAIN_OFF`/`SUPER_GAIN_QUERY_COMMAND`,
+    `PanasonicAWDriver.effective_gain_max_db` liefert die tatsächlich
+    nutzbare Grenze. Dabei einen Dokumentationsfehler in `aw_he145.py`
+    korrigiert (stand fälschlich "0..36/-3..42", PDF zeigt "-3..36/-3..42").
+    AW-UE160 hat laut seiner PDF keine Super-Gain-Kopplung. Zwei Bugs beim
+    Live-Test gefunden: (1) kräftiges Hochdrehen aus Auto schnellte wegen der
+    Tick-Beschleunigung (§9, ×5) auf +42 statt auf einen erwarteten Wert —
+    eine erste Fassung ließ dafür den Rest der Drehbewegung verwerfen (immer
+    exakt bei `gain_min_db` landen), das wurde nach Live-Test-Feedback
+    (Nutzerentscheid 2026-07-20) wieder verworfen: Auto-Ausstieg landet jetzt
+    stattdessen proportional zum Dreh-Delta (`gain_min_db + (delta-1)`,
+    geclampt auf `effective_gain_max_db`) — verhält sich damit wie jeder
+    andere Gain-Wert, kein Sonderfall/keine Pause nötig; (2) ein von der
+    Kamera abgelehnter Wert (`ER3`) ließ das intern gemerkte "pending"-Delta
+    stehen, wodurch die Vorschau einen nie erreichten Wert zeigte (das war
+    die eigentliche Ursache des "+42"-Symptoms, nicht das Fehlen von
+    Verwerfen). Getestet in `tests/test_application.py`/
+    `tests/test_panasonic.py`/`tests/test_panasonic_models.py` (258 Tests,
+    vorher 245). **Live verifiziert (AW-UE100 `192.168.0.11`):** die
+    proportionale Landung selbst ist noch nicht erneut live nachgeprüft,
+    nur der ursprüngliche (inzwischen revidierte) Suppression-Ansatz.
+15. ~~Motorfader blieb beim Trennen einer Kamera (Setup-Seite) auf der
+    zuletzt bekannten Position stehen~~ **Behoben (2026-07-20):**
+    `disconnect_camera()` setzt `iris` auf 0.0 zurück, `midi/fader.py`
+    fährt den Motorfader darüber automatisch nach (neue
+    `connection_changed`-Abonnement, zusätzlich zur bestehenden
+    Scribble-/LED-Aktualisierung auf demselben Topic) — dieselbe Methode
+    fährt bei (Re-)Connect auf den echten Kamerawert. `apply_iris()`
+    verwarf Fader-Bewegungen einer getrennten Kamera bereits vorher
+    vollständig (§5.4/§7). Getestet in `tests/test_application.py`/
+    `tests/test_fader.py` (260 Tests, vorher 258), noch nicht live gegen
+    die reale Hardware verifiziert.
+16. ~~Web-UI-Fader sprang beim Ziehen mit der Maus manchmal unkontrolliert
+    auf 100%~~ **Behoben (2026-07-20), live über Server-Log-Korrelation
+    diagnostiziert** (§10): `pointercancel` (Interaktionsabbruch, keine
+    verlässliche Position laut Pointer-Events-Spec) wurde in
+    `web/static/app.js::initFaderDrag()` bisher wie `pointerup` behandelt —
+    Log zeigte einen harten Sprung von `#AXIBB3` (~60%) direkt auf `#AXIFFF`
+    (100%) ohne Zwischenschritt. `pointercancel` sendet jetzt den zuletzt aus
+    `pointerdown`/`pointermove` bekannten Wert statt der eigenen
+    unzuverlässigen Koordinaten. Rein clientseitig, kein Python-Test möglich.
+    **Zusätzlich entdeckt, noch nicht behoben:** WS-Reconnect erzeugt ein
+    neues WebSocket-Objekt ohne es an die Drag-/Encoder-Handler
+    weiterzugeben — nach einem Reconnect senden diese bis zum nächsten
+    Seiten-Reload stillschweigend nichts mehr.
+17. **`#LPC1`/`#LPC0` (Lens-Info-Push, §7.3) ist kamera-weit, nicht pro
+    Verbindung (live entdeckt 2026-07-20):** Bugreport "externe
+    Iris-Änderungen an der UE160 werden nicht erkannt, an der UE100 schon"
+    hatte keine Modellursache — `config.yaml` hatte `cam1` UND `cam4` auf
+    dieselbe physische Kamera (`192.168.0.10`) registriert. Ein Test
+    während dieser Session (Trennen von `cam4`) sendete `#LPC0` an die
+    physische Kamera und schaltete den Lens-Info-Push für die GESAMTE
+    Kamera ab, auch für `cam1`, das nie getrennt wurde. Live verifiziert:
+    erneutes `#LPC1` per CGI stellte den Feedback sofort wieder her, ohne
+    Code-Änderung. **Kein Code-Fix** (Nutzerentscheid): zwei unabhängige
+    Kanäle, die dieselbe physische Kamera teilen, sind kein vom Code
+    unterstütztes Setup (geteilter Kamerazustand ohne gegenseitiges
+    Wissen) — Behebung über die Setup-Seite (`cam4` umkonfigurieren), nicht
+    im Code.
+18. **Doppelte IP über die Setup-Seite verboten (Nutzerauftrag 2026-07-20,
+    §10.3):** `register_camera()` lehnt eine IP ab, die bereits einem
+    anderen Kanal zugeordnet ist (Vergleich über `host`, Port ignoriert),
+    derselbe Host für denselben Kanal bleibt erlaubt. Meldung "Camera is
+    already connected, please select another camera" erscheint jetzt als
+    Popup (`alert()`) auf der Setup-Seite statt nur im Button-Text. Dabei
+    einen vorbestehenden Test-Isolations-Bug in `tests/test_web_app.py`
+    gefunden und behoben (geteiltes, ungekopiertes `TEST_CONFIG`-Objekt
+    liess registrierte Test-Kameras zwischen Tests durchsickern). 263 Tests
+    (vorher 260), noch nicht live verifiziert.
+19. ~~Externe Gain-/Pedestal-Änderungen (Kamera-eigenes Web-UI) wurden nicht
+    erkannt~~ **Behoben (2026-07-20, §7.3, Root Cause per eigenständigem
+    Roh-TCP-Probe gefunden):** `OGU`/`OSJ:0F`-Notifications haben (anders
+    als `lPI`/`lPC1`) Null-Byte-Padding NACH dem schließenden `\r\n`
+    (`\r\nOGU:0D\r\n\x00\x00\x00`, live mitgeschnitten). `str.strip()` ohne
+    Argument entfernt keine Null-Bytes, wodurch `int(value, 16)` in
+    `_handle_notification()` fehlschlug und `gain_changed`/
+    `pedestal_changed` nie feuerten. `_parse_notification_payload()` nutzt
+    jetzt `strip("\x00\r\n \t")`. Bestehende Unit-Tests hatten das nicht
+    gefangen, weil ihr Test-Helfer zu "saubere" synthetische Frames ohne
+    diese Umschließung baute — jetzt korrigiert plus ein Echtdaten-Fixture.
+    265 Tests (vorher 263). Live gegen die laufende App verifiziert
+    (2026-07-20): externe Gain- (`OGU:0D`, +5dB) und Pedestal-Änderung
+    (`OSJ:0F:832`, +50) direkt an der echten AW-UE160 gesetzt, Kanal 1
+    zeigte beide korrekt ohne manuellen Dreh am Encoder.

@@ -43,7 +43,10 @@ class CameraDriver(ABC):
         ...
 
     @abstractmethod
-    async def step_gain(self, delta_db: int) -> int:
+    async def step_gain(self, delta_db: int) -> tuple[int | None, bool]:
+        """Rueckgabe (neuer dB-Wert oder `None` bei Auto, ist_auto) --
+        Auto/AGC (Nutzerauftrag 2026-07-20) ist ein regulaerer dritter
+        Gain-Zustand, kein Fehler."""
         ...
 
     @abstractmethod

@@ -36,6 +36,7 @@ from core.application import (
 )
 from core.companion import CompanionError
 from core.config import AppConfig, load_config
+from drivers.base import CameraCommandError
 from tests.fakes import FakeCameraDriver
 
 
@@ -149,7 +150,8 @@ def test_driver_gain_changed_event_updates_state_and_publishes(monkeypatch) -> N
 
     cam_state = state.state_store.get_camera("cam1")
     assert cam_state.gain_db == 6
-    assert received == [{"camera_id": "cam1", "value": 6}]
+    assert cam_state.gain_auto is False
+    assert received == [{"camera_id": "cam1", "value": 6, "auto": False}]
 
 
 def test_driver_pedestal_changed_event_updates_state_and_publishes(monkeypatch) -> None:
@@ -242,6 +244,19 @@ def test_disconnect_camera_unknown_id_is_noop(monkeypatch) -> None:
     state = _build_state(monkeypatch)
 
     _run(disconnect_camera(state, "does-not-exist"))  # darf nicht raisen
+
+
+def test_disconnect_camera_resets_iris_to_zero(monkeypatch) -> None:
+    # Bugreport 2026-07-20: Motorfader blieb beim Trennen einer Kamera auf
+    # der zuletzt bekannten Position stehen -- iris wird jetzt zurueckgesetzt,
+    # midi/fader.py::_on_connection_changed() faehrt den Motor entsprechend.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    state.state_store.get_camera("cam1").iris = 1.0
+
+    _run(disconnect_camera(state, "cam1"))
+
+    assert state.state_store.get_camera("cam1").iris == 0.0
 
 
 def test_available_button_features_returns_driver_catalog(monkeypatch) -> None:
@@ -480,7 +495,112 @@ def test_apply_encoder_turn_clamps_preview_to_spec_range(monkeypatch) -> None:
         _run(apply_encoder_turn(state, 1, -1))
         fake_now[0] += 1.0
 
-    assert encoder_preview(state, 1) == ("gain", -6)  # geclamped auf _GAIN_MIN_DB
+    # Nutzerauftrag 2026-07-20: Unterschreiten von _GAIN_MIN_DB clampt bei
+    # `gain` nicht mehr, sondern wechselt in Auto/AGC (live gegen AW-UE160
+    # UND AW-UE100 bestaetigt, siehe CLAUDE.md) -- encoder_preview() liefert
+    # dafuer `("gain", None)`, `_encoder_value_text()` zeigt "AUTO".
+    assert encoder_preview(state, 1) == ("gain", None)
+    assert state.state_store.get_camera("cam1").gain_auto is True
+
+
+def test_apply_encoder_turn_gain_auto_further_turns_down_stay_in_auto(monkeypatch) -> None:
+    # Nutzerauftrag 2026-07-20: kein tieferer Zustand als Auto -- weiteres
+    # Herunterdrehen waehrend Auto bleibt ein No-Op (kein Kamerabefehl).
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    cam_state = state.state_store.get_camera("cam1")
+    cam_state.gain_db = None
+    cam_state.gain_auto = True
+    driver = state.drivers["cam1"]
+    driver.step_gain_calls.clear()
+
+    _run(apply_encoder_turn(state, 1, -1))
+
+    assert driver.step_gain_calls == []
+    assert cam_state.gain_auto is True
+    assert encoder_preview(state, 1) == ("gain", None)
+
+
+def test_apply_encoder_turn_gain_auto_turn_up_exits_to_gain_min_db(monkeypatch) -> None:
+    # Nutzerauftrag 2026-07-20: Hochdrehen aus Auto verlaesst Auto auf
+    # gain_min_db (live gegen AW-UE160 UND AW-UE100 bestaetigt, siehe
+    # CLAUDE.md) -- Sequenz "Auto, 0, +1, +2" beim Hochdrehen.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    cam_state = state.state_store.get_camera("cam1")
+    cam_state.gain_db = None
+    cam_state.gain_auto = True
+    driver = state.drivers["cam1"]
+    driver.gain_db = None  # Fake-Treiber trackt seinen Gain-Zustand unabhaengig von cam_state
+    driver.gain_auto = True
+
+    _run(apply_encoder_turn(state, 1, 1))
+
+    assert cam_state.gain_auto is False
+    assert cam_state.gain_db == driver.gain_min_db
+    assert encoder_preview(state, 1) == ("gain", driver.gain_min_db)
+
+
+def test_apply_encoder_turn_gain_auto_exit_continues_proportionally_like_normal_turning(
+    monkeypatch,
+) -> None:
+    # Nutzerentscheid 2026-07-20 (revidiert): eine erste Version liess nach
+    # dem Auto-Ausstieg den Rest einer schnellen Drehbewegung verwerfen
+    # (immer exakt bei gain_min_db landen). Das fuehlte sich beim Testen
+    # anders an als normales Drehen bei anderen Werten -- jetzt wirkt JEDER
+    # Tick sofort normal weiter, genau wie bei jedem anderen Gain-Wert (kein
+    # Sonderfall/keine Pause noetig), nur weiterhin auf effective_gain_max_db
+    # geclampt.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    cam_state = state.state_store.get_camera("cam1")
+    cam_state.gain_db = None
+    cam_state.gain_auto = True
+    driver = state.drivers["cam1"]
+    driver.gain_db = None
+    driver.gain_auto = True
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
+
+    _run(apply_encoder_turn(state, 1, 1))  # verlaesst Auto -> gain_min_db
+    assert cam_state.gain_auto is False
+    assert cam_state.gain_db == driver.gain_min_db
+
+    for _ in range(9):  # dieselbe schnelle Drehbewegung, <100ms spaeter -- KEINE Pause
+        fake_now[0] += 0.01
+        _run(apply_encoder_turn(state, 1, 1))
+
+    # wirkt normal weiter (kein Verwerfen mehr) -- Wert ist jetzt hoeher als
+    # gain_min_db, aber nicht ueber effective_gain_max_db hinaus.
+    assert cam_state.gain_db > driver.gain_min_db
+    assert cam_state.gain_db <= driver.effective_gain_max_db
+
+
+def test_apply_encoder_turn_rejected_gain_value_clears_stale_pending_delta(monkeypatch) -> None:
+    # Bugreport 2026-07-20 (live gegen AW-UE100 mit Super Gain aus: Werte
+    # >36dB werden von der Kamera per ER3 abgelehnt, siehe
+    # drivers/panasonic_models/aw_ue100.py -- GAIN_MAX_DB=42 kennt diese
+    # Kopplung nicht). Ein abgelehnter Wert liess bisher ein "pending"-Delta
+    # stehen, wodurch die naechste Vorschau einen nie erreichten Wert zeigte
+    # (hier reproduziert per FakeCameraDriver.raise_on_next_step_gain, ohne
+    # echte Kamera).
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    fake_now = [1000.0]
+    monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
+
+    _run(apply_encoder_turn(state, 1, 1))  # Tick 1: erster Tick ueberhaupt, immer gesendet
+    _run(apply_encoder_turn(state, 1, 1))  # Tick 2: sofort danach -> vom Rate-Limiter geblockt
+    assert state.encoder_pending_delta[1] != 0  # Vorbedingung: es steht ein Delta an
+
+    driver.raise_on_next_step_gain = CameraCommandError("ER3", command="OGU")
+    fake_now[0] += 10.0  # Rate-Limiter-Intervall abgelaufen -> Tick 3 wird gesendet
+    _run(apply_encoder_turn(state, 1, 1))  # Tick 3: Kamera lehnt ab (ER3)
+
+    assert state.encoder_pending_delta[1] == 0
+    assert encoder_preview(state, 1) == ("gain", state.state_store.get_camera("cam1").gain_db)
 
 
 def test_apply_encoder_turn_respects_gain_step_db_for_3db_step_models(monkeypatch) -> None:
@@ -895,6 +1015,30 @@ def test_register_camera_updates_existing_entry_on_same_channel(monkeypatch, tmp
     assert first_driver.connected is False  # alter Treiber wurde disconnected
     assert state.drivers["cam1"] is not first_driver
     assert state.drivers["cam1"].host == "127.0.0.2"
+
+
+def test_register_camera_rejects_duplicate_ip_on_another_channel(monkeypatch, tmp_path) -> None:
+    # Bugreport 2026-07-20: zwei Kanaele auf derselben physischen Kamera
+    # teilen sich unbemerkt Zustand (Lens-Info-Push, Gain, Pedestal) --
+    # siehe CLAUDE.md Offene Punkte (cam1/cam4 auf 192.168.0.10).
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="192.168.0.10", port=80))
+
+    with pytest.raises(ValueError, match="already connected"):
+        _run(register_camera(state, 2, name="CAM 2", host="192.168.0.10", port=80))
+
+    assert [c.id for c in state.config.cameras] == ["cam1"]  # Kanal 2 nicht angelegt
+
+
+def test_register_camera_same_host_on_same_channel_is_allowed(monkeypatch, tmp_path) -> None:
+    # Erneutes Connect/Update desselben Kanals mit unveraendertem Host darf
+    # nicht als Duplikat abgelehnt werden.
+    state = _empty_state(monkeypatch, tmp_path)
+    _run(register_camera(state, 1, name="CAM 1", host="192.168.0.10", port=80))
+
+    _run(register_camera(state, 1, name="Renamed", host="192.168.0.10", port=80))  # darf nicht raisen
+
+    assert state.config.cameras[0].name == "Renamed"
 
 
 def test_register_camera_invalid_channel_raises(monkeypatch, tmp_path) -> None:

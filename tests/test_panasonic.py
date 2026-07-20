@@ -84,19 +84,72 @@ def test_step_gain_reads_current_value_then_sets_new_one() -> None:
         return httpx.Response(200, text="")
 
     driver = _build_driver(handler)
-    new_db = _run(driver.step_gain(3))
+    new_db, new_auto = _run(driver.step_gain(3))
 
-    assert new_db == 7  # +4dB + 3 -> +7dB
+    assert (new_db, new_auto) == (7, False)  # +4dB + 3 -> +7dB
     assert seen[-1] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OGU:0F&res=1"  # 0x08+7=0x0F
 
 
-def test_step_gain_raises_when_agc_active() -> None:
+def test_step_gain_turning_down_further_while_agc_active_is_noop() -> None:
+    # Nutzerauftrag 2026-07-20: Auto/AGC (Data=0x80) ist ein regulaerer
+    # dritter Gain-Zustand (live gegen AW-UE160 UND AW-UE100 bestaetigt,
+    # siehe CLAUDE.md) -- kein Fehler mehr. Kein tieferer Zustand als Auto,
+    # also kein Kamerabefehl bei weiterem Herunterdrehen.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="OGU:80")  # 80h = AGC aktiv
+
+    driver = _build_driver(handler)
+    new_db, new_auto = _run(driver.step_gain(-1))
+
+    assert (new_db, new_auto) == (None, True)
+    assert len(seen) == 1  # nur die QGU-Abfrage, kein Set-Kommando
+
+
+def test_step_gain_turning_up_while_agc_active_exits_to_gain_min_db() -> None:
+    # Nutzerauftrag 2026-07-20: Hochdrehen aus Auto verlaesst Auto auf
+    # gain_min_db (live gegen AW-UE160 UND AW-UE100 bestaetigt).
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="OGU:80")  # 80h = AGC aktiv
 
     driver = _build_driver(handler)
-    with pytest.raises(CameraCommandError):
-        _run(driver.step_gain(1))
+    new_db, new_auto = _run(driver.step_gain(1))
+
+    assert (new_db, new_auto) == (driver.gain_min_db, False)
+
+
+def test_step_gain_turning_up_strongly_while_agc_active_lands_proportionally() -> None:
+    # Nutzerentscheid 2026-07-20 (revidiert): der Auto-Ausstieg verhaelt
+    # sich proportional zum Dreh-Delta -- kein Sonderfall, der immer exakt
+    # bei gain_min_db landet, egal wie kraeftig gedreht wurde.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="OGU:80")  # 80h = AGC aktiv
+
+    driver = _build_driver(handler)
+    new_db, new_auto = _run(driver.step_gain(5))  # kraeftiger Dreh-Burst
+
+    assert (new_db, new_auto) == (driver.gain_min_db + 4, False)  # gain_min_db + (5-1)
+
+
+def test_step_gain_turning_down_below_gain_min_db_enters_agc() -> None:
+    # Nutzerauftrag 2026-07-20: Unterschreiten von gain_min_db wechselt in
+    # Auto statt zu clampen (live gegen AW-UE160 UND AW-UE100 bestaetigt).
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen.append(url)
+        if "cmd=QGU" in url:
+            return httpx.Response(200, text="OGU:02")  # 0x02-0x08 = -6dB = gain_min_db
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    new_db, new_auto = _run(driver.step_gain(-1))
+
+    assert (new_db, new_auto) == (None, True)
+    assert seen[-1] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OGU:80&res=1"
 
 
 def test_query_pedestal_parses_offset_from_center() -> None:
@@ -287,6 +340,68 @@ def test_apply_model_catalog_resolves_gain_pedestal_for_ue100() -> None:
     assert driver.pedestal_query_command == "QSJ:0F"
     assert (driver.pedestal_min, driver.pedestal_max) == (-200, 200)
     assert driver.pedestal_center_data == 0x800
+    assert (driver.gain_max_db_super_gain_off, driver.super_gain_query_command) == (36, "QSI:28")
+
+
+def test_effective_gain_max_db_defaults_to_narrower_value_until_super_gain_confirmed_on() -> None:
+    # Nutzerauftrag 2026-07-20, live gegen eine echte AW-UE100 verifiziert:
+    # Werte >36dB werden von der Kamera per ER3 abgelehnt, wenn Super Gain
+    # aus ist. Unbekannter Zustand (noch nicht abgefragt) wird konservativ
+    # wie "aus" behandelt, um ER3-Ablehnungen zu vermeiden.
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-UE100"
+    driver._apply_model_catalog()
+
+    assert driver.gain_super_gain_on is None
+    assert driver.effective_gain_max_db == 36
+
+    driver.gain_super_gain_on = False
+    assert driver.effective_gain_max_db == 36
+
+    driver.gain_super_gain_on = True
+    assert driver.effective_gain_max_db == 42
+
+
+def test_effective_gain_max_db_unaffected_for_model_without_super_gain_coupling() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))  # AW-UE160
+    assert driver.gain_max_db_super_gain_off is None
+    assert driver.effective_gain_max_db == driver.gain_max_db == 12
+
+
+def test_get_state_refreshes_super_gain_cache() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "cmd=QSI:28" in url:
+            return httpx.Response(200, text="OSI:28:0")  # Super Gain aus
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    driver.model = "AW-UE100"
+    driver._apply_model_catalog()
+    assert driver.gain_super_gain_on is None  # noch nicht abgefragt
+
+    _run(driver.get_state())
+
+    assert driver.gain_super_gain_on is False
+
+
+def test_step_gain_clamps_to_36db_when_super_gain_off() -> None:
+    # Live gegen eine echte AW-UE100 (Super Gain aus) verifiziert: OGU:2D
+    # (37dB) und OGU:32 (42dB) wurden mit ER3 abgelehnt, OGU:2C (36dB)
+    # akzeptiert.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "cmd=QGU" in str(request.url):
+            return httpx.Response(200, text="OGU:2B")  # 0x2B-0x08=35dB
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+    driver.model = "AW-UE100"
+    driver._apply_model_catalog()
+    driver.gain_super_gain_on = False
+
+    new_db, new_auto = _run(driver.step_gain(5))  # 35+5=40, ohne Kopplung faelschlich erlaubt
+
+    assert (new_db, new_auto) == (36, False)  # geclampt auf 36, nicht 42
 
 
 def test_apply_model_catalog_resolves_gain_pedestal_for_ue80_and_aliases() -> None:
@@ -380,8 +495,8 @@ def test_step_gain_clamps_to_he50_range() -> None:
     driver.model = "AW-HE50"
     driver._apply_model_catalog()
 
-    new_db = _run(driver.step_gain(5))
-    assert new_db == 18  # geclamped auf GAIN_MAX_DB=18 (nicht +23)
+    new_db, new_auto = _run(driver.step_gain(5))
+    assert (new_db, new_auto) == (18, False)  # geclamped auf GAIN_MAX_DB=18 (nicht +23)
 
 
 def test_set_pedestal_raises_when_model_has_no_pedestal_data() -> None:
@@ -622,6 +737,18 @@ _REAL_LPI_FRAME = bytes.fromhex(
     "6c50493535353842444439420d0a00020018b8208e1725ba00011701010110"
     "25000000000000"
 )
+# Bugreport 2026-07-20 ("Kamera-UI-Aenderung an Gain/Pedestal wird nicht
+# erkannt"): live gegen eine echte AW-UE160 mitgeschnitten, nachdem `OGU:0D`
+# extern per CGI gesetzt wurde -- im Unterschied zu den beiden Frames oben
+# hat dieser Payload DREI Null-Bytes Padding NACH dem schliessenden `\r\n`
+# (`\r\nOGU:0D\r\n\x00\x00\x00`), die `.strip()` (ohne explizites Null-Byte-
+# Stripping) nicht entfernte -- Ursache des Bugs, siehe
+# `_parse_notification_payload()`-Docstring.
+_REAL_OGU_GAIN_NOTIFICATION_FRAME = bytes.fromhex(
+    "c0a8000a04f9170101032410000100800000000000010014010000000d0a"
+    "4f47553a30440d0a000000020018b8208e1725ba0001170101032410000000"
+    "000000"
+)
 
 
 def test_parse_notification_payload_lpc1_ack() -> None:
@@ -634,6 +761,26 @@ def test_parse_notification_payload_lpi() -> None:
 
 def test_parse_notification_payload_too_short_returns_none() -> None:
     assert _parse_notification_payload(b"\x00" * 10) is None
+
+
+def test_parse_notification_payload_strips_trailing_null_padding() -> None:
+    # Bugreport 2026-07-20: reale OGU-Notifications haben Null-Byte-Padding
+    # NACH dem schliessenden \r\n, das reines .strip() nicht entfernt.
+    assert _parse_notification_payload(_REAL_OGU_GAIN_NOTIFICATION_FRAME) == "OGU:0D"
+
+
+def test_handle_notification_fires_gain_changed_from_real_camera_capture() -> None:
+    # Reproduziert den gemeldeten Bug direkt mit dem live mitgeschnittenen
+    # Frame (nicht nur einem konstruierten Beispiel) -- vor dem Fix feuerte
+    # hier ueberhaupt kein Callback, weil int("0D\r\n\x00\x00\x00", 16) eine
+    # ValueError warf.
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_REAL_OGU_GAIN_NOTIFICATION_FRAME), _FakeWriter()))
+
+    assert events == [{"type": "gain_changed", "value": 5, "auto": False}]
 
 
 def test_parse_lens_info_iris_extracts_last_group() -> None:
@@ -704,8 +851,15 @@ def _build_notification_frame(payload: str) -> bytes:
     fuer die reine Payload-Auswertung irrelevant) -- Layout wie bei den
     echten `_REAL_LPI_FRAME`/`_REAL_LPC1_ACK_FRAME`-Captures oben (22B
     Reserve, 2B Big-Endian-Size = Payload-Laenge+8, 4B Reserve, Payload,
-    24B Reserve)."""
-    payload_bytes = payload.encode("ascii")
+    24B Reserve). Payload selbst als `\\r\\n<Kommando>\\r\\n` + Null-Byte-
+    Padding gekapselt -- live gegen eine echte AW-UE160 bestaetigt
+    (2026-07-20, siehe `_parse_notification_payload()`-Docstring): eine
+    zuvor "sauberere" Version dieses Helfers ohne `\\r\\n`/Padding hatte den
+    Null-Byte-Bug verdeckt, weil `int(value, 16)` nie mit echtem
+    Notification-Rauschen konfrontiert wurde."""
+    wrapped = f"\r\n{payload}\r\n".encode("ascii")
+    padding = b"\x00" * 3  # entspricht dem live beobachteten Padding-Muster
+    payload_bytes = wrapped + padding
     size = len(payload_bytes) + 8
     return b"\x00" * 22 + size.to_bytes(2, "big") + b"\x00" * 4 + payload_bytes + b"\x00" * 24
 
@@ -761,17 +915,21 @@ def test_handle_notification_fires_gain_changed() -> None:
 
     _run(driver._handle_notification(_FakeReader(_build_notification_frame("OGU:0E")), _FakeWriter()))
 
-    assert events == [{"type": "gain_changed", "value": 6}]
+    assert events == [{"type": "gain_changed", "value": 6, "auto": False}]
 
 
-def test_handle_notification_gain_agc_fires_no_callback() -> None:
+def test_handle_notification_gain_agc_fires_gain_changed_with_auto_flag() -> None:
+    # Nutzerauftrag 2026-07-20: Auto/AGC ist ein regulaerer dritter
+    # Gain-Zustand -- eine externe Umschaltung auf Auto (z. B. Kamera-eigenes
+    # Web-UI) soll deshalb genauso wie jeder andere Gain-Wert per Notification
+    # erkannt werden, statt stillschweigend ignoriert zu werden.
     driver = _build_driver(lambda request: httpx.Response(200, text=""))
     events: list[dict] = []
     driver.subscribe(events.append)
 
     _run(driver._handle_notification(_FakeReader(_build_notification_frame("OGU:80")), _FakeWriter()))
 
-    assert events == []
+    assert events == [{"type": "gain_changed", "value": None, "auto": True}]
 
 
 def test_handle_notification_fires_pedestal_changed() -> None:

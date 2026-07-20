@@ -1,24 +1,87 @@
 midi:
   transport: system
-  input_port: ""
-  output_port: ""
+  input_port: X-Touch-Ext
+  output_port: X-Touch-Ext
   device_profile: xtouch_extender
-
-cameras: []
-
-banks: []
-
+cameras:
+- id: cam_test
+  name: Test-Emulator
+  driver: panasonic_aw
+  host: 127.0.0.1
+  port: 8081
+  feedback:
+    update_notifications: false
+    lens_info: false
+- id: cam1
+  name: Andy 1
+  driver: panasonic_aw
+  host: 192.168.0.10
+  port: 80
+  feedback:
+    update_notifications: false
+    lens_info: false
+- id: cam3
+  name: CAM 3
+  driver: panasonic_aw
+  host: 127.0.0.1
+  port: 8081
+  feedback:
+    update_notifications: false
+    lens_info: false
+- id: cam4
+  name: CAM 4
+  driver: panasonic_aw
+  host: 192.168.0.10
+  port: 80
+  feedback:
+    update_notifications: false
+    lens_info: false
+- id: cam2
+  name: 2 KAM
+  driver: panasonic_aw
+  host: 192.168.0.11
+  port: 80
+  feedback:
+    update_notifications: false
+    lens_info: false
+banks:
+- name: Bank A
+  channels:
+  - camera: cam1
+    buttons:
+      button2: auto_focus
+      button3: auto_iris
+    companion:
+      page: 9
+      row: 0
+      column: 1
+  - camera: cam2
+    buttons:
+      button2: drs_low
+      button3: auto_iris
+  - camera: cam3
+    buttons: {}
+  - camera: cam4
+    buttons: {}
+  - null
+  - null
+  - null
+  - null
 channel_defaults:
   fader: iris
-  encoder:
-    functions: [gain, pedestal]
   buttons:
-    rec: { action: awb_trigger }
-    solo: { action: gain_step, step_db: 3 }
-    mute: { action: nd_cycle }
-
+    rec:
+      action: awb_trigger
+    solo:
+      action: gain_step
+      step_db: 3
+    mute:
+      action: nd_cycle
+companion:
+  host: localhost
+  port: 8888
 global:
-  rate_limit_hz: 15
+  rate_limit_hz: 15.0
   send_final_on_release: true
   log_level: INFO
   web_port: 8600

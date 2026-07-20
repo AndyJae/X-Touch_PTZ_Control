@@ -47,3 +47,37 @@ def test_press_button_raises_on_connection_error() -> None:
 
     with pytest.raises(CompanionError):
         _run(press_button(client, "192.168.0.50", 8000, 1, 0, 2))
+
+
+def test_press_button_retries_once_on_stale_connection_and_succeeds() -> None:
+    # Nutzerbeobachtung 2026-07-20: nach laengerer Inaktivitaet wirkt nur der
+    # zweite Klick, weil die gepoolte Companion-Verbindung serverseitig schon
+    # zu ist -- ein automatischer Retry soll das transparent auffangen.
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.RemoteProtocolError("server closed stale connection", request=request)
+        return httpx.Response(200, text="")
+
+    client = _mock_client(handler)
+
+    _run(press_button(client, "192.168.0.50", 8000, 1, 0, 2))
+
+    assert calls["count"] == 2
+
+
+def test_press_button_raises_after_two_failed_attempts() -> None:
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = _mock_client(handler)
+
+    with pytest.raises(CompanionError):
+        _run(press_button(client, "192.168.0.50", 8000, 1, 0, 2))
+
+    assert calls["count"] == 2  # erster Versuch + genau ein Retry, kein Retry-Loop

@@ -63,7 +63,18 @@ async def press_button(
     url = f"http://{host}:{port}/api/location/{page}/{row}/{column}/press"
     try:
         response = await client.post(url)
-    except httpx.HTTPError as exc:
-        raise CompanionError(f"Companion nicht erreichbar ({url}): {exc}") from exc
+    except httpx.HTTPError:
+        # Nutzerbeobachtung 2026-07-20: nach laengerer Inaktivitaet wirkt nur
+        # der zweite Klick -- die gepoolte Keep-Alive-Verbindung (siehe
+        # build_client()) ist dann serverseitig von Companion bereits
+        # geschlossen worden, der Client bemerkt das erst beim naechsten
+        # Schreibversuch. Ein einmaliger Retry baut eine frische Verbindung
+        # auf (httpx/httpcore entfernt die tote Verbindung automatisch aus
+        # dem Pool) und macht den ersten Klick wieder zuverlaessig, ohne dass
+        # ein Nutzer das merkt.
+        try:
+            response = await client.post(url)
+        except httpx.HTTPError as exc:
+            raise CompanionError(f"Companion nicht erreichbar ({url}): {exc}") from exc
     if response.status_code >= 400:
         raise CompanionError(f"Companion-Fehler ({url}): HTTP {response.status_code}")
