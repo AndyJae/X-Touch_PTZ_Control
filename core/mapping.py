@@ -18,6 +18,12 @@ class MappingEngine:
     def set_channel(self, element_type: str, index: int, camera_id: str, function: str) -> None:
         self._channels[(element_type, index)] = ChannelMap(camera_id=camera_id, function=function)
 
+    def unset_channel(self, element_type: str, index: int) -> None:
+        """Entfernt eine Kanal-Zuordnung wieder (Nutzerauftrag 2026-07-20:
+        disconnect_camera() entfernt eine Kamera jetzt komplett statt nur
+        die Laufzeitverbindung zu pausieren)."""
+        self._channels.pop((element_type, index), None)
+
     def get_channel(self, element_type: str, index: int) -> ChannelMap | None:
         return self._channels.get((element_type, index))
 

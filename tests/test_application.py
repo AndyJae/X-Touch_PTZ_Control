@@ -9,6 +9,8 @@ HTTP/WebSocket-Interface testbar ist.
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -56,13 +58,30 @@ TEST_CONFIG = AppConfig.model_validate(
 )
 
 
-def _build_state(monkeypatch, config: AppConfig = TEST_CONFIG, config_path: str = "config.yaml"):
+def _build_state(monkeypatch, config: AppConfig | None = None, config_path: str | None = None):
+    # Bugfix 2026-07-20 (siehe dieselbe Korrektur in tests/test_web_app.py):
+    # `TEST_CONFIG` ist ein einziges Modul-Objekt -- register_camera()/
+    # disconnect_camera() mutieren `state.config.cameras`/`.banks` aber
+    # direkt, wodurch sich Aenderungen sonst stillschweigend zwischen Tests
+    # durchsickern wuerden, die den Default nutzen. Frische Kopie pro Test.
+    #
+    # ZWEITER, schwerwiegenderer Bugfix (2026-07-20): der bisherige Default
+    # `config_path="config.yaml"` war ein woertlicher relativer Pfad -- jeder
+    # Test, der ueber diesen Default eine speichernde Funktion aufrief
+    # (register_camera/disconnect_camera/rename_camera/configure_companion/
+    # assign_channel_*), hat damit tatsaechlich die ECHTE `config.yaml` im
+    # Projektverzeichnis ueberschrieben (Bugreport des Nutzers: config.yaml
+    # zeigte ploetzlich Test-Fixture-Daten). Der Default ist jetzt IMMER ein
+    # frisches `tempfile.mkdtemp()`-Verzeichnis, unabhaengig davon, ob ein
+    # Test explizit `tmp_path` anfordert.
+    if config_path is None:
+        config_path = str(Path(tempfile.mkdtemp()) / "config.yaml")
     monkeypatch.setattr(
         core_application,
         "build_driver",
         lambda camera: FakeCameraDriver(camera.host, camera.port),
     )
-    return build_app_state(config, config_path=config_path)
+    return build_app_state(config if config is not None else TEST_CONFIG.model_copy(deep=True), config_path=config_path)
 
 
 def _config_with_button(slot: str, feature_key: str) -> AppConfig:
@@ -219,10 +238,42 @@ def test_channel_snapshot_lists_all_eight_channels_with_gaps() -> None:
 def test_disconnect_camera_marks_driver_disconnected(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
 
     _run(disconnect_camera(state, "cam1"))
 
-    assert state.drivers["cam1"].connected is False
+    assert driver.connected is False
+
+
+def test_disconnect_camera_removes_registration_from_config(monkeypatch) -> None:
+    # Nutzerentscheid 2026-07-20: Disconnect entfernt die Kamera komplett aus
+    # config.yaml + Kanal-Zuordnung, statt sie fuer ein spaeteres Reconnect
+    # zu behalten -- Bugreport: config.yaml sammelte sonst dauerhaft jede je
+    # verbundene Kamera an.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+
+    _run(disconnect_camera(state, "cam1"))
+
+    assert "cam1" not in state.drivers
+    assert "cam1" not in state.cameras
+    assert "cam1" not in state.rate_limiters
+    assert "cam1" not in state.encoder_rate_limiters
+    assert [c.id for c in state.config.cameras] == []
+    assert state.config.banks[0].channels[0] is None
+    assert state.mapping.get_channel("fader", 1) is None
+
+
+def test_disconnect_camera_persists_removal_to_config_file(monkeypatch, tmp_path) -> None:
+    config_path = str(tmp_path / "config.yaml")
+    state = _build_state(monkeypatch, config_path=config_path)
+    _run(connect_camera(state, "cam1"))
+
+    _run(disconnect_camera(state, "cam1"))
+
+    reloaded = load_config(config_path)
+    assert reloaded.cameras == []
+    assert reloaded.banks[0].channels[0] is None
 
 
 def test_disconnect_camera_publishes_connection_changed(monkeypatch) -> None:

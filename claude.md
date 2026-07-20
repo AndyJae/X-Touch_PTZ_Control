@@ -958,6 +958,34 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   (`OSJ:0F:832`, +50) jeweils per CGI direkt an der echten AW-UE160
   gesetzt — Kanal 1 zeigte beide Werte korrekt und ohne manuellen Dreh am
   Encoder an.
+- **`config.yaml` sammelte getrennte Kameras dauerhaft an -- "Disconnect"
+  entfernt die Registrierung jetzt komplett (Nutzerauftrag 2026-07-20):**
+  `core/application.py::disconnect_camera()` entfernte bisher nur die
+  Laufzeitverbindung, die Kamera blieb in `config.yaml` + Bank-Kanal-
+  Zuordnung stehen -- jedes je verbundene Kamera-Setup sammelte sich so
+  unbegrenzt an, ohne Weg, das aufzuräumen (Nutzerfrage: "wie kann ich
+  config.yaml zurücksetzen"). Jetzt entfernt Disconnect zusätzlich den
+  `CameraConfig`-Eintrag, setzt den Bank-Kanal auf `null` und ruft
+  `MappingEngine.unset_channel()` (neu) auf, danach `save_config()` --
+  ein erneutes "Connect Camera" braucht wieder Name/IP/Port. Reihenfolge
+  bewusst: der bestehende "Fader auf 0 fahren"-Vollabzug (`connection_
+  changed`, siehe oben) läuft ZUERST, während die Kanal-Zuordnung noch
+  existiert, DANACH erst wird die Zuordnung entfernt und `config_changed`
+  published, damit Scribble-Strips/Web-UI den Kanal als komplett unbelegt
+  ("----") statt nur "NC" (zugewiesen, aber getrennt) zeigen. Nutzerentscheid,
+  keine separate "Remove"-Aktion -- Disconnect und Entfernen sind jetzt
+  ein und dieselbe Aktion, kein Reconnect ohne erneute Eingabe möglich.
+  **Dabei denselben Test-Isolations-Bug wie zuvor bei `tests/test_web_app.py`
+  auch in `tests/test_application.py`s `_build_state()` gefunden und
+  behoben** (geteiltes `TEST_CONFIG` ohne Kopie, jetzt `model_copy(deep=True)`
+  per Test außer bei explizit übergebener Config). Getestet in
+  `tests/test_application.py`
+  (`test_disconnect_camera_removes_registration_from_config`,
+  `test_disconnect_camera_persists_removal_to_config_file`),
+  `tests/test_web_app.py` (angepasster
+  `test_disconnect_camera_endpoint_marks_disconnected`). 267 Tests bestehen
+  (vorher 265), keine Regression. Noch nicht live gegen die echte
+  Setup-Seite verifiziert.
 
 ## Abschlussregel
 

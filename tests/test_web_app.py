@@ -214,11 +214,17 @@ def test_encoder_commit_over_websocket_only_sets_saved_flag(client) -> None:
 
 
 def test_disconnect_camera_endpoint_marks_disconnected(client) -> None:
+    driver = web_app.app.state.ptz.drivers["cam1"]
+
     response = client.post("/api/channels/1/camera/disconnect")
 
     assert response.status_code == 200
     assert response.json()["connected"] is False
-    assert web_app.app.state.ptz.drivers["cam1"].connected is False
+    assert driver.connected is False
+    # Nutzerentscheid 2026-07-20: Disconnect entfernt die Registrierung
+    # komplett, nicht nur die Laufzeitverbindung -- siehe
+    # core/application.py::disconnect_camera().
+    assert "cam1" not in web_app.app.state.ptz.drivers
 
 
 def test_disconnect_camera_endpoint_unmapped_channel_returns_404(client) -> None:

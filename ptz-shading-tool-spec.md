@@ -981,3 +981,14 @@ kürzliche Thread-Nutzereingabe sonst nicht auf Rechtsklicks).
     (2026-07-20): externe Gain- (`OGU:0D`, +5dB) und Pedestal-Änderung
     (`OSJ:0F:832`, +50) direkt an der echten AW-UE160 gesetzt, Kanal 1
     zeigte beide korrekt ohne manuellen Dreh am Encoder.
+20. **Disconnect entfernt die Kamera-Registrierung komplett (Nutzerauftrag
+    2026-07-20, §10.1):** bisher blieb eine getrennte Kamera in
+    `config.yaml` + Bank-Kanal-Zuordnung stehen (Nutzerfrage: "wie
+    resette ich config.yaml") — jedes je verbundene Setup sammelte sich so
+    unbegrenzt an. `disconnect_camera()` entfernt jetzt zusätzlich den
+    `CameraConfig`-Eintrag, setzt den Bank-Kanal auf `null`
+    (`MappingEngine.unset_channel()`, neu) und speichert — ein erneutes
+    "Connect Camera" braucht wieder Name/IP/Port, keine separate
+    "Remove"-Aktion. Der bestehende "Fader auf 0"-Vollabzug läuft weiterhin
+    zuerst, solange die Kanal-Zuordnung noch existiert. 267 Tests (vorher
+    265), noch nicht live verifiziert.

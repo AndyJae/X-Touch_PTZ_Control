@@ -233,17 +233,21 @@ async def connect_camera(state: AppState, camera_id: str) -> None:
 
 async def disconnect_camera(state: AppState, camera_id: str) -> None:
     """Trennt eine Kamera manuell (Setup-Tabelle: "Connect Camera" im
-    verbundenen Zustand erneut geklickt -> Entkoppeln). Die Registrierung in
-    `config.yaml` bleibt bestehen, nur die Laufzeitverbindung wird
-    geschlossen -- ein erneutes "Connect Camera" verbindet wieder.
+    verbundenen Zustand erneut geklickt -> Entkoppeln) UND entfernt die
+    Registrierung komplett aus `config.yaml` (Nutzerentscheid 2026-07-20,
+    Bugreport: `config.yaml` sammelte sonst dauerhaft jede je verbundene
+    Kamera an, auch nach dem Trennen -- ein erneutes "Connect Camera"
+    braucht danach wieder Name/IP/Port).
 
-    Setzt `iris` auf 0.0 zurueck (Bugreport 2026-07-20: Motorfader blieb
-    sonst auf der zuletzt bekannten Position stehen, obwohl keine Kamera
-    mehr verbunden ist) -- `midi/fader.py::_on_connection_changed()` fährt
-    den physischen Motorfader daraufhin auf 0, die Web-UI zeigt denselben
-    Wert über den normalen Snapshot-Broadcast. Ein erneutes Connect
-    überschreibt `iris` sofort wieder mit dem echten Kamerawert
-    (`connect_camera()` -> `get_state()`)."""
+    Setzt zuerst `iris` auf 0.0 zurueck und published `connection_changed`
+    (Bugreport 2026-07-20: Motorfader blieb sonst auf der zuletzt bekannten
+    Position stehen) -- `midi/fader.py::_on_connection_changed()` fährt den
+    physischen Motorfader daraufhin auf 0, WAEHREND die Kanal-Zuordnung noch
+    existiert (sonst fände `_channel_for_camera()` den Kanal nicht mehr).
+    Erst DANACH werden Kamera-Config, Bank-Kanal-Zuordnung und Mapping
+    entfernt und `config_changed` published, damit Scribble-Strips/Web-UI
+    den Kanal als komplett unbelegt (kein Name, "----") zeigen, nicht nur
+    als "NC" (zugewiesen, aber getrennt)."""
     driver = state.drivers.get(camera_id)
     if driver is None:
         return
@@ -252,6 +256,27 @@ async def disconnect_camera(state: AppState, camera_id: str) -> None:
     cam_state.error = None
     cam_state.iris = 0.0
     await state.event_bus.publish("connection_changed", {"camera_id": camera_id})
+
+    channel_index = next(
+        (
+            index
+            for index, mapping in state.mapping.channels_for_type("fader").items()
+            if mapping.camera_id == camera_id
+        ),
+        None,
+    )
+    state.config.cameras = [c for c in state.config.cameras if c.id != camera_id]
+    if channel_index is not None:
+        if state.config.banks and 1 <= channel_index <= len(state.config.banks[0].channels):
+            state.config.banks[0].channels[channel_index - 1] = None
+        state.mapping.unset_channel("fader", channel_index)
+    save_config(state.config_path, state.config)
+
+    state.cameras.pop(camera_id, None)
+    state.drivers.pop(camera_id, None)
+    state.rate_limiters.pop(camera_id, None)
+    state.encoder_rate_limiters.pop(camera_id, None)
+    await state.event_bus.publish("config_changed", {"channel_index": channel_index})
 
 
 async def register_camera(

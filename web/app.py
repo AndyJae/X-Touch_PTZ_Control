@@ -184,8 +184,9 @@ async def logs_page(request: Request) -> HTMLResponse:
 @app.post("/api/channels/{channel_index}/camera/disconnect")
 async def api_disconnect_camera(channel_index: int, request: Request) -> JSONResponse:
     """Entkoppelt die Kamera eines Kanals (Setup-Tabelle: "Connect Camera"
-    im verbundenen Zustand erneut geklickt). Registrierung in config.yaml
-    bleibt bestehen."""
+    im verbundenen Zustand erneut geklickt) und entfernt die Registrierung
+    komplett aus config.yaml (Nutzerentscheid 2026-07-20, siehe
+    disconnect_camera())."""
     state = _ptz_state(request)
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:

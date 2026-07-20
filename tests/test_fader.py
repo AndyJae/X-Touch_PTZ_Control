@@ -15,6 +15,8 @@ verifiziert, LED-Tx fuer keinen der vier Tastentypen.
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import core.application as core_application
@@ -77,7 +79,13 @@ def _build_fader(monkeypatch) -> tuple[XTouchFader, AppState, FakeOutPort]:
         "build_driver",
         lambda camera: FakeCameraDriver(camera.host, camera.port),
     )
-    state = build_app_state(TEST_CONFIG, config_path="config.yaml")
+    # Bugfix 2026-07-20: `config_path="config.yaml"` war ein woertlicher
+    # relativer Pfad auf die ECHTE Projekt-config.yaml -- disconnect_camera()
+    # (seit heute speichernd) hat darueber tatsaechlich die reale Datei des
+    # Nutzers ueberschrieben (Bugreport: config.yaml zeigte Test-Fixture-
+    # Daten). Immer ein frisches Temp-Verzeichnis verwenden.
+    config_path = str(Path(tempfile.mkdtemp()) / "config.yaml")
+    state = build_app_state(TEST_CONFIG.model_copy(deep=True), config_path=config_path)
     _run(state.drivers["cam1"].connect())
     # cam2 bleibt absichtlich getrennt (kein .connect()) -- Kanal 2 hat damit
     # eine zugewiesene, aber nicht verbundene Kamera (anders als Kanal 8,
