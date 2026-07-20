@@ -32,7 +32,7 @@ def _ensure_single_instance() -> None:
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         ctypes.windll.user32.MessageBoxW(
             None,
-            "PTZ Control läuft bereits.\nSiehe System Tray.",
+            "X-Touch PTZ Control läuft bereits.\nSiehe System Tray.",
             "Bereits gestartet",
             0x40 | 0x1000,  # MB_ICONINFORMATION | MB_SYSTEMMODAL
         )
@@ -81,7 +81,7 @@ def main() -> None:
     # FastAPI-Lifespan von `web.app`, siehe dort.
     port = config.global_.web_port
     url = f"http://127.0.0.1:{port}"
-    LOGGER.info("PTZ Control startet Web-UI auf 127.0.0.1:%d", port)
+    LOGGER.info("X-Touch PTZ Control startet Web-UI auf 127.0.0.1:%d", port)
 
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
 
@@ -109,7 +109,7 @@ def main() -> None:
         tray = pystray.Icon(
             "ptz-control",
             Image.open(_ICON_PATH),
-            "PTZ Control",
+            "X-Touch PTZ Control",
             menu=pystray.Menu(
                 pystray.MenuItem("Open", on_open, default=True),
                 pystray.MenuItem("Quit", on_quit),
@@ -119,9 +119,9 @@ def main() -> None:
     except Exception as exc:
         ctypes.windll.user32.MessageBoxW(
             None,
-            f"PTZ Control konnte kein System-Tray-Icon erstellen:\n\n{exc}\n\n"
+            f"X-Touch PTZ Control konnte kein System-Tray-Icon erstellen:\n\n{exc}\n\n"
             f"Der Server läuft weiter. {url} manuell öffnen.",
-            "PTZ Control — Tray-Fehler",
+            "X-Touch PTZ Control — Tray-Fehler",
             0x10 | 0x1000,  # MB_ICONERROR | MB_SYSTEMMODAL
         )
     finally:

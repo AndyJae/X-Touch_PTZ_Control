@@ -1,4 +1,4 @@
-# Spezifikation: PTZ Shading Tool (Arbeitstitel)
+# Spezifikation: X-Touch PTZ Control
 
 MIDI-Fader-Controller (Behringer X-Touch Extender) als Blenden-/Shading-Steuerung
 für PTZ-Kameras. Erster Kamera-Treiber: Panasonic AW-Serie (referenziert: AW-UE160,

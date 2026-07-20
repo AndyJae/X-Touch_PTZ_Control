@@ -1,7 +1,7 @@
 [project]
 name = "ptz-control"
 version = "0.1.0"
-description = "PTZ Control - MIDI-based shading/iris control for PTZ cameras"
+description = "X-Touch PTZ Control - MIDI-based shading/iris control for PTZ cameras"
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [

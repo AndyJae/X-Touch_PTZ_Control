@@ -634,6 +634,19 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   Tray-Icons selbst (Open/Quit-Menüeintrag tatsächlich anklicken) sowie der Windows-11-
   Rechtsklick-Patch -- beides erfordert eine echte Nutzerinteraktion mit dem sichtbaren
   Tray-Icon, nicht headless prüfbar.
+- **App-Anzeigename „X-Touch PTZ Control" (Nutzerauftrag 2026-07-20):** rein
+  kosmetische Umbenennung aller nutzerseitig sichtbaren Strings von „PTZ
+  Control“ auf „X-Touch PTZ Control“ — Fenstertitel und `<h1>` in
+  `web/templates/base.html`, FastAPI-`title` in `web/app.py`, Tray-Tooltip/
+  Menü/MessageBoxen und Log-Zeilen in `main.py`, `pyproject.toml`s
+  `description`, README-Überschrift, Spec-Titel (Zeile 1, vorher „PTZ
+  Shading Tool (Arbeitstitel)"). Bewusst **unverändert** gelassen (interne,
+  nicht sichtbare Bezeichner, kein Teil der UI): Verzeichnisname
+  `PTZ_Control`, Python-Paketname `ptz-control` in `pyproject.toml`,
+  Logger-Name `ptz_control`, Mutex-Name `PTZControlApp_SingleInstance`,
+  interne pystray-Icon-ID `"ptz-control"`. Keine Funktionsänderung, daher
+  keine neuen Tests — verifiziert per Grep, dass außerhalb der genannten
+  internen Bezeichner keine „PTZ Control"-Vorkommen mehr übrig sind.
 
 ## Abschlussregel
 

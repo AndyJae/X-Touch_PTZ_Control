@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:  # defensiv: Startup darf nie an einer Kamera scheitern
             LOGGER.warning("Kamera %s: Connect fehlgeschlagen: %s", camera_id, exc)
             state.state_store.get_camera(camera_id).error = str(exc)
-    LOGGER.info("PTZ Control Web-UI bereit: %d Kamera(s) konfiguriert", len(state.drivers))
+    LOGGER.info("X-Touch PTZ Control Web-UI bereit: %d Kamera(s) konfiguriert", len(state.drivers))
 
     # Bugfix: config.yaml kann einen Companion-Host enthalten, ohne dass
     # Companion beim Start tatsaechlich laeuft -- die Setup-Seite zeigte den
@@ -111,7 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await midi_fader.stop()
 
 
-app = FastAPI(title="PTZ Control", lifespan=lifespan)
+app = FastAPI(title="X-Touch PTZ Control", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="web/static"), name="static")
 
 templates = Jinja2Templates(directory="web/templates")

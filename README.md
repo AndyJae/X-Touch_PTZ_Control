@@ -1,4 +1,4 @@
-# PTZ Control
+# X-Touch PTZ Control
 
 MIDI-Blenden-/Shading-Controller für PTZ-Kameras (Behringer X-Touch Extender).
 Primäre Quelle der Wahrheit für Verhalten und Scope ist
