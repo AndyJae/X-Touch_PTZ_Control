@@ -12,6 +12,7 @@ from drivers.panasonic_models.aw_ue80 import (  # noqa: F401
     GAIN_MAX_DB_SUPER_GAIN_OFF,
     GAIN_MIN_DB,
     GAIN_STEP_DB,
+    ND_FILTER_OPTIONS,
     PEDESTAL_CENTER_DATA,
     PEDESTAL_COMMAND,
     PEDESTAL_DATA_WIDTH,

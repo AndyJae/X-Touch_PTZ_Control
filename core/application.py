@@ -131,10 +131,11 @@ def build_app_state(config: AppConfig, config_path: str = "config.yaml") -> AppS
 def _subscribe_snapshot_broadcast(state: AppState) -> None:
     """Web-UI ist nur ein Consumer des EventBus, kein Sonderfall: reagiert auf
     Kamera-Domain-Events (`iris_changed`, `connection_changed`, `error`,
-    `feature_changed`, `config_changed`, `gain_changed`, `pedestal_changed`)
-    mit einem vollen State-Broadcast an alle WS-Clients. Ein späterer
-    MIDI-Consumer (Motorfader-/LED-Feedback, Spec §5.4) würde dieselben
-    Topics abonnieren, ohne dass dieser Code angefasst werden müsste."""
+    `feature_changed`, `config_changed`, `gain_changed`, `pedestal_changed`,
+    `nd_changed`) mit einem vollen State-Broadcast an alle WS-Clients. Ein
+    späterer MIDI-Consumer (Motorfader-/LED-Feedback, Spec §5.4) würde
+    dieselben Topics abonnieren, ohne dass dieser Code angefasst werden
+    müsste."""
 
     async def _on_camera_event(_payload: dict) -> None:
         await state.broadcast({"type": "snapshot", "channels": channel_snapshot(state)})
@@ -147,6 +148,7 @@ def _subscribe_snapshot_broadcast(state: AppState) -> None:
         "config_changed",
         "gain_changed",
         "pedestal_changed",
+        "nd_changed",
     ):
         state.event_bus.subscribe(topic, _on_camera_event)
 
@@ -168,7 +170,7 @@ def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -
     Kamera-eigenes Web-UI), siehe `drivers/panasonic_aw.py`s
     Lens-Info-Feedback (§7.3) sowie die generische Update-Notification-
     Auswertung (§4.2 der HD Integrated Camera Interface Specifications) in
-    `_handle_notification()` fuer Toggle-Features/Gain/Pedestal."""
+    `_handle_notification()` fuer Toggle-Features/Gain/Pedestal/ND-Filter."""
 
     def on_event(event: dict) -> None:
         event_type = event.get("type")
@@ -195,6 +197,11 @@ def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -
             state.state_store.get_camera(camera_id).pedestal = event["value"]
             asyncio.create_task(
                 state.event_bus.publish("pedestal_changed", {"camera_id": camera_id, "value": event["value"]})
+            )
+        elif event_type == "nd_changed":
+            state.state_store.get_camera(camera_id).nd_index = event["value"]
+            asyncio.create_task(
+                state.event_bus.publish("nd_changed", {"camera_id": camera_id, "value": event["value"]})
             )
 
     driver.subscribe(on_event)
@@ -436,15 +443,17 @@ async def apply_iris(state: AppState, channel_index: int, value: float, *, final
 # nicht mehr ueber `config.yaml` konfigurierbar, siehe core/config.py).
 # Shutter ist per Nutzerentscheid komplett aus dem Scope entfernt (kein
 # Treiber-Code, keine Config, kein Encoder-Eintrag), nicht nur zurueckgestellt.
-_ENCODER_FUNCTIONS = ("gain", "pedestal", "camera_status")
+_ENCODER_FUNCTIONS = ("gain", "pedestal", "nd", "camera_status")
 
 _ENCODER_STEP_METHODS = {
     "gain": "step_gain",
     "pedestal": "step_pedestal",
+    "nd": "set_nd",
 }
 _ENCODER_STATE_FIELDS = {
     "gain": "gain_db",
     "pedestal": "pedestal",
+    "nd": "nd_index",
 }
 _ENCODER_ACCEL_WINDOW = 0.1  # Spec §9: "Klicks/100 ms > 3 -> Beschleunigung x5"
 _ENCODER_ACCEL_THRESHOLD = 3
@@ -524,7 +533,7 @@ async def cycle_encoder_function(state: AppState, channel_index: int) -> str | N
 
 
 async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: int) -> None:
-    """Encoder-Drehung bei `gain`/`pedestal`: sendet den neuen Wert seit
+    """Encoder-Drehung bei `gain`/`pedestal`/`nd`: sendet den neuen Wert seit
     Nutzerentscheid SOFORT live an die Kamera (ersetzt das fruehere
     Preview/Commit-Verhalten) -- ueber `state.encoder_rate_limiters`, damit
     nicht jeder einzelne MIDI-Tick einen eigenen HTTP-Request ausloest
@@ -533,6 +542,12 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
     zurueckhaelt, geht NICHT verloren, sondern sammelt sich in
     `encoder_pending_delta` und wird beim naechsten erlaubten Tick als
     Gesamt-Delta nachgereicht.
+
+    `nd` (Nutzerauftrag 2026-07-22) ist eine geordnete, modellabhaengige und
+    teils lueckenhafte Werteliste (`driver.nd_options`) statt eines
+    kontinuierlichen Zahlenbereichs -- eigener Zweig weiter unten, der in
+    LISTENPOSITIONEN statt Roh-Data-Werten rechnet und am Rand anschlaegt
+    (kein Wrap).
 
     `tick_delta` ist ein bereits dekodiertes, vorzeichenbehaftetes Delta
     (ein "Klick") -- die MIDI-CC-Dekodierung (Spec §5.2/§9: Wert 1-7 = +,
@@ -627,6 +642,41 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
         state.encoder_pending_delta[channel_index] = 0
         return
 
+    if function_name == "nd":
+        # ND ist eine geordnete, teils lueckenhafte Werteliste (z. B.
+        # AW-HE130/AW-HR140: nur Data 0/3/4, siehe drivers/panasonic_models/
+        # aw_he130.py) -- anders als gain/pedestal keine kontinuierliche
+        # Zahlenreihe, `pending`/`confirmed` sind deshalb hier LISTEN-
+        # POSITIONEN, nicht Roh-Data-Werte. Anschlag am Rand (kein Wrap,
+        # Nutzerentscheid 2026-07-22) -- anders als `PanasonicAWDriver.
+        # cycle_nd()`, das fuer den (noch nicht verdrahteten) Mute-Button-
+        # Anwendungsfall weiterhin rundenweise durchschaltet.
+        nd_options = getattr(driver, "nd_options", None) or []
+        positions = [opt_index for opt_index, _ in nd_options]
+        if not positions or confirmed not in positions:
+            state.encoder_pending_delta[channel_index] = pending
+            return
+        current_position = positions.index(confirmed)
+        proposed_position = max(0, min(len(positions) - 1, current_position + pending))
+        proposed_index = positions[proposed_position]
+        clamped_pending = proposed_position - current_position
+
+        limiter = state.encoder_rate_limiters.get(camera_id)
+        if limiter is None or step_method is None or not limiter.should_send(proposed_index):
+            state.encoder_pending_delta[channel_index] = clamped_pending
+            return
+        try:
+            await step_method(proposed_index)
+        except CameraCommandError as exc:
+            cam_state.error = str(exc)
+            state.encoder_pending_delta[channel_index] = 0
+            await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
+            return
+        cam_state.nd_index = proposed_index
+        cam_state.error = None
+        state.encoder_pending_delta[channel_index] = 0
+        return
+
     value_range = _encoder_value_range(driver, function_name)
     proposed = confirmed + pending
     if value_range is not None:
@@ -704,7 +754,12 @@ def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int | Non
     (Nutzerauftrag 2026-07-20) -- anders als eine komplett unbekannte
     Funktion liefert diese Funktion dann trotzdem ein Tupel (Zeile 1 zeigt
     weiterhin "GAIN"), `_encoder_value_text()`/`_channel_encoder_snapshot()`
-    behandeln den `None`-Wert als "AUTO"."""
+    behandeln den `None`-Wert als "AUTO". Bei `nd` ist der zurueckgegebene
+    Wert der Roh-Data-Wert der Zielposition (nicht die Listenposition
+    selbst) -- `encoder_pending_delta` ist fuer `nd` in LISTENPOSITIONEN
+    gezaehlt (siehe `apply_encoder_turn`), muss hier also erst auf eine
+    Position abgebildet werden, bevor der zugehoerige Roh-Wert aufgeloest
+    wird."""
     function_name = _ENCODER_FUNCTIONS[state.encoder_function_index.get(channel_index, 0) % len(_ENCODER_FUNCTIONS)]
     field_name = _ENCODER_STATE_FIELDS.get(function_name)
     if field_name is None:
@@ -718,21 +773,32 @@ def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int | Non
     confirmed = getattr(cam_state, field_name, None)
     if confirmed is None:
         return None
+    if function_name == "nd":
+        driver = state.drivers.get(entry.camera_id)
+        nd_options = getattr(driver, "nd_options", None) or []
+        positions = [opt_index for opt_index, _ in nd_options]
+        if confirmed not in positions:
+            return None
+        current_position = positions.index(confirmed)
+        pending = state.encoder_pending_delta.get(channel_index, 0)
+        proposed_position = max(0, min(len(positions) - 1, current_position + pending))
+        return function_name, positions[proposed_position]
     return function_name, confirmed + state.encoder_pending_delta.get(channel_index, 0)
 
 
 def _encoder_function_unsupported(state: AppState, channel_index: int) -> str | None:
-    """Aktive Funktion, wenn sie `gain`/`pedestal` ist UND das verbundene
-    Kameramodell dafuer laut den lokalen Referenz-PDFs gar keine Daten hat
-    (`_encoder_value_range()` liefert dann `None`, siehe
-    `drivers/panasonic_models/*.py` -- z. B. AW-UE80 fuer beides, AK-UB300
-    nur fuer Gain) -- sonst `None`. Unterscheidet dieses "vom Modell nicht
-    unterstuetzt" (Bugreport 2026-07-18: Button 1 wechselte sichtbar auf
-    GAIN/PEDESTAL, aber die Wertanzeige blieb stumm beim Camera-Status-Inhalt
-    haengen) von "Wert nur gerade nicht bekannt" (z. B. Kamera nicht
-    verbunden, AGC aktiv) -- letzteres faellt weiterhin auf die bisherige
-    Iris-%/Kameraname-Anzeige zurueck, siehe `channel_display_text`/
-    `channel_line1_text`."""
+    """Aktive Funktion, wenn sie `gain`/`pedestal`/`nd` ist UND das
+    verbundene Kameramodell dafuer laut den lokalen Referenz-PDFs gar keine
+    Daten hat (`_encoder_value_range()` liefert dann `None` fuer `gain`/
+    `pedestal`, `driver.nd_options` ist leer/`None` fuer `nd` -- z. B.
+    AW-HE40/AW-HE50/AW-HE60 haben gar keinen physischen ND-Filter, siehe
+    drivers/panasonic_models/aw_he40.py/aw_he50.py) -- sonst `None`.
+    Unterscheidet dieses "vom Modell nicht unterstuetzt" (Bugreport
+    2026-07-18: Button 1 wechselte sichtbar auf GAIN/PEDESTAL, aber die
+    Wertanzeige blieb stumm beim Camera-Status-Inhalt haengen) von "Wert nur
+    gerade nicht bekannt" (z. B. Kamera nicht verbunden, AGC aktiv) --
+    letzteres faellt weiterhin auf die bisherige Iris-%/Kameraname-Anzeige
+    zurueck, siehe `channel_display_text`/`channel_line1_text`."""
     function_name = _ENCODER_FUNCTIONS[state.encoder_function_index.get(channel_index, 0) % len(_ENCODER_FUNCTIONS)]
     if function_name not in _ENCODER_STATE_FIELDS:
         return None
@@ -742,6 +808,10 @@ def _encoder_function_unsupported(state: AppState, channel_index: int) -> str | 
     driver = state.drivers.get(entry.camera_id)
     if driver is None:
         return None
+    if function_name == "nd":
+        if getattr(driver, "nd_options", None):
+            return None
+        return function_name
     if _encoder_value_range(driver, function_name) is not None:
         return None
     return function_name
@@ -755,6 +825,20 @@ def _iris_percent_text(value: float | None) -> str:
     if value is None:
         return ""
     return f"{round(value * 100)}%"
+
+
+def _nd_label(driver: CameraDriver | None, index: int | None) -> str | None:
+    """Label des ND-Filter-Data-Werts `index` laut `driver.nd_options`
+    (z. B. "1/64") -- `None`, wenn `index` unbekannt ist oder der Treiber
+    keinen ND-Katalog hat. Alle bisher portierten Labels passen in das
+    7-Zeichen-Limit des Scribble-Strips (siehe `_encoder_value_text`)."""
+    if index is None:
+        return None
+    nd_options = getattr(driver, "nd_options", None) or []
+    for opt_index, label in nd_options:
+        if opt_index == index:
+            return label
+    return None
 
 
 def _encoder_value_text(function_name: str, value: int | None) -> str:
@@ -780,16 +864,21 @@ def channel_display_text(state: AppState, channel_index: int, iris: float | None
     Scribble-Strip (`midi/fader.py`) und Web-UI zeigen exakt denselben Wert
     ueber dieselbe Funktion, kein eigenes Web-UI-Format mehr. Bei
     `camera_status` die Iris-%, bei `gain`/`pedestal` der jeweilige
-    Funktionswert (siehe `encoder_preview`) -- oder "n/a", wenn das Modell
-    diese Funktion gar nicht unterstuetzt (`_encoder_function_unsupported()`,
-    Nutzerentscheid 2026-07-18: explizit statt stillschweigend auf die
-    Iris-%-Anzeige zurueckzufallen)."""
+    Funktionswert (siehe `encoder_preview`), bei `nd` das Label des
+    Ziel-Data-Werts (z. B. "1/64", siehe `_nd_label`) -- oder "n/a", wenn
+    das Modell diese Funktion gar nicht unterstuetzt
+    (`_encoder_function_unsupported()`, Nutzerentscheid 2026-07-18: explizit
+    statt stillschweigend auf die Iris-%-Anzeige zurueckzufallen)."""
     preview = encoder_preview(state, channel_index)
     if preview is None:
         if _encoder_function_unsupported(state, channel_index) is not None:
             return "n/a"
         return _iris_percent_text(iris)
     function_name, value = preview
+    if function_name == "nd":
+        entry = state.mapping.get_channel("fader", channel_index)
+        driver = state.drivers.get(entry.camera_id) if entry is not None else None
+        return _nd_label(driver, value) or "n/a"
     return _encoder_value_text(function_name, value)
 
 

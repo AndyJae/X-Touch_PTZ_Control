@@ -168,7 +168,7 @@ banks:
 
 channel_defaults:            # gilt für jeden Kanalzug, überschreibbar pro Kanal
   fader: iris                # v1 fix: iris, ausschließlich Blende — keine andere Funktion
-  # Encoder-Funktionsliste (gain/pedestal/camera_status, in dieser Reihenfolge)
+  # Encoder-Funktionsliste (gain/pedestal/nd/camera_status, in dieser Reihenfolge)
   # ist per Nutzerentscheid fest im Code verdrahtet (core/application.py.
   # _ENCODER_FUNCTIONS) und daher hier kein Konfigurationsfeld mehr — Button 1
   # (rec) schaltet zyklisch durch, siehe §9.
@@ -372,6 +372,30 @@ Kommandofamilien (`PEDESTAL_COMMAND`/`PEDESTAL_QUERY_COMMAND` je Modell-Datei):
 Bei Pedestal hat jedes registrierte Modell (inkl. AK-UB300) Daten — hier gibt
 es also keine Luecke mehr.
 
+**ND-Filter (`OFT`/`QFT`, Nutzerauftrag 2026-07-22, 4. Encoder-Funktion auf
+Button 1, siehe oben):** Kommando ist modellübergreifend identisch, die
+gültigen Data-Werte/Labels (`ND_FILTER_OPTIONS` je Modell-Datei) variieren
+aber deutlich (Quelle:
+`HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.1.4, für die
+Modelle mit eigenem dediziertem PDF zusätzlich/bestätigend dort):
+
+| Modell(e) | ND-Filter-Werte |
+|---|---|
+| AW-UE160, AW-HE120, AW-UE150(A)/AW-HE145, AW-UE100, AW-UE80/UE50/UE40/UE30 | 0=Through, 1=1/4, 2=1/16, 3=1/64 (kontinuierlich 0–3) |
+| AK-UB300 | 0=Clear, 1=1/4, 2=1/16, 3=1/64 (wie oben, nur Label "Clear" statt "Through") |
+| AW-HE130/AW-HR140 | **NUR** 0=Through, 3=1/64, 4=1/8 — Data 1/2 existieren für diese Gruppe nicht |
+| AW-UE70/AW-HE42 | 0=Through, 1=1/4, 2=1/16, 3=1/64, 8=Auto (5 Werte, einzige Gruppe mit Auto) |
+| AW-HE40/AW-HE50/AW-HE60 | kein ND-Filter (Menu-Tabelle 4-4-4 annotiert `OFT` explizit "*only AW-UE70/AW-HE42"; Tabelle 4-4-1 für HE50/HE60 führt `OFT` überhaupt nicht auf) |
+
+`PanasonicAWDriver.set_nd(index)` validiert `index` gegen die aufgelöste
+Liste (`nd_options`) statt eines festen `0–3`-Bereichs; `cycle_nd()`
+schaltet damit rundenweise (mit Wraparound) durch die tatsächliche
+Modell-Liste statt hartkodiert `%4` zu rechnen (Bugfix 2026-07-22 — die
+frühere, modellunabhängige Implementierung hätte für AW-HE130/AW-HR140
+ungültige Zwischenwerte 1/2 erzeugt). Modelle ohne ND-Filter liefern
+`nd_options = None`; die Encoder-Funktion `nd` zeigt dann wie bei
+unterstützten Gain-/Pedestal-Lücken "n/a" statt eines erfundenen Werts.
+
 `PanasonicAWDriver.set_pedestal()`/`step_pedestal()`/`_query_pedestal()`
 lesen Kommando, Zentraldatenwert, Skalierung und Hex-Breite aus dem per
 Modell-Registry aufgelösten Modul (`_apply_model_catalog()`) statt fest
@@ -474,10 +498,24 @@ Pro Kamera eine Instanz. Regeln:
 - Jeder Druck auf Button 1 schaltet die aktive Encoder-Funktion zyklisch durch
   eine **feste** Liste (Nutzerentscheid, nicht mehr über `config.yaml`
   konfigurierbar, siehe `core/application.py._ENCODER_FUNCTIONS`): **Gain →
-  Pedestal → Camera Status → (wrap)**.
+  Pedestal → ND → Camera Status → (wrap)** (`nd` seit Nutzerauftrag
+  2026-07-22 ergänzt).
   Treiber-Methoden: `gain`→`step_gain`, `pedestal`→`step_pedestal` (Panasonic-
-  Terminologie "Master Pedestal", §7.2); `camera_status` ist ein reiner
-  Anzeige-Eintrag ohne Kamera-Aktion (zeigt Kameraname + Iris-%).
+  Terminologie "Master Pedestal", §7.2), `nd`→`set_nd`; `camera_status` ist
+  ein reiner Anzeige-Eintrag ohne Kamera-Aktion (zeigt Kameraname + Iris-%).
+  `nd` (ND-Filter, `OFT`/`QFT`) ist modellabhängig eine geordnete, teils
+  lückenhafte Werteliste statt eines kontinuierlichen Zahlenbereichs
+  (`drivers/panasonic_models/*.py::ND_FILTER_OPTIONS`, aufgelöst in
+  `PanasonicAWDriver.nd_options`) — z. B. hat AW-HE130/AW-HR140 laut
+  `HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.1.4 nur die
+  Data-Werte 0/3/4 (kein 1/2), und AW-HE40/AW-HE50/AW-HE60 haben laut
+  derselben PDF gar keinen physischen ND-Filter (dann wie bei `gain`/
+  `pedestal` ohne Modelldaten: Zeile 2 zeigt "n/a", siehe unten). Drehen
+  bewegt sich dabei je Tick um eine **Listenposition** (nicht um einen
+  Roh-Data-Wert, da einzelne Modelle Lücken haben) und schlägt am Rand an
+  (kein Wraparound) — anders als `PanasonicAWDriver.cycle_nd()`, das für den
+  separaten, weiterhin nicht verdrahteten `nd_cycle`-Mute-Anwendungsfall
+  (§9) rundenweise durch dieselbe Liste wrappt.
 - Encoder v1, relativer Modus, **Nutzerentscheid (Live-Senden statt
   Preview/Commit)**: Drehen sendet bei `gain`/`pedestal` SOFORT einen
   Kamerabefehl (`apply_encoder_turn` in `core/application.py`) — ±1 Klick =
@@ -510,8 +548,11 @@ F-Nummer-Tabelle, §14 Punkt 10). Bei `gain`/`pedestal` (Nutzerentscheid):
 Zeile 1 zeigt stattdessen den Funktionsnamen (GAIN/PEDESTAL) statt des
 Kameranamens, Zeile 2 den unitlosen Rohwert im bestätigten Gerätebereich
 (Pedestal z. B. `-45`, **kein** Prozentwert und kein zusätzliches
-Funktions-Präfix mehr — das übernimmt Zeile 1). Die Web-UI ergänzt nur das
-rote "gespeichert"-Feedback, das es auf dem physischen Gerät nicht gibt.
+Funktions-Präfix mehr — das übernimmt Zeile 1). Bei `nd` zeigt Zeile 2 statt
+eines Zahlenwerts das Label des Ziel-Data-Werts (z. B. `THROUGH`/`1/64`,
+siehe `drivers/panasonic_models/*.py::ND_FILTER_OPTIONS`). Die Web-UI
+ergänzt nur das rote "gespeichert"-Feedback, das es auf dem physischen
+Gerät nicht gibt.
 
 **Bewusste Erweiterung über v1 hinaus (Nutzerentscheid):** Der SELECT-Button
 löst zusätzlich einen Bitfocus-Companion-Button (v3, Location-Adressierung
@@ -576,7 +617,7 @@ seither auch eine Liste von Kommandos (nicht nur einen einzelnen String),
 falls ein Zielzustand mehrere Befehle braucht (AW-UE160s Knee: Auto sendet
 z. B. `OSL:45:1` gefolgt von `OSA:2D:2`). Das Cycle-Konzept selbst existiert
 weiterhin, aber ausschließlich bei Button 1 (Encoder-Funktionsauswahl
-Gain/Pedestal/Camera Status, siehe unten) — ein komplett getrennter
+Gain/Pedestal/ND/Camera Status, siehe unten) — ein komplett getrennter
 Mechanismus ohne Bezug zu `BUTTON_FEATURES`.
 
 Eine kleine Registry (`drivers/panasonic_models/registry.py`, angelehnt an
@@ -674,8 +715,10 @@ AW-UE80); AK-UB300 (AK-UB300GJ/EJ — AK-Serie, nicht AW; weicht beim
 Gain-Befehl ab, siehe §7.2, betrifft aber nicht diesen Katalog).
 
 Beispiel AW-UE160 (`drivers/panasonic_models/aw_ue160.py`): Auto Focus, Auto
-Iris, ABB (Black), AWW (White), DRS, Flare, Gamma, Knee: Manual, Knee: Auto,
-Linear Matrix, Matrix, OSD, White Clip.
+Iris, DRS, Flare, Gamma, Knee: Manual, Knee: Auto, Linear Matrix, Matrix,
+OSD, White Clip. (ABB/AWW wurden per Nutzerentscheid 2026-07-22 aus allen
+Modell-Katalogen entfernt — sollen laut Nutzer nicht Teil dieser Software
+sein — siehe CLAUDE.md.)
 
 Wird ein Kameramodell erkannt, für das keine Datei registriert ist, liefert
 `_apply_model_catalog()` leere `BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS` und

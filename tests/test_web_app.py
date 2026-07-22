@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -332,6 +334,66 @@ def test_setup_page_does_not_show_saved_when_companion_configured_but_unreachabl
     assert response.status_code == 200
     assert "data-companion-save>Save<" in response.text
     assert "is-connected\" data-companion-save" not in response.text
+
+
+def test_lifespan_connects_multiple_cameras_concurrently_not_sequentially(monkeypatch, tmp_path) -> None:
+    """Bugreport 2026-07-22: jede nicht erreichbare Kamera braucht bis zu
+    ~1,5s Timeout + 1 Retry PRO Query (§7.4) -- bei mehreren gleichzeitig
+    langsamen/nicht erreichbaren Kameras summierte sich das bisher
+    sequenziell auf und verzoegerte den Start spuerbar (Browser oeffnete
+    sich dadurch teils vor `server.started`, siehe main.py::_open_browser()).
+    Simuliert das mit zwei Kameras, deren `connect()` je 1s braucht --
+    sequenziell waeren das >=2s, nebenlaeufig deutlich weniger. Delay bewusst
+    groesser als 0,2s gewaehlt: `build_app_state()` baut u. a. einen echten
+    `httpx.AsyncClient()` fuer Companion (`AppState.companion_client`), dessen
+    Konstruktion auf dieser Maschine selbst schon spuerbare ~0,25-0,3s braucht
+    (SSL-Kontext/CA-Bundle, unabhaengig von diesem Fix) -- bei einem zu
+    kleinen Delay wuerde dieser fixe, kamera-unabhaengige Sockel die eigentliche
+    Nebenlaeufigkeits-Messung dominieren und den Test faelschlich als
+    "sequenziell" erscheinen lassen."""
+    _CONNECT_DELAY = 1.0
+    config = AppConfig.model_validate(
+        {
+            "cameras": [
+                {"id": "cam1", "name": "CAM 1", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9999},
+                {"id": "cam2", "name": "CAM 2", "driver": "panasonic_aw", "host": "127.0.0.1", "port": 9998},
+            ],
+            "banks": [
+                {
+                    "name": "Bank A",
+                    "channels": [{"camera": "cam1"}, {"camera": "cam2"}],
+                }
+            ],
+            "channel_defaults": {"fader": "iris"},
+            "global": {"rate_limit_hz": 15, "web_port": 8600},
+        }
+    )
+    monkeypatch.setattr(web_app, "load_config", lambda path="config.yaml": config)
+    monkeypatch.setattr(web_app, "_CONFIG_PATH", str(tmp_path / "config.yaml"))
+
+    class SlowFakeCameraDriver(FakeCameraDriver):
+        async def connect(self) -> None:
+            await asyncio.sleep(_CONNECT_DELAY)
+            await super().connect()
+
+    monkeypatch.setattr(
+        core_application,
+        "build_driver",
+        lambda camera: SlowFakeCameraDriver(camera.host, camera.port),
+    )
+
+    start = time.monotonic()
+    with TestClient(web_app.app) as test_client:
+        elapsed = time.monotonic() - start
+        state = web_app.app.state.ptz
+        assert state.drivers["cam1"].connected is True
+        assert state.drivers["cam2"].connected is True
+
+    # Sequenziell waeren das >= 2 * _CONNECT_DELAY = 2s (plus den o. g. festen
+    # Sockel) -- 1,8x einer einzelnen Verzoegerung liegt komfortabel ueber dem
+    # nebenlaeufigen Ist-Wert (~1x Delay + Sockel) und komfortabel unter dem
+    # sequenziellen Ist-Wert (~2x Delay + Sockel).
+    assert elapsed < _CONNECT_DELAY * 1.8
 
 
 def test_assign_channel_companion_endpoint_persists(client) -> None:

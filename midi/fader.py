@@ -1,10 +1,10 @@
 """midi/fader.py -- Bidirektionale X-Touch-Extender-Faderanbindung (Spec §5,
 aktueller Umfang: Fader/Touch <-> Iris (§5.2/§5.4), Scribble Strips (§5.3),
-Encoder (§9: feste Funktionsliste gain/pedestal/camera_status ueber Button 1,
-Drehen, Push) sowie Solo/Mute/Select (§9a/§9: Button 2/3 -> dynamischer
-Feature-Katalog des erkannten Kameramodells, Select -> Companion-SELECT-
-Trigger). Encoder-Drehen sendet bei gain/pedestal seit Nutzerentscheid SOFORT
-live einen Kamerabefehl (ueber `core.application.apply_encoder_turn`s eigenen
+Encoder (§9: feste Funktionsliste gain/pedestal/nd/camera_status ueber
+Button 1, Drehen, Push) sowie Solo/Mute/Select (§9a/§9: Button 2/3 ->
+dynamischer Feature-Katalog des erkannten Kameramodells, Select ->
+Companion-SELECT-Trigger). Encoder-Drehen sendet bei gain/pedestal/nd seit
+Nutzerentscheid SOFORT live einen Kamerabefehl (ueber `core.application.apply_encoder_turn`s eigenen
 Rate-Limiter je Kamera, analog zum Iris-Fader) -- der Encoder-Push (Note
 32-39) sendet dagegen nichts mehr, sondern markiert den Kanal nur visuell als
 "gespeichert" (Spec §9 nannte die Push-Verwendung urspruenglich "noch offen").
@@ -42,18 +42,24 @@ gefahrenen Position stehen, obwohl `apply_iris()` Kamerabefehle fuer einen
 getrennten Kanal ohnehin schon verwirft.
 
 Tx Scribble Strips: Vollabzug aller 8 Strips bei `connection_changed`/
-`feature_changed`/`config_changed`/`gain_changed`/`pedestal_changed`.
-`iris_changed` aktualisiert dagegen gezielt nur die eine betroffene Zeile 2
-(kein Vollabzug bei jedem Iris-Tick, sonst unnoetiger SysEx-Traffic waehrend
-des Fader-Ziehens). Zeile 2 zeigt laut Spec §5.3 eigentlich die F-Nummer --
-die Hex->F-Nummer-Tabelle ist laut Spec aber nicht vollstaendig dokumentiert
-(siehe Kommentar an PanasonicAWDriver._query_f_number), daher als
-Platzhalter die Iris-% bis diese Umrechnung nachgeruestet wird.
-`gain_changed`/`pedestal_changed` kommen wie `feature_changed` sowohl von
-eigenen Aktionen als auch von extern (z. B. Kamera-eigenes Web-UI)
-ausgeloesten Aenderungen -- siehe `PanasonicAWDriver._handle_notification()`
-und die generische Update-Notification-Auswertung dort (§4.2 der
-HD Integrated Camera Interface Specifications).
+`feature_changed`/`config_changed`/`gain_changed`/`pedestal_changed`/
+`nd_changed`. `iris_changed` aktualisiert dagegen gezielt nur die eine
+betroffene Zeile 2 (kein Vollabzug bei jedem Iris-Tick, sonst unnoetiger
+SysEx-Traffic waehrend des Fader-Ziehens). Zeile 2 zeigt laut Spec §5.3
+eigentlich die F-Nummer -- die Hex->F-Nummer-Tabelle ist laut Spec aber
+nicht vollstaendig dokumentiert (siehe Kommentar an
+PanasonicAWDriver._query_f_number), daher als Platzhalter die Iris-% bis
+diese Umrechnung nachgeruestet wird.
+`gain_changed`/`pedestal_changed`/`nd_changed` kommen wie `feature_changed`
+sowohl von eigenen Aktionen als auch von extern (z. B. Kamera-eigenes
+Web-UI) ausgeloesten Aenderungen -- siehe
+`PanasonicAWDriver._handle_notification()` und die generische
+Update-Notification-Auswertung dort (§4.2 der HD Integrated Camera
+Interface Specifications). **Nutzerreport 2026-07-22 (reale AW-UE160):**
+`nd_changed` fehlte bisher komplett -- eine ND-Aenderung am Encoder
+funktionierte zwar (Rx/Tx zur Kamera), eine externe ND-Aenderung (z. B. am
+Kamera-eigenen Bedienfeld) wurde aber nicht erkannt, da
+`_handle_notification()` `OFT`-Frames schlicht ignorierte.
 
 Tx Rec/Solo/Mute/Select-LED: dieselben Events wie die Scribble Strips loesen
 einen Vollabzug aller vier LED-Typen aus (`_refresh_button_leds()`) -- kein
@@ -78,6 +84,7 @@ import asyncio
 import logging
 
 import mido
+import rtmidi
 
 from core.application import (
     AppState,
@@ -162,6 +169,7 @@ class XTouchFader:
                 "config_changed",
                 "gain_changed",
                 "pedestal_changed",
+                "nd_changed",
             ):
                 self._state.event_bus.subscribe(topic, self._on_scribble_relevant_event)
             LOGGER.info("MIDI-Ausgang verbunden: %s", self._output_port_name)
@@ -346,11 +354,55 @@ class XTouchFader:
                 return channel_index
         return None
 
-    def _send_fader_position(self, channel_index: int, value: float) -> None:
+    def _send(self, msg: mido.Message) -> None:
+        """Zentraler Tx-Pfad fuer alle MIDI-Ausgangsnachrichten (Fader-Motor,
+        Scribble-Strips, Button-LEDs). Bugreport 2026-07-22: nach laengerer
+        Geraete-Inaktivitaet wirft `self._out_port.send()`
+        `_rtmidi.SystemError` (WinMM meldet einen fehlgeschlagenen Send,
+        vermutlich weil Windows das USB-Geraet zwischenzeitlich in einen
+        Energiesparzustand versetzt hat -- extern, nicht verifiziert). Ohne
+        Fehlerbehandlung riss das sowohl `_poll_loop()` ab (physisches Geraet
+        reagiert danach dauerhaft nicht mehr, kein Supervisor/Neustart) als
+        auch jeden Web-Request, der `event_bus.publish()` ausloest
+        (`EventBus.publish()` hat keine eigene Fehlerbehandlung, siehe
+        core/bus.py) -- exakt das beobachtete "nach einer Stunde reagiert
+        weder Web-UI noch physisches Geraet". Ein fehlgeschlagener Send
+        versucht deshalb einmalig eine Neuverbindung (`_reconnect_output()`)
+        und wiederholt den Send; schlaegt auch das fehl, wird der Send
+        verworfen und geloggt, nie an den Aufrufer weitergereicht."""
         if self._out_port is None:
             return
+        try:
+            self._out_port.send(msg)
+            return
+        except rtmidi.RtMidiError as exc:
+            LOGGER.warning("MIDI-Ausgang-Send fehlgeschlagen (%s), versuche Neuverbindung", exc)
+        if not self._reconnect_output():
+            return
+        try:
+            self._out_port.send(msg)
+        except rtmidi.RtMidiError as exc:
+            LOGGER.warning("MIDI-Ausgang nach Neuverbindung weiterhin fehlgeschlagen: %s", exc)
+
+    def _reconnect_output(self) -> bool:
+        if self._output_port_name is None:
+            return False
+        try:
+            self._out_port.close()
+        except Exception:
+            pass
+        try:
+            self._out_port = mido.open_output(self._output_port_name)
+        except Exception as exc:
+            LOGGER.warning("MIDI-Ausgang %s konnte nicht neu verbunden werden: %s", self._output_port_name, exc)
+            self._out_port = None
+            return False
+        LOGGER.info("MIDI-Ausgang neu verbunden: %s", self._output_port_name)
+        return True
+
+    def _send_fader_position(self, channel_index: int, value: float) -> None:
         pitch = self._protocol.normalized_to_pitchbend(value) - 8192
-        self._out_port.send(mido.Message("pitchwheel", channel=channel_index - 1, pitch=pitch))
+        self._send(mido.Message("pitchwheel", channel=channel_index - 1, pitch=pitch))
 
     # --- Tx: Scribble Strips (Spec §5.3) ---------------------------------
 
@@ -411,18 +463,14 @@ class XTouchFader:
         self._send_line2_text(channel_index, channel_display_text(self._state, channel_index, value))
 
     def _send_line2_text(self, channel_index: int, text: str) -> None:
-        if self._out_port is None:
-            return
         strip = channel_index - 1
         offset = _SCRIBBLE_LOWER_BASE + strip * _SCRIBBLE_STRIP_CHARS
-        self._out_port.send(_scribble_message(offset, text))
+        self._send(_scribble_message(offset, text))
 
     def _send_scribble_strip(self, channel_index: int, upper: str, lower: str) -> None:
-        if self._out_port is None:
-            return
         strip = channel_index - 1
-        self._out_port.send(_scribble_message(_SCRIBBLE_UPPER_BASE + strip * _SCRIBBLE_STRIP_CHARS, upper))
-        self._out_port.send(_scribble_message(_SCRIBBLE_LOWER_BASE + strip * _SCRIBBLE_STRIP_CHARS, lower))
+        self._send(_scribble_message(_SCRIBBLE_UPPER_BASE + strip * _SCRIBBLE_STRIP_CHARS, upper))
+        self._send(_scribble_message(_SCRIBBLE_LOWER_BASE + strip * _SCRIBBLE_STRIP_CHARS, lower))
 
     # --- Tx: Rec/Solo/Mute/Select-LED (Spec §5.2/§9/§9a) -------------------
 
@@ -459,7 +507,5 @@ class XTouchFader:
             self._send_button_led(ch["index"], _SELECT_NOTE_BASE, select_on)
 
     def _send_button_led(self, channel_index: int, note_base: int, on: bool) -> None:
-        if self._out_port is None:
-            return
         note = note_base + (channel_index - 1)
-        self._out_port.send(mido.Message("note_on", note=note, velocity=127 if on else 0))
+        self._send(mido.Message("note_on", note=note, velocity=127 if on else 0))

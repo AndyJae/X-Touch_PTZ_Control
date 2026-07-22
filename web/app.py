@@ -8,6 +8,7 @@ Mapping->Rate-Limiter->Driver-Fluss, State-Aufbereitung) -- die lebt in
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -64,12 +65,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ptz = state
     # Spec §11: Web-UI startet immer, auch wenn Kameras fehlen/nicht erreichbar
     # sind -- Fehler werden pro Kamera geloggt, der Prozess bricht nicht ab.
-    for camera_id in state.drivers:
+    # Nebenlaeufig statt sequenziell (Bugreport 2026-07-22): jede nicht
+    # erreichbare Kamera braucht bis zu ~1,5s Timeout + 1 Retry PRO Query
+    # (mehrere Queries in connect_camera()/get_state(), §7.4) -- bei mehreren
+    # gleichzeitig nicht erreichbaren Kameras hat sich das bisher sequenziell
+    # aufsummiert und den Start spuerbar verzoegert (Browser oeffnete sich
+    # dadurch teils vor `server.started`, siehe main.py::_open_browser()).
+    # Jede Kamera bleibt unabhaengig -- eigener Treiber/State-Eintrag, ein
+    # haengender/fehlschlagender Connect blockiert die anderen nicht mehr.
+    async def _connect_camera_defensively(camera_id: str) -> None:
         try:
             await connect_camera(state, camera_id)
         except Exception as exc:  # defensiv: Startup darf nie an einer Kamera scheitern
             LOGGER.warning("Kamera %s: Connect fehlgeschlagen: %s", camera_id, exc)
             state.state_store.get_camera(camera_id).error = str(exc)
+
+    await asyncio.gather(*(_connect_camera_defensively(cid) for cid in state.drivers))
     LOGGER.info("X-Touch PTZ Control Web-UI bereit: %d Kamera(s) konfiguriert", len(state.drivers))
 
     # Bugfix: config.yaml kann einen Companion-Host enthalten, ohne dass

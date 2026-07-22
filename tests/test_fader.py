@@ -19,6 +19,9 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import mido
+import rtmidi
+
 import core.application as core_application
 from core.application import AppState, build_app_state, disconnect_camera
 from core.companion import CompanionError
@@ -37,6 +40,19 @@ class FakeOutPort:
 
     def send(self, msg) -> None:
         self.sent.append(msg)
+
+
+class FailingOutPort:
+    """Simuliert einen MIDI-Ausgang, dessen Send-Versuche wie bei einem vom
+    USB-Bus entfernten/sistierten Geraet fehlschlagen (Bugreport 2026-07-22:
+    `_rtmidi.SystemError: MidiOutWinMM::sendMessage: error sending MIDI
+    message` nach laengerer Inaktivitaet)."""
+
+    def send(self, msg) -> None:
+        raise rtmidi.SystemError("MidiOutWinMM::sendMessage: error sending MIDI message.")
+
+    def close(self) -> None:
+        pass
 
 
 # button2 -> "drs" (Toggle, siehe drivers/panasonic_models/aw_ue160.py, von
@@ -268,3 +284,50 @@ def test_disconnecting_camera_drives_motor_fader_to_zero(monkeypatch) -> None:
     pitch_msgs = [m for m in out_port.sent if m.type == "pitchwheel" and m.channel == 0]
     assert pitch_msgs, "kein Pitchbend fuer Kanal 1 nach dem Trennen gesendet"
     assert pitch_msgs[-1].pitch == fader._protocol.normalized_to_pitchbend(0.0) - 8192
+
+
+def test_send_reconnects_and_retries_after_transient_rtmidi_error(monkeypatch) -> None:
+    # Bugreport 2026-07-22: erster Send-Versuch wirft rtmidi.SystemError (wie
+    # nach einer von Windows sistierten USB-Verbindung) -- _send() muss den
+    # Ausgang neu oeffnen und den Send auf dem neuen Port wiederholen.
+    fader, _state, _out_port = _build_fader(monkeypatch)
+    fader._out_port = FailingOutPort()
+    reconnected_port = FakeOutPort()
+    monkeypatch.setattr("midi.fader.mido.open_output", lambda name: reconnected_port)
+
+    fader._send(mido.Message("note_on", note=1, velocity=127))
+
+    assert len(reconnected_port.sent) == 1
+    assert fader._out_port is reconnected_port
+
+
+def test_send_swallows_error_when_reconnect_also_fails(monkeypatch, caplog) -> None:
+    fader, _state, _out_port = _build_fader(monkeypatch)
+    fader._out_port = FailingOutPort()
+
+    def raise_open(name):
+        raise OSError("device not found")
+
+    monkeypatch.setattr("midi.fader.mido.open_output", raise_open)
+
+    fader._send(mido.Message("note_on", note=1, velocity=127))  # darf nicht raisen
+
+    assert "konnte nicht neu verbunden werden" in caplog.text
+    assert fader._out_port is None
+
+
+def test_button_action_does_not_raise_when_midi_send_fails(monkeypatch) -> None:
+    # Reproduziert den eigentlichen Bugreport: ein fehlgeschlagener MIDI-Send
+    # waehrend des LED-Refreshs (ausgeloest ueber denselben EventBus-Pfad wie
+    # ein Web-UI-Klick) darf `apply_button_action()`/`_handle()` nicht zum
+    # Absturz bringen -- der Kamerabefehl selbst muss trotzdem durchlaufen.
+    fader, state, _out_port = _build_fader(monkeypatch)
+    fader._out_port = FailingOutPort()
+    monkeypatch.setattr(
+        "midi.fader.mido.open_output",
+        lambda name: (_ for _ in ()).throw(OSError("device not found")),
+    )
+
+    _run(fader._handle(_note_on(_SOLO_NOTE_BASE + 0)))  # darf nicht raisen
+
+    assert state.drivers["cam1"].button_feature_calls == [("drs", True)]

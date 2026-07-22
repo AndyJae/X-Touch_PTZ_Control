@@ -23,6 +23,10 @@ LOGGER = logging.getLogger("ptz_control")
 # angepasst (Icon-Pfad, Mutex-Name, dynamischer Port statt fest 8765).
 _MUTEX_NAME = "Global\\PTZControlApp_SingleInstance"
 _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Images", "Icon.ico")
+# Sicherheitsnetz fuer den Browser-Oeffnen-Poll (siehe _open_browser() in
+# main()) -- deutlich ueber der worst-case Lifespan-Startzeit bei mehreren
+# nicht erreichbaren Kameras (je bis zu ~1,5s Timeout + 1 Retry pro Query).
+_BROWSER_OPEN_TIMEOUT = 30.0
 
 
 def _ensure_single_instance() -> None:
@@ -86,7 +90,21 @@ def main() -> None:
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
 
     def _open_browser() -> None:
-        time.sleep(1.2)
+        # Bugreport 2026-07-22: die vorherige feste `time.sleep(1.2)` ging
+        # von einer kurzen, konstanten Startzeit aus -- der FastAPI-Lifespan
+        # (web/app.py) verbindet aber sequenziell JEDE konfigurierte Kamera
+        # (je bis zu ~1,5s Timeout + 1 Retry pro Query, §7.4), was bei
+        # mehreren nicht erreichbaren Kameras die Startzeit weit über 1,2s
+        # treiben kann -- der Browser oeffnete sich dann, bevor der Server
+        # ueberhaupt auf dem Port lauschte. `server.started` wird von uvicorn
+        # erst NACH dem vollstaendigen Lifespan-Startup auf `True` gesetzt --
+        # kurzes Polling darauf statt einer geratenen festen Wartezeit.
+        # `_BROWSER_OPEN_TIMEOUT` ist nur ein Sicherheitsnetz, falls der
+        # Server nie startet (z. B. Port belegt) -- der Browser oeffnet sich
+        # dann trotzdem, wie schon vorher.
+        deadline = time.monotonic() + _BROWSER_OPEN_TIMEOUT
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.05)
         webbrowser.open(url)
 
     # uvicorn und Browser-Öffnen laufen im Hintergrund-Thread, der Hauptthread

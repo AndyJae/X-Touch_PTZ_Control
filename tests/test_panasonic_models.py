@@ -288,3 +288,69 @@ def test_ue160_knee_toggle_uses_command_list_for_on_side() -> None:
     assert aw_ue160.BUTTON_FEATURES["knee_auto"] == {
         "kind": "toggle", "on": ["OSL:45:1", "OSA:2D:2"], "off": "OSL:45:0",
     }
+
+
+# --- ND-Filter (OFT/QFT), Nutzerauftrag 2026-07-22 (4. Encoder-Funktion) ---
+
+
+def test_nd_filter_standard_group_is_contiguous_zero_to_three() -> None:
+    # HDIntegratedCamera_InterfaceSpecifications-E.pdf §3.2.1.4, Gruppen
+    # "AW-HE120/AW-UE150" und "AK-UB300" -- sowie die eigenen, dedizierten
+    # PDFs von AW-UE160/AW-UE100/AW-UE150A/AW-HE145/AW-UE80(+UE30/40/50).
+    from drivers.panasonic_models import (
+        ak_ub300,
+        aw_he120,
+        aw_he145,
+        aw_ue80,
+        aw_ue100,
+        aw_ue150,
+        aw_ue160,
+    )
+
+    for module in (aw_ue160, aw_he120, aw_ue150, aw_he145, aw_ue100, aw_ue80):
+        indices = [index for index, _ in module.ND_FILTER_OPTIONS]
+        assert indices == [0, 1, 2, 3], module
+
+    indices = [index for index, _ in ak_ub300.ND_FILTER_OPTIONS]
+    assert indices == [0, 1, 2, 3]
+    assert ak_ub300.ND_FILTER_OPTIONS[0][1] == "CLEAR"
+
+
+def test_nd_filter_ue30_40_50_reexport_ue80_options() -> None:
+    from drivers.panasonic_models import aw_ue30, aw_ue40, aw_ue50, aw_ue80
+
+    for module in (aw_ue30, aw_ue40, aw_ue50):
+        assert module.ND_FILTER_OPTIONS == aw_ue80.ND_FILTER_OPTIONS
+
+
+def test_nd_filter_he130_hr140_group_has_sparse_non_sequential_indices() -> None:
+    # HDIntegratedCamera_InterfaceSpecifications-E.pdf §3.2.1.4, Gruppe
+    # "AW-HE130/AW-HR140": NUR 0/3/4 -- 1 und 2 existieren fuer diese Gruppe
+    # nicht (im Unterschied zur Standard-Gruppe).
+    from drivers.panasonic_models import aw_he130, aw_hr140
+
+    for module in (aw_he130, aw_hr140):
+        assert module.ND_FILTER_OPTIONS == [(0, "THROUGH"), (3, "1/64"), (4, "1/8")], module
+
+
+def test_nd_filter_ue70_he42_group_has_five_values_including_auto() -> None:
+    # HDIntegratedCamera_InterfaceSpecifications-E.pdf §3.2.1.4, Gruppe
+    # "AW-UE70/AW-HE42": 0/1/2/3/8, wobei 8=Auto ND -- NICHT von aw_he40.py
+    # importiert (das hat gar keinen ND-Filter, siehe naechster Test).
+    from drivers.panasonic_models import aw_he42, aw_ue70
+
+    for module in (aw_he42, aw_ue70):
+        indices = [index for index, _ in module.ND_FILTER_OPTIONS]
+        assert indices == [0, 1, 2, 3, 8], module
+        assert dict(module.ND_FILTER_OPTIONS)[8] == "AUTO ND"
+
+
+def test_nd_filter_absent_for_he40_he50_he60() -> None:
+    # Menu-Tabelle 4-4-4 ("In the case of the AW-HE40/AW-UE70/AW-HE42")
+    # annotiert OFT explizit mit "*only AW-UE70/AW-HE42" -- AW-HE40 selbst
+    # hat keinen physischen ND-Filter. Tabelle 4-4-1 ("AW-HE50/AW-HE60")
+    # fuehrt OFT ueberhaupt nicht auf.
+    from drivers.panasonic_models import aw_he40, aw_he50, aw_he60
+
+    for module in (aw_he40, aw_he50, aw_he60):
+        assert getattr(module, "ND_FILTER_OPTIONS", None) is None, module

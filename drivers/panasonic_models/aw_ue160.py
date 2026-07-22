@@ -50,11 +50,18 @@ PEDESTAL_CENTER_DATA = 0x800
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
+# ND-Filter (OFT/QFT), Werte/Reihenfolge aus `AW-UE160_InterfaceSpecification_
+# E.pdf`, eigene Tabelle (Data value 0-3 -> THROUGH/1/4/1/16/1/64).
+ND_FILTER_OPTIONS: list[tuple[int, str]] = [
+    (0, "THROUGH"),
+    (1, "1/4"),
+    (2, "1/16"),
+    (3, "1/64"),
+]
+
 BUTTON_FEATURES: dict[str, dict] = {
     "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0", "query": "QAF", "query_on_value": "1"},
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
-    "awb_black": {"kind": "trigger", "cmd": "OAS"},
-    "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs": {"kind": "toggle", "on": "OSA:0D:1", "off": "OSA:0D:0", "query": "QSA:0D", "query_on_value": "1"},
     "flare": {"kind": "toggle", "on": "OSA:11:1", "off": "OSA:11:0", "query": "QSA:11", "query_on_value": "1"},
     "gamma": {"kind": "toggle", "on": "OSA:0A:1", "off": "OSA:0A:0", "query": "QSA:0A", "query_on_value": "1"},
@@ -78,6 +85,4 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "matrix": "Matrix",
     "osd": "OSD",
     "white_clip": "White Clip",
-    "awb_black": "ABB (Black)",
-    "aww_white": "AWW (White)",
 }

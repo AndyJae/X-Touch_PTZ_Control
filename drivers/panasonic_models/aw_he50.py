@@ -31,6 +31,12 @@ nicht gegen diese PDF geprueft) -- §3.2.31 "White Clip settings" ist aber
 explizit **"Only supported by the AW-HE130/AW-HR140/AW-UE150"**, weder
 AW-HE50 noch AW-HE60 werden dort genannt. Der Eintrag wurde deshalb
 komplett entfernt (kein erfundenes/falsches Feature).
+
+Bewusst KEIN ND_FILTER_OPTIONS (Nutzerauftrag 2026-07-22, ND-Filter als
+4. Encoder-Funktion auf Button 1): `HDIntegratedCamera_
+InterfaceSpecifications-E.pdf` §3.2.1.4/Menu-Tabelle 4-4-1 fuehrt fuer
+AW-HE50/AW-HE60 KEINEN `OFT`-Eintrag -- diese Modelle haben schlicht keinen
+physischen ND-Filter (im Unterschied zu AW-UE70/AW-HE42, siehe dort).
 """
 
 CAMERA_ID = "AW-HE50"
@@ -52,8 +58,6 @@ PEDESTAL_DATA_WIDTH = 3
 BUTTON_FEATURES: dict[str, dict] = {
     "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0", "query": "QAF", "query_on_value": "1"},
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
-    "awb_black": {"kind": "trigger", "cmd": "OAS"},
-    "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
     "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
@@ -65,6 +69,4 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "drs_low": "DRS: Low",
     "drs_high": "DRS: High",
     "osd": "OSD",
-    "awb_black": "ABB (Black)",
-    "aww_white": "AWW (White)",
 }

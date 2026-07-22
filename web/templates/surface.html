@@ -25,8 +25,9 @@
                Text wie das physische Scribble-Strip (channel_line1_text()/
                channel_display_text() in core/application.py): Zeile 1
                Kameraname bei camera_status, sonst der Funktionsname
-               (GAIN/PEDESTAL); Zeile 2 Iris-% bei camera_status, sonst der
-               aktive Encoder-Wert. Rot ("is-saved"), solange der per
+               (GAIN/PEDESTAL/ND); Zeile 2 Iris-% bei camera_status, sonst der
+               aktive Encoder-Wert (bei ND ein Label wie "1/64" statt einer
+               Zahl). Rot ("is-saved"), solange der per
                Encoder-Push gespeicherte Wert seit dem letzten Dreh-Tick
                unveraendert ist. #}
             <div class="scribble-strip {{ 'is-saved' if enc.saved }}">

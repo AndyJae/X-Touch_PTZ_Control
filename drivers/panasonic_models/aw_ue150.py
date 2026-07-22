@@ -63,12 +63,21 @@ PEDESTAL_CENTER_DATA = 0x800
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
+# ND-Filter (OFT/QFT): `AW-UE150HE145_InterfaceSpecification_E.pdf` (gilt
+# fuer "AW-UE150/AW-HE145") zeigt "Through/1/4 ND/1/16 ND/1/64 ND" fuer
+# Data 0-3 -- deckungsgleich mit der Gruppe "AW-HE120/AW-UE150" aus der
+# aelteren `HDIntegratedCamera...pdf` (dort ohne " ND"-Suffix).
+ND_FILTER_OPTIONS: list[tuple[int, str]] = [
+    (0, "THROUGH"),
+    (1, "1/4 ND"),
+    (2, "1/16 ND"),
+    (3, "1/64 ND"),
+]
+
 BUTTON_FEATURES: dict[str, dict] = {
     "adaptive_matrix": {"kind": "toggle", "on": "OSJ:4F:1", "off": "OSJ:4F:0", "query": "QSJ:4F", "query_on_value": "1"},
     "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0", "query": "QAF", "query_on_value": "1"},
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
-    "awb_black": {"kind": "trigger", "cmd": "OAS"},
-    "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
     "drs_mid": {"kind": "toggle", "on": "OSE:33:2", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "2"},
     "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
@@ -89,6 +98,4 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "knee_auto": "Knee: Auto",
     "osd": "OSD",
     "white_clip": "White Clip",
-    "awb_black": "ABB (Black)",
-    "aww_white": "AWW (White)",
 }

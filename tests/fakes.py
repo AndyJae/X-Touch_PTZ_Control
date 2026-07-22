@@ -31,6 +31,11 @@ class FakeCameraDriver:
     gain_step_db = _aw_ue160_model.GAIN_STEP_DB
     pedestal_min = _aw_ue160_model.PEDESTAL_MIN
     pedestal_max = _aw_ue160_model.PEDESTAL_MAX
+    # ND-Filter-Katalog (siehe core/application.py::apply_encoder_turn()s
+    # "nd"-Zweig) -- ebenfalls aus dem echten AW-UE160-Modul. Tests fuer ein
+    # Modell OHNE ND-Filter (z. B. AW-HE50) setzen `nd_options = None` auf
+    # der Instanz.
+    nd_options = _aw_ue160_model.ND_FILTER_OPTIONS
     # AW-UE160-Katalog hat keine Super-Gain-Kopplung (Nutzerauftrag
     # 2026-07-20, siehe drivers/panasonic_aw.py::effective_gain_max_db) --
     # Tests, die das simulieren wollen, setzen `gain_max_db_super_gain_off`/
@@ -62,6 +67,12 @@ class FakeCameraDriver:
         self.query_button_feature_result: bool | None = None
         self.step_gain_calls: list[int] = []
         self.step_pedestal_calls: list[int] = []
+        self.nd_index: int | None = 0
+        self.set_nd_calls: list[int] = []
+        # Simuliert eine kameraseitige Ablehnung, analog zu
+        # `raise_on_next_step_gain` -- einmalig, wird beim naechsten
+        # set_nd()-Aufruf geworfen und dann zurueckgesetzt.
+        self.raise_on_next_set_nd: Exception | None = None
         # Von core.application._wire_camera_events() registrierter Callback --
         # Tests rufen ihn direkt auf, um extern ausgeloeste Kamera-Events
         # (Update-Notification-Kanal, siehe drivers/panasonic_aw.py) zu
@@ -135,7 +146,12 @@ class FakeCameraDriver:
         pass
 
     async def set_nd(self, index: int) -> None:
-        pass
+        self.set_nd_calls.append(index)
+        if self.raise_on_next_set_nd is not None:
+            exc = self.raise_on_next_set_nd
+            self.raise_on_next_set_nd = None
+            raise exc
+        self.nd_index = index
 
     async def cycle_nd(self) -> int:
         return 0
@@ -163,7 +179,7 @@ class FakeCameraDriver:
             gain_db=self.gain_db,
             gain_auto=self.gain_auto,
             pedestal=self.pedestal,
-            nd_index=0,
+            nd_index=self.nd_index,
         )
 
     def subscribe(self, callback) -> None:

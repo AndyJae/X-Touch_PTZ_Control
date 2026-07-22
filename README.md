@@ -32,14 +32,16 @@ inklusive Änderungen, die nicht von PTZ_Control selbst ausgelöst wurden (z. B.
 Kamera-eigenes Web-UI), über das Lens-Info-Feedback (`#LPC1`, Spec §7.3) in
 `drivers/panasonic_aw.py`.
 
-Rec (Button 1) schaltet pro Kanal fest durch drei Encoder-Funktionen:
-**Gain → Pedestal → Camera Status** (nicht mehr über `config.yaml`
+Rec (Button 1) schaltet pro Kanal fest durch vier Encoder-Funktionen:
+**Gain → Pedestal → ND → Camera Status** (nicht mehr über `config.yaml`
 konfigurierbar, siehe `core/application.py._ENCODER_FUNCTIONS`). Drehen
-sendet bei Gain/Pedestal **sofort live** einen Kamerabefehl (über eine eigene
+sendet bei Gain/Pedestal/ND **sofort live** einen Kamerabefehl (über eine eigene
 Rate-Limiter-Instanz je Kamera, `apply_encoder_turn` in `core/application.py`,
 geclampt auf den Bereich des verbundenen Kameramodells, siehe
 `drivers/panasonic_models/*.py` und Spec §7.2 — z. B. AW-UE160 -6…+12dB/
--200…+200, AW-HE50 0…18dB/-10…+10) — Encoder-Push sendet seitdem nichts mehr an die Kamera,
+-200…+200, AW-HE50 0…18dB/-10…+10; ND ist eine modellabhängige, teils
+lückenhafte Werteliste statt eines Zahlenbereichs, z. B. AW-HE130 nur
+Through/1/64/1/8) — Encoder-Push sendet seitdem nichts mehr an die Kamera,
 sondern markiert den Wert nur noch visuell als "gespeichert" (rote Anzeige in
 der Web-UI, bis zum nächsten Dreh-Tick).
 

@@ -12,14 +12,6 @@ cameras:
   feedback:
     update_notifications: false
     lens_info: false
-- id: cam1
-  name: Andy 1
-  driver: panasonic_aw
-  host: 192.168.0.10
-  port: 80
-  feedback:
-    update_notifications: false
-    lens_info: false
 - id: cam3
   name: CAM 3
   driver: panasonic_aw
@@ -44,17 +36,19 @@ cameras:
   feedback:
     update_notifications: false
     lens_info: false
+- id: cam1
+  name: CAM 1
+  driver: panasonic_aw
+  host: 192.168.11.134
+  port: 80
+  feedback:
+    update_notifications: false
+    lens_info: false
 banks:
 - name: Bank A
   channels:
   - camera: cam1
-    buttons:
-      button2: auto_focus
-      button3: auto_iris
-    companion:
-      page: 9
-      row: 0
-      column: 1
+    buttons: {}
   - camera: cam2
     buttons:
       button2: drs_low

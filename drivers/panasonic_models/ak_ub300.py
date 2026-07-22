@@ -77,10 +77,18 @@ PEDESTAL_CENTER_DATA = 0x80
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 2
 
+# ND-Filter (OFT/QFT), `HDIntegratedCamera_InterfaceSpecifications-E.pdf`
+# §3.2.1.4, Gruppe "AK-UB300": 0-3 -> Clear/1/4/1/16/1/64 (Label "Clear"
+# statt "Through", sonst identisch zur Standard-Gruppe).
+ND_FILTER_OPTIONS: list[tuple[int, str]] = [
+    (0, "CLEAR"),
+    (1, "1/4"),
+    (2, "1/16"),
+    (3, "1/64"),
+]
+
 BUTTON_FEATURES: dict[str, dict] = {
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
-    "awb_black": {"kind": "trigger", "cmd": "OAS"},
-    "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
     "knee_manual": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "1"},
     "knee_auto": {"kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "2"},
@@ -93,8 +101,6 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "drs": "DRS",
     "knee_manual": "Knee: Manual",
     "knee_auto": "Knee: Auto",
-    "awb_black": "ABB (Black)",
-    "aww_white": "AWW (White)",
     "super_gain": "Super Gain",
     "osd": "OSD",
 }

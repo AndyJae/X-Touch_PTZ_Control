@@ -280,6 +280,34 @@ def test_apply_model_catalog_empty_for_unrecognized_model() -> None:
     assert driver.pedestal_command is None
     assert driver.pedestal_min is None
     assert driver.pedestal_max is None
+    assert driver.nd_options is None
+
+
+def test_apply_model_catalog_resolves_nd_options_for_ue160() -> None:
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-UE160"
+    driver._apply_model_catalog()
+
+    assert driver.nd_options == [(0, "THROUGH"), (1, "1/4"), (2, "1/16"), (3, "1/64")]
+
+
+def test_apply_model_catalog_nd_options_none_for_he50_no_nd_filter() -> None:
+    # AW-HE50/AW-HE60 haben laut HDIntegratedCamera_InterfaceSpecifications-
+    # E.pdf keinen physischen ND-Filter (siehe drivers/panasonic_models/
+    # aw_he50.py-Docstring).
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-HE50"
+    driver._apply_model_catalog()
+
+    assert driver.nd_options is None
+
+
+def test_apply_model_catalog_resolves_sparse_nd_options_for_he130() -> None:
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-HE130"
+    driver._apply_model_catalog()
+
+    assert driver.nd_options == [(0, "THROUGH"), (3, "1/64"), (4, "1/8")]
 
 
 def test_apply_model_catalog_resolves_gain_pedestal_for_ue160() -> None:
@@ -575,6 +603,89 @@ def test_get_state_aggregates_queries() -> None:
     assert state.error == "rER1"
 
 
+def test_set_nd_sends_oft_for_valid_index() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)  # AW-UE160: nd_options = [0,1,2,3]
+    _run(driver.set_nd(2))
+
+    assert seen == ["http://192.168.0.10/cgi-bin/aw_cam?cmd=OFT:2&res=1"]
+
+
+def test_set_nd_rejects_index_not_in_model_catalog() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+
+    with pytest.raises(ValueError):
+        _run(driver.set_nd(4))  # AW-UE160 hat kein Data-Wert 4, siehe AW-HE130
+
+
+def test_set_nd_raises_camera_command_error_for_model_without_nd_filter() -> None:
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-HE50"
+    driver._apply_model_catalog()
+
+    with pytest.raises(CameraCommandError):
+        _run(driver.set_nd(0))
+
+
+def test_cycle_nd_wraps_through_sparse_he130_options() -> None:
+    # Regressionstest fuer den per PDF-Recherche gefundenen Bug: die
+    # frühere Implementierung rechnete hartkodiert `(current+1) % 4`, was
+    # fuer AW-HE130 (nur Data 0/3/4) ungueltige Zwischenwerte (1/2) erzeugt
+    # haette. cycle_nd() muss stattdessen durch die tatsaechliche
+    # Modell-Werteliste wrappen: 0 -> 3 -> 4 -> 0.
+    responses = {"cmd=QFT": "OFT:3"}
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen.append(url)
+        for key, text in responses.items():
+            if key in url:
+                return httpx.Response(200, text=text)
+        return httpx.Response(200, text="")
+
+    driver = PanasonicAWDriver(host="192.168.0.10", port=80)
+    driver._client = httpx.AsyncClient(
+        base_url="http://192.168.0.10:80", transport=httpx.MockTransport(handler),
+    )
+    driver._connected = True
+    driver.model = "AW-HE130"
+    driver._apply_model_catalog()
+
+    new_index = _run(driver.cycle_nd())
+
+    assert new_index == 4  # naechster Wert nach 3 in [0, 3, 4]
+    assert seen[-1] == "http://192.168.0.10/cgi-bin/aw_cam?cmd=OFT:4&res=1"
+
+
+def test_cycle_nd_wraps_from_last_to_first_value() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "cmd=QFT" in url:
+            return httpx.Response(200, text="OFT:3")  # letzter Wert bei AW-UE160
+        return httpx.Response(200, text="")
+
+    driver = _build_driver(handler)
+
+    new_index = _run(driver.cycle_nd())
+
+    assert new_index == 0
+
+
+def test_cycle_nd_raises_camera_command_error_for_model_without_nd_filter() -> None:
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-HE50"
+    driver._apply_model_catalog()
+
+    with pytest.raises(CameraCommandError):
+        _run(driver.cycle_nd())
+
+
 def test_trigger_button_feature_toggle_sends_on_and_off() -> None:
     seen: list[str] = []
 
@@ -591,6 +702,11 @@ def test_trigger_button_feature_toggle_sends_on_and_off() -> None:
 
 
 def test_trigger_button_feature_trigger_ignores_enabled() -> None:
+    # Kein Katalog-Eintrag hat aktuell "kind": "trigger" (AWW/ABB, die
+    # einzigen "trigger"-Features, wurden entfernt) -- der generische
+    # Dispatch-Zweig fuer diese Feature-Art bleibt aber Teil des
+    # Mechanismus, deshalb hier mit einem synthetischen Katalog-Eintrag
+    # geprueft statt einem echten Modell-Feature.
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -598,7 +714,8 @@ def test_trigger_button_feature_trigger_ignores_enabled() -> None:
         return httpx.Response(200, text="")
 
     driver = _build_driver(handler)
-    _run(driver.trigger_button_feature("awb_black"))
+    driver.BUTTON_FEATURES = {**driver.BUTTON_FEATURES, "_synthetic_trigger": {"kind": "trigger", "cmd": "OAS"}}
+    _run(driver.trigger_button_feature("_synthetic_trigger"))
 
     assert seen == ["http://192.168.0.10/cgi-bin/aw_cam?cmd=OAS&res=1"]
 
@@ -616,19 +733,6 @@ def test_trigger_button_feature_auto_iris_delegates_to_set_auto_iris() -> None:
     # Muss ueber set_auto_iris() laufen (ORS:1), nicht ueber eine zweite,
     # eigene Kommando-Implementierung fuer denselben Befehl.
     assert seen == ["http://192.168.0.10/cgi-bin/aw_cam?cmd=ORS:1&res=1"]
-
-
-def test_trigger_button_feature_aww_white_delegates_to_trigger_awb() -> None:
-    seen: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
-        return httpx.Response(200, text="")
-
-    driver = _build_driver(handler)
-    _run(driver.trigger_button_feature("aww_white"))
-
-    assert seen == ["http://192.168.0.10/cgi-bin/aw_cam?cmd=OWS&res=1"]
 
 
 def test_trigger_button_feature_toggle_without_enabled_raises() -> None:
@@ -953,6 +1057,30 @@ def test_handle_notification_pedestal_ignored_for_model_without_pedestal_command
     driver.subscribe(events.append)
 
     _run(driver._handle_notification(_FakeReader(_build_notification_frame("OSJ:0F:864")), _FakeWriter()))
+
+    assert events == []
+
+
+def test_handle_notification_fires_nd_changed() -> None:
+    # Nutzerreport 2026-07-22 (reale AW-UE160): eine am Kamera-eigenen
+    # Bedienfeld vorgenommene ND-Aenderung wurde bisher nicht erkannt, weil
+    # dieser Notification-Zweig komplett fehlte. Anders als OGU/Pedestal ist
+    # das Data-Feld hier ein einfacher Dezimalwert, kein Hex-String.
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OFT:2")), _FakeWriter()))
+
+    assert events == [{"type": "nd_changed", "value": 2}]
+
+
+def test_handle_notification_nd_changed_ignores_malformed_value() -> None:
+    driver = _build_driver(lambda request: httpx.Response(200, text=""))
+    events: list[dict] = []
+    driver.subscribe(events.append)
+
+    _run(driver._handle_notification(_FakeReader(_build_notification_frame("OFT:")), _FakeWriter()))
 
     assert events == []
 

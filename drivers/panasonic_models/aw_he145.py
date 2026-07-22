@@ -59,3 +59,13 @@ PEDESTAL_MAX = 200
 PEDESTAL_CENTER_DATA = 0x800
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
+
+# ND-Filter (OFT/QFT): `AW-UE150HE145_InterfaceSpecification_E.pdf` gilt
+# gemeinsam fuer AW-UE150 UND AW-HE145 -- "Through/1/4 ND/1/16 ND/1/64 ND"
+# fuer Data 0-3, identisch zu `aw_ue150.py`.
+ND_FILTER_OPTIONS: list[tuple[int, str]] = [
+    (0, "THROUGH"),
+    (1, "1/4 ND"),
+    (2, "1/16 ND"),
+    (3, "1/64 ND"),
+]

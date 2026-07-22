@@ -39,6 +39,13 @@ nicht gegen diese PDF geprueft). Das tatsaechliche Kommando steht in §3.2.27
 AW-HE42"** -- Modellzuordnung war also richtig, nur das Kommando falsch.
 Korrigiert auf `OSD:B2`/`QSD:B2`, Werte (0/1) unveraendert uebernommen, da
 sie zur PDF-Setting-Spalte (0=Manual,1=Auto) passen.
+
+Bewusst KEIN ND_FILTER_OPTIONS (Nutzerauftrag 2026-07-22, ND-Filter als
+4. Encoder-Funktion auf Button 1): dieselbe PDF (Menu-Tabelle 4-4-4, "In
+the case of the AW-HE40/AW-UE70/AW-HE42") annotiert den `OFT`-Eintrag
+explizit mit "*only AW-UE70/AW-HE42" -- AW-HE40 selbst hat keinen
+physischen ND-Filter. `aw_he42.py`/`aw_ue70.py` haben deshalb eine eigene,
+lokale ND_FILTER_OPTIONS-Konstante statt sie von hier zu importieren.
 """
 
 CAMERA_ID = "AW-HE40"
@@ -67,8 +74,6 @@ PEDESTAL_DATA_WIDTH = 3
 BUTTON_FEATURES: dict[str, dict] = {
     "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0", "query": "QAF", "query_on_value": "1"},
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
-    "awb_black": {"kind": "trigger", "cmd": "OAS"},
-    "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
     "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
@@ -81,7 +86,5 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "drs_low": "DRS: Low",
     "drs_high": "DRS: High",
     "osd": "OSD",
-    "awb_black": "ABB (Black)",
-    "aww_white": "AWW (White)",
     "night_mode": "Night Mode",
 }

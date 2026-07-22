@@ -195,6 +195,30 @@ def test_driver_pedestal_changed_event_updates_state_and_publishes(monkeypatch) 
     assert received == [{"camera_id": "cam1", "value": -50}]
 
 
+def test_driver_nd_changed_event_updates_state_and_publishes(monkeypatch) -> None:
+    # Nutzerreport 2026-07-22 (reale AW-UE160): externe ND-Aenderung (z. B.
+    # am Kamera-eigenen Bedienfeld) wurde bisher nicht erkannt.
+    state = _build_state(monkeypatch)
+    received = []
+
+    async def on_nd_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("nd_changed", on_nd_changed)
+
+    async def scenario() -> None:
+        await connect_camera(state, "cam1")
+        driver = state.drivers["cam1"]
+        driver.subscribed_callback({"type": "nd_changed", "value": 2})
+        await asyncio.sleep(0)
+
+    _run(scenario())
+
+    cam_state = state.state_store.get_camera("cam1")
+    assert cam_state.nd_index == 2
+    assert received == [{"camera_id": "cam1", "value": 2}]
+
+
 def test_apply_iris_clamps_and_calls_driver(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
@@ -417,15 +441,20 @@ def test_apply_button_action_toggle_flips_state(monkeypatch) -> None:
 
 
 def test_apply_button_action_trigger_ignores_state(monkeypatch) -> None:
-    state = _build_state(monkeypatch, config=_config_with_button("button2", "awb_black"))
+    # Kein Katalog-Eintrag hat aktuell "kind": "trigger" (AWW/ABB, die
+    # einzigen "trigger"-Features, wurden entfernt) -- mit einem
+    # synthetischen Katalog-Eintrag geprueft, um den generischen
+    # "trigger ignoriert Zustand"-Zweig weiterhin abzudecken.
+    state = _build_state(monkeypatch, config=_config_with_button("button2", "_synthetic_trigger"))
     _run(connect_camera(state, "cam1"))
-
-    _run(apply_button_action(state, 1, "button2"))
-    _run(apply_button_action(state, 1, "button2"))
-
     driver = state.drivers["cam1"]
-    assert driver.button_feature_calls == [("awb_black", None), ("awb_black", None)]
-    assert "awb_black" not in state.state_store.get_camera("cam1").feature_states
+    driver.BUTTON_FEATURES = {**driver.BUTTON_FEATURES, "_synthetic_trigger": {"kind": "trigger", "cmd": "OAS"}}
+
+    _run(apply_button_action(state, 1, "button2"))
+    _run(apply_button_action(state, 1, "button2"))
+
+    assert driver.button_feature_calls == [("_synthetic_trigger", None), ("_synthetic_trigger", None)]
+    assert "_synthetic_trigger" not in state.state_store.get_camera("cam1").feature_states
 
 
 def test_apply_button_action_without_assignment_is_noop(monkeypatch) -> None:
@@ -465,12 +494,13 @@ def test_apply_button_action_publishes_feature_changed(monkeypatch) -> None:
 
 def test_cycle_encoder_function_advances_and_wraps(monkeypatch) -> None:
     # Feste Reihenfolge (Nutzerentscheid, core/application.py._ENCODER_FUNCTIONS):
-    # gain -> pedestal -> camera_status -> wrap.
+    # gain -> pedestal -> nd -> camera_status -> wrap.
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
     assert _run(cycle_encoder_function(state, 1)) == "gain"
     assert _run(cycle_encoder_function(state, 1)) == "pedestal"
+    assert _run(cycle_encoder_function(state, 1)) == "nd"
     assert _run(cycle_encoder_function(state, 1)) == "camera_status"
     assert _run(cycle_encoder_function(state, 1)) == "gain"  # wrap
 
@@ -803,8 +833,8 @@ def test_commit_encoder_value_is_noop_for_camera_status(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> camera_status
+    for _ in range(4):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd -> camera_status
 
     _run(commit_encoder_value(state, 1))
 
@@ -827,8 +857,8 @@ def test_encoder_preview_none_for_camera_status(monkeypatch) -> None:
 
     assert encoder_preview(state, 1) == ("gain", 0)  # Default: erste Funktion
 
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> camera_status
+    for _ in range(4):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd -> camera_status
     assert encoder_preview(state, 1) is None
 
 
@@ -837,8 +867,8 @@ def test_apply_encoder_turn_is_noop_for_camera_status(monkeypatch) -> None:
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
 
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> camera_status
+    for _ in range(4):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd -> camera_status
 
     _run(apply_encoder_turn(state, 1, 1))
 
@@ -851,8 +881,8 @@ def test_channel_line1_shows_camera_name_for_camera_status(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> camera_status
+    for _ in range(4):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd -> camera_status
 
     assert channel_line1_text(state, 1, "CAM 1") == "CAM 1"
 
@@ -891,6 +921,141 @@ def test_channel_display_text_shows_raw_value_without_percent_or_prefix(monkeypa
     fake_now[0] += 1.0
     _run(apply_encoder_turn(state, 1, -45))
     assert channel_display_text(state, 1, None) == "-45"  # kein "%", kein "P"-Praefix
+
+
+# --- ND-Filter als 4. Encoder-Funktion (Nutzerauftrag 2026-07-22) -----------
+# FakeCameraDriver meldet immer "AW-UE160" (siehe tests/fakes.py) -- Katalog
+# [0,1,2,3] = THROUGH/1/4/1/16/1/64, `nd_index` startet bei 0 (get_state()).
+
+
+def test_apply_encoder_turn_nd_steps_through_options_by_position(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+
+    _run(cycle_encoder_function(state, 1))  # -> "gain"
+    _run(cycle_encoder_function(state, 1))  # -> "pedestal"
+    _run(cycle_encoder_function(state, 1))  # -> "nd"
+
+    _run(apply_encoder_turn(state, 1, 1))
+
+    assert driver.set_nd_calls == [1]  # Position 0 ("THROUGH") -> Position 1 ("1/4")
+    assert encoder_preview(state, 1) == ("nd", 1)
+    assert state.state_store.get_camera("cam1").nd_index == 1
+
+
+def test_apply_encoder_turn_nd_clamps_at_last_option_no_wrap(monkeypatch) -> None:
+    # Nutzerentscheid 2026-07-22: Anschlag am Rand, kein Wraparound (anders
+    # als PanasonicAWDriver.cycle_nd()).
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
+
+    for _ in range(3):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+
+    for _ in range(10):  # weit ueber die letzte Position (3) hinausdrehen
+        _run(apply_encoder_turn(state, 1, 1))
+        fake_now[0] += 1.0
+
+    assert driver.set_nd_calls[-1] == 3  # letzter gueltiger Data-Wert (AW-UE160: 0..3)
+    assert encoder_preview(state, 1) == ("nd", 3)
+
+
+def test_apply_encoder_turn_nd_clamps_at_first_option_no_wrap(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.nd_index = 3
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
+
+    for _ in range(3):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+
+    for _ in range(10):  # weit unter die erste Position (0) hinausdrehen
+        _run(apply_encoder_turn(state, 1, -1))
+        fake_now[0] += 1.0
+
+    assert driver.set_nd_calls[-1] == 0
+    assert encoder_preview(state, 1) == ("nd", 0)
+
+
+def test_apply_encoder_turn_nd_sparse_group_skips_missing_indices(monkeypatch) -> None:
+    # AW-HE130/AW-HR140 haben nur Data 0/3/4 (kein 1/2) -- ein Tick muss zur
+    # naechsten LISTENPOSITION springen, nicht zum naechsten Rohwert.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.nd_options = [(0, "THROUGH"), (3, "1/64"), (4, "1/8")]
+    driver.nd_index = 0
+
+    for _ in range(3):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+
+    _run(apply_encoder_turn(state, 1, 1))
+
+    assert driver.set_nd_calls == [3]  # naechste Position nach 0 ist Data 3, nicht 1
+    assert encoder_preview(state, 1) == ("nd", 3)
+
+
+def test_apply_encoder_turn_nd_rejected_value_clears_stale_pending_delta(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.raise_on_next_set_nd = CameraCommandError("ER3", command="OFT")
+
+    for _ in range(3):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+
+    _run(apply_encoder_turn(state, 1, 1))
+
+    assert state.encoder_pending_delta[1] == 0
+    assert state.state_store.get_camera("cam1").error is not None
+
+
+def test_encoder_function_unsupported_nd_shows_na_for_model_without_nd_filter(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.nd_options = None  # z. B. AW-HE50 (kein physischer ND-Filter)
+
+    for _ in range(3):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+
+    assert channel_display_text(state, 1, None) == "n/a"
+    assert channel_line1_text(state, 1, "CAM 1") == "ND"
+
+
+def test_commit_encoder_value_marks_saved_for_nd(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+
+    for _ in range(3):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+    _run(apply_encoder_turn(state, 1, 1))
+    assert state.encoder_saved.get(1) is False  # von apply_encoder_turn zurueckgesetzt
+
+    _run(commit_encoder_value(state, 1))
+
+    assert state.encoder_saved.get(1) is True
+
+
+def test_channel_display_text_shows_nd_label(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+
+    for _ in range(3):
+        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+
+    assert channel_display_text(state, 1, None) == "THROUGH"  # nd_index startet bei 0
+
+    _run(apply_encoder_turn(state, 1, 1))
+    assert channel_display_text(state, 1, None) == "1/4"
 
 
 def test_channel_snapshot_exposes_display_line1_and_text(monkeypatch) -> None:

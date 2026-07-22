@@ -565,7 +565,44 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   gegengeprüft (nicht nur LED beobachtet, auch `QAF` direkt abgefragt), binäres
   Verhalten (kein Blinken) wie dokumentiert. Mute/Select-LED sowie LED-Tx auf Kanal
   2–8 weiterhin nicht getestet.
-- Hotplug/Reconnect für den MIDI-Port (Spec §5.5) nicht implementiert
+- ~~Hotplug/Reconnect für den MIDI-Port (Spec §5.5) nicht implementiert~~ **Teilweise
+  behoben (2026-07-22, Bugreport: "nach ca. 1h Inaktivität reagieren weder Web-UI noch
+  physisches Gerät mehr wie gewohnt"):** Root Cause per Live-Traceback des Nutzers
+  bestätigt (`_rtmidi.SystemError: MidiOutWinMM::sendMessage: error sending MIDI
+  message.`) und per Code-Lesen verifiziert (nicht nur vermutet) — `midi/fader.py` rief
+  `self._out_port.send(...)` an fünf Stellen ohne jede Fehlerbehandlung auf, und
+  `core/bus.py::EventBus.publish()` fängt ebenfalls nichts ab (`for callback in
+  subscribers: await callback(payload)`, keine Isolation). Da Web-UI-Aktionen
+  (`apply_iris()`/`apply_button_action()` in `core/application.py`) über denselben
+  EventBus dieselben MIDI-Tx-Subscriber (`_on_iris_changed`/
+  `_on_scribble_relevant_event`) auslösen wie physische Tastendrücke, riss ein einzelner
+  fehlgeschlagener Send sowohl den `_poll_loop()`-Hintergrund-Task dauerhaft ab (kein
+  Supervisor/Neustart — physisches Gerät danach komplett tot) als auch jeden
+  Web-Request, der einen dieser Events publiziert (Exception propagiert bis in den
+  FastAPI-Handler). Deckt sich mit dem Fehlen jeglicher ERROR-Zeile im
+  `/logs`-Ringpuffer: die Exception lief als "Task exception was never retrieved" über
+  den `asyncio`-Root-Logger, nicht über den vom Ringpuffer abgehörten
+  `ptz_control`-Logger. Neue zentrale `XTouchFader._send()`-Methode (ersetzt alle
+  direkten `self._out_port.send(...)`-Aufrufe) fängt `rtmidi.RtMidiError` (gemeinsame
+  Basisklasse aller `_rtmidi`-Fehlertypen inkl. `SystemError`, per `.__mro__` verifiziert)
+  ab, versucht einmalig `_reconnect_output()` (`mido.open_output()` auf denselben
+  Portnamen) und wiederholt den Send; schlägt auch das fehl, wird geloggt und verworfen
+  statt weitergereicht. Getestet in `tests/test_fader.py`
+  (`test_send_reconnects_and_retries_after_transient_rtmidi_error`,
+  `test_send_swallows_error_when_reconnect_also_fails`,
+  `test_button_action_does_not_raise_when_midi_send_fails` — letzterer reproduziert den
+  eigentlichen Bugreport: `apply_button_action()` darf trotz kaputtem MIDI-Ausgang nicht
+  abbrechen). 270 Tests bestehen (vorher 267), keine Regression. **Bewusst NICHT
+  Teil dieses Fixes** (Nutzerentscheid: Scope war "Fix + Reconnect-Versuch bei
+  Send-Fehler", nicht die volle Hotplug-Spec): die Rx-Seite (`_poll_loop()`s
+  `self._in_port.iter_pending()`) hat weiterhin keine eigene Fehlerbehandlung/
+  Reconnect-Logik — ein direkter Fehler beim Lesen (statt beim Senden) würde den
+  Poll-Loop nach wie vor dauerhaft abreißen. Das ist ein anderer, bisher nicht
+  beobachteter/bestätigter Fehlerpfad, kein Teil dieses Bugreports. **Nicht verifiziert:**
+  ob Windows-USB-Energieverwaltung tatsächlich der externe Auslöser für den fehlgeschlagenen
+  Send ist (plausibelste Erklärung, aber nicht am Gerät nachgestellt) und ob der Fix live
+  gegen das reale Gerät nach einer echten Inaktivitätsphase greift (nur unittest-verifiziert,
+  mit `FailingOutPort`/gemocktem `mido.open_output`).
 - Web-UI-Port-Auswahl für MIDI (Setup-Seite) ist weiterhin ein statisches Mockup, nicht mit
   echten `mido`-Ports verbunden — Port kommt aktuell nur aus `config.yaml`
 - ~~Update-Notifications für andere Ereignisse als Iris (`OAW`, `OWS` etc., Spec §7.3.1) laufen
@@ -986,6 +1023,135 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   `test_disconnect_camera_endpoint_marks_disconnected`). 267 Tests bestehen
   (vorher 265), keine Regression. Noch nicht live gegen die echte
   Setup-Seite verifiziert.
+- **ND-Filter als 4. Encoder-Funktion auf Button 1 (Nutzerauftrag
+  2026-07-22, "Cam Info, Gain, Pedestal und ND"):** Reihenfolge laut
+  Nutzerentscheid `gain → pedestal → nd → camera_status` (`core/
+  application.py._ENCODER_FUNCTIONS`), Anschlag statt Wraparound am Rand
+  der Werteliste, nicht unterstützte Modelle zeigen "n/a" im Zyklus (kein
+  Überspringen). Kommando `OFT`/`QFT` selbst ist modellübergreifend
+  identisch, die gültigen Data-Werte wurden aber aus den lokalen Referenz-
+  PDFs modellabhängig neu erhoben (`HDIntegratedCamera_
+  InterfaceSpecifications-E.pdf` §3.2.1.4, für Modelle mit eigenem PDF
+  zusätzlich dort verifiziert) -- neue Konstante `ND_FILTER_OPTIONS`
+  (geordnete `(Data, Label)`-Liste statt reinem Zahlenbereich) je
+  Modell-Datei, aufgelöst in `PanasonicAWDriver.nd_options` über
+  `_apply_model_catalog()`. Dabei drei bisher unbekannte, teils
+  überraschende Befunde:
+  - **AW-HE130/AW-HR140** haben NUR die Data-Werte 0/3/4 (Through/1/64/
+    1/8) -- 1 und 2 existieren für diese Gruppe laut PDF nicht, anders als
+    beim bisher angenommenen durchgängigen 0-3-Bereich.
+  - **AW-UE70/AW-HE42** haben einen fünften Wert, 8=Auto ND, den keine
+    andere Modellgruppe hat.
+  - **AW-HE40/AW-HE50/AW-HE60 haben gar keinen physischen ND-Filter** --
+    die PDF-Menü-Tabelle für AW-HE40/UE70/HE42 annotiert `OFT` explizit
+    "*only AW-UE70/AW-HE42", die separate HE50/HE60-Tabelle führt `OFT`
+    überhaupt nicht auf. `aw_he42.py`/`aw_ue70.py` haben deshalb eine
+    eigene, lokale `ND_FILTER_OPTIONS`-Konstante statt sie (wie den Rest
+    ihres Katalogs) von `aw_he40.py` zu re-exportieren.
+  **Dabei einen echten, bisher unbemerkten Bug in `PanasonicAWDriver.
+  cycle_nd()` gefunden und behoben:** die Methode rechnete hartkodiert
+  `(current + 1) % 4`, unabhängig vom verbundenen Modell -- für AW-HE130/
+  AW-HR140 hätte das ungültige Zwischenwerte (Data 1/2) erzeugt, für
+  Modelle ganz ohne ND-Filter einen sinnlosen Befehl gesendet. War bisher
+  folgenlos, weil `cycle_nd()`/das zugehörige `config.yaml`-Feld
+  `channel_defaults.buttons.mute.action: nd_cycle` (Spec §9-Tabelle)
+  **nirgends aus der Anwendungsschicht aufgerufen wird** -- weder
+  `nd_cycle` noch die anderen dort gelisteten Aktionen (`awb_trigger`,
+  `gain_step`, `bars_toggle`, `auto_iris_toggle`, `preset_recall`) sind
+  bisher verdrahtet, das ist ein separates, hier nicht angefasstes Thema.
+  `set_nd()` validiert seit dieser Änderung gegen `nd_options` statt einen
+  festen `0-3`-Bereich anzunehmen; `cycle_nd()` wrapt jetzt korrekt durch
+  die tatsächliche Modell-Liste (mit Wraparound, für den weiterhin nicht
+  verdrahteten Mute-Anwendungsfall) -- die neue Encoder-Funktion selbst
+  nutzt bewusst eine eigene, nicht-wrappende Listenpositions-Logik in
+  `apply_encoder_turn()` (Anschlag statt Wrap, Nutzerentscheid). Anzeige
+  (`channel_display_text()`/Scribble-Strip) zeigt bei `nd` das Label
+  (z. B. "1/64", "AUTO ND") statt eines Zahlenwerts -- alle Labels passen
+  ins 7-Zeichen-Limit. Getestet in `tests/test_panasonic_models.py` (6 neue
+  Tests für die Modell-Gruppen), `tests/test_panasonic.py` (`set_nd`/
+  `cycle_nd`-Validierung, inkl. Regressionstest für den Sparse-Wrap-Bug),
+  `tests/test_application.py` (Zyklus-Reihenfolge, Anschlag beidseitig,
+  Sparse-Liste, abgelehnter Wert, "n/a" für Modelle ohne ND-Filter,
+  gespeichert-Flag, Label-Anzeige). 291 Tests bestehen (vorher 269), keine
+  Regression. **Teilweise live verifiziert (2026-07-22, reale AW-UE160):**
+  der Encoder-Button/Dreh-Pfad selbst (Rx/Tx zur Kamera) funktioniert am
+  echten Gerät. **Weiterhin nicht verifiziert:** ob AW-HE130/AW-HR140
+  tatsächlich Data 1/2 ablehnen (nur aus der PDF übernommen, wie bei allen
+  anderen rein PDF-basierten Werten in diesem Katalog) -- keine dieser
+  beiden Kameras stand für einen Live-Test zur Verfügung.
+- **ND-Notification fehlte komplett -- externe ND-Änderung (z. B. am
+  Kamera-eigenen Bedienfeld) wurde nicht erkannt (Bugreport 2026-07-22,
+  reale AW-UE160, direkte Folge des vorigen Punkts):**
+  `PanasonicAWDriver._handle_notification()` wertete `OGU`/Pedestal/Toggle-
+  Features bereits generisch aus (§7.3.1/Kap. 4 der HD Integrated Camera
+  Interface Specifications), hatte aber schlicht KEINEN Zweig für `OFT`
+  (ND-Filter) -- ein entsprechender Notification-Frame kam an, wurde aber
+  von keinem der vorhandenen `if body.startswith(...)`-Zweige erfasst und
+  lief ins Leere. `OFT` steht dabei NICHT in der Ausnahmeliste aus Kap.
+  4.3.1 (nur OSD-Menü-Navigation, Pan/Tilt/Zoom/Focus/Iris, One-Touch-Focus,
+  Contrast, Iris Volume sind dort ausgenommen) -- die Kamera sendet die
+  Notification also durchaus, das Fehlen war ein reiner Implementierungs-
+  Lücke, keine Kamera-Einschränkung (anders als bei `auto_focus`/
+  `auto_iris`, siehe weiter oben). Neuer Zweig parst `OFT:[Data]` (Data ist
+  hier ein einfacher Dezimalwert, kein Hex-String wie bei OGU/Pedestal) und
+  feuert einen neuen `nd_changed`-Callback-Typ, gebrückt in
+  `core/application.py::_wire_camera_events()` auf ein gleichnamiges
+  EventBus-Topic (aktualisiert `cam_state.nd_index`) -- ergänzt in
+  `_subscribe_snapshot_broadcast()` (WS-Broadcast) sowie in
+  `midi/fader.py`s `_on_scribble_relevant_event`-Abonnements (Scribble-
+  Strip-Vollabzug), analog zu `gain_changed`/`pedestal_changed`. Getestet
+  in `tests/test_panasonic.py`
+  (`test_handle_notification_fires_nd_changed`,
+  `test_handle_notification_nd_changed_ignores_malformed_value`),
+  `tests/test_application.py`
+  (`test_driver_nd_changed_event_updates_state_and_publishes`). 294 Tests
+  bestehen (vorher 291), keine Regression. **Live verifiziert (2026-07-22,
+  reale AW-UE160):** Nutzer bestätigt, ND-Änderung am Kamera-eigenen
+  Bedienfeld wird jetzt erkannt.
+- **Browser öffnete sich vor Server-Bereitschaft, Start dauerte spürbar
+  lange (Bugreport 2026-07-22):** zwei getrennte, aber zusammenhängende
+  Fixes:
+  1. `main.py::_open_browser()` wartete bisher fest `time.sleep(1.2)` vor
+     `webbrowser.open()`, unabhängig davon, wie lange der Server tatsächlich
+     zum Starten braucht -- ersetzt durch Polling auf `uvicorn.Server.
+     started` (wird von uvicorn erst gesetzt, NACHDEM sowohl der
+     FastAPI-Lifespan-Startup als auch das Socket-Binding abgeschlossen
+     sind -- per `inspect.getsource(uvicorn.Server.startup)` verifiziert,
+     nicht nur angenommen), mit `_BROWSER_OPEN_TIMEOUT=30s` als
+     Sicherheitsnetz, falls der Server nie startet (z. B. Port belegt) --
+     der Browser öffnet sich dann wie bisher trotzdem.
+  2. Root Cause der eigentlichen Verzögerung: `web/app.py`s Lifespan
+     verband bisher JEDE konfigurierte Kamera sequenziell (`for camera_id in
+     state.drivers: await connect_camera(...)`) -- jede nicht erreichbare
+     Kamera braucht aber bis zu ~1,5s Timeout + 1 Retry PRO Query
+     (§7.4, mehrere Queries in `get_state()`), was sich bei mehreren
+     gleichzeitig nicht erreichbaren Kameras (z. B. Emulator-Kameras in
+     `config.yaml`, wenn der Emulator gerade nicht läuft) spürbar aufsummiert
+     hat. Jetzt nebenläufig über `asyncio.gather()` -- jede Kamera bleibt
+     unabhängig (eigener Treiber/State-Eintrag), ein hängender/
+     fehlschlagender Connect blockiert die anderen nicht mehr; dieselbe
+     Defensiv-Fehlerbehandlung (Exception geloggt, `cam_state.error`
+     gesetzt, Startup bricht nie ab) bleibt pro Kamera erhalten.
+  **Dabei eine unabhängige, nicht behobene Randbeobachtung gemacht:**
+  `AppState.companion_client` (`field(default_factory=build_client)` in
+  `core/application.py`) konstruiert bei JEDEM `build_app_state()`-Aufruf
+  einen echten `httpx.AsyncClient()` -- das kostet auf der Entwicklungs-
+  maschine selbst schon isoliert und reproduzierbar ~0,25-0,3s (vermutlich
+  SSL-Kontext-/CA-Bundle-Aufbau, per direktem Test von
+  `httpx.AsyncClient()` ohne jeden PTZ_Control-Code bestätigt). Das ist ein
+  fixer, kamera-unabhängiger Sockel bei jedem Start -- spürbar, aber deutlich
+  kleiner als die oben behobene, kamera-anzahl-abhängige Verzögerung, daher
+  hier nur dokumentiert, nicht angefasst (kein Teil dieses Bugreports).
+  Getestet in `tests/test_web_app.py`
+  (`test_lifespan_connects_multiple_cameras_concurrently_not_sequentially`,
+  zwei Kameras mit je 1s simuliertem `connect()`-Delay, Assertion auf
+  Gesamtzeit deutlich unter dem sequenziellen Fall). 295 Tests bestehen
+  (vorher 294), keine Regression. **Nicht separat live verifiziert** (die
+  eigentliche Nebenläufigkeit ist nur per Unit-Test mit künstlicher
+  Verzögerung belegt) -- der Nutzer hat aber für die nächsten Tage eine
+  reale AW-UE160 + X-Touch zum Testen zur Verfügung (siehe Session-Notiz),
+  ein echter Neustart mit mehreren konfigurierten, teils nicht erreichbaren
+  Kameras würde das zusätzlich bestätigen.
 
 ## Abschlussregel
 

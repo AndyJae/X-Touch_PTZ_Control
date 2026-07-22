@@ -26,8 +26,6 @@ _GAIN_AGC_DATA = 0x80
 # --- R/B Gain Preset (OSL:36/38, §7.2): 418h(-1000)-800h(0)-BE8h(+1000) -> Data = 0x800 + value ---
 _RB_GAIN_CENTER_DATA = 0x800
 
-_ND_INDICES = (0, 1, 2, 3)  # THROUGH, 1/4, 1/16, 1/64 (OFT:[0-3], §7.2)
-
 _ERROR_PREFIXES_CAM = ("ER1:", "ER2:", "ER3:")
 _ERROR_PREFIXES_PTZ = ("eR1", "eR2", "eR3")
 _ERROR_STATE_PREFIXES = ("rER", "OER")  # laut CameraState-Docstring in Spec §6
@@ -255,6 +253,11 @@ class PanasonicAWDriver(CameraDriver):
         # `None` heisst "noch nicht abgefragt/nicht lesbar", wird dann
         # konservativ wie "aus" behandelt (schmalere Obergrenze).
         self.gain_super_gain_on: bool | None = None
+        # ND-Filter-Katalog (siehe _apply_model_catalog()) -- geordnete
+        # Liste (Data-Wert, Label), leer/`None` heisst "Modell hat laut den
+        # lokalen Referenz-PDFs keinen physischen ND-Filter" (z. B.
+        # AW-HE40/AW-HE50/AW-HE60), kein erfundener Fallback.
+        self.nd_options: list[tuple[int, str]] | None = None
 
     # --- Lifecycle -----------------------------------------------------
 
@@ -290,6 +293,8 @@ class PanasonicAWDriver(CameraDriver):
             getattr(module, "GAIN_MAX_DB_SUPER_GAIN_OFF", None) if module else None
         )
         self.super_gain_query_command = getattr(module, "SUPER_GAIN_QUERY_COMMAND", None) if module else None
+        nd_options = getattr(module, "ND_FILTER_OPTIONS", None) if module else None
+        self.nd_options = list(nd_options) if nd_options else None
 
     async def disconnect(self) -> None:
         await self.stop_lens_feedback()
@@ -371,7 +376,14 @@ class PanasonicAWDriver(CameraDriver):
         Ausnahme in Kap. 4.3.1. Betroffene Katalog-Eintraege bekommen dadurch
         nur beim naechsten expliziten Query (Zuweisung/App-Neustart) einen
         aktuellen Wert, nie push-basiert bei externer Aenderung -- siehe
-        CLAUDE.md Offene Punkte."""
+        CLAUDE.md Offene Punkte.
+
+        **Bugfix 2026-07-22 (Nutzerreport, echte AW-UE160):** `OFT` (ND-
+        Filter) fehlte hier komplett -- eine am Kamera-eigenen Bedienfeld
+        vorgenommene ND-Aenderung wurde deshalb nie erkannt, obwohl `OFT`
+        (anders als `OAF`/`ORS`) NICHT in der Ausnahmeliste aus Kap. 4.3.1
+        steht (nur OSD-Menue-Navigation, Pan/Tilt/Zoom/Focus/Iris, One-
+        Touch-Focus, Contrast, Iris Volume sind dort ausgenommen)."""
         try:
             frame = await reader.read(65536)
         finally:
@@ -412,6 +424,22 @@ class PanasonicAWDriver(CameraDriver):
                 if pedestal is not None:
                     for callback in self._callbacks:
                         callback({"type": "pedestal_changed", "value": pedestal})
+            return
+        if body.startswith("OFT:"):
+            # ND-Filter (Nutzerauftrag 2026-07-22, Bugreport: externe
+            # Aenderung -- z. B. am Kamera-eigenen Bedienfeld/Web-UI --
+            # wurde bisher nicht erkannt, da dieser Zweig fehlte). Anders
+            # als OGU/Pedestal ist das Data-Feld hier ein einfacher
+            # Dezimalwert (siehe set_nd()/_query_nd()), kein Hex-String.
+            value = _extract_value(body)
+            if value is not None:
+                try:
+                    nd_index = int(value)
+                except ValueError:
+                    nd_index = None
+                if nd_index is not None:
+                    for callback in self._callbacks:
+                        callback({"type": "nd_changed", "value": nd_index})
 
     async def _heartbeat_loop(self) -> None:
         try:
@@ -563,13 +591,31 @@ class PanasonicAWDriver(CameraDriver):
             await self._request("aw_cam", f"OSL:38:{data:03X}")
 
     async def set_nd(self, index: int) -> None:
-        if index not in _ND_INDICES:
+        """`index` ist der Roh-Data-Wert (nicht die Listenposition) --
+        modellabhaengig gueltig laut `self.nd_options` (siehe
+        `_apply_model_catalog()`); manche Modelle haben eine lueckenhafte
+        Werteliste (z. B. AW-HE130/AW-HR140: nur 0/3/4, siehe
+        drivers/panasonic_models/aw_he130.py)."""
+        if not self.nd_options:
+            raise CameraCommandError("ND filter not supported for this model", command="OFT")
+        valid_indices = {opt_index for opt_index, _ in self.nd_options}
+        if index not in valid_indices:
             raise ValueError(f"ND index out of range: {index}")
         await self._request("aw_cam", f"OFT:{index}")
 
     async def cycle_nd(self) -> int:
+        """Schaltet rundenweise (mit Wraparound) durch `self.nd_options` --
+        anders als die Encoder-Funktion (`core/application.py::
+        apply_encoder_turn`, Nutzerentscheid: Anschlag statt Wrap), da
+        `cycle_nd()` fuer den urspruenglich vorgesehenen Mute-Button-Anwen-
+        dungsfall (`channel_defaults.buttons.mute.action: nd_cycle`,
+        weiterhin nicht verdrahtet) ein einzelner Druck ohne Richtung ist."""
+        if not self.nd_options:
+            raise CameraCommandError("ND filter not supported for this model", command="OFT")
+        positions = [opt_index for opt_index, _ in self.nd_options]
         current = await self._query_nd()
-        new_index = ((current + 1) % 4) if current is not None else 0
+        current_position = positions.index(current) if current in positions else -1
+        new_index = positions[(current_position + 1) % len(positions)]
         await self.set_nd(new_index)
         return new_index
 
@@ -591,8 +637,8 @@ class PanasonicAWDriver(CameraDriver):
 
     async def trigger_button_feature(self, key: str, *, enabled: bool | None = None) -> None:
         """Toggle (braucht `enabled`) oder Trigger (ignoriert `enabled`).
-        `auto_iris`/`aww_white` delegieren an die vorhandenen typisierten
-        Methoden, um Kommando-Logik nicht doppelt zu halten.
+        `auto_iris` delegiert an die vorhandene typisierte Methode, um
+        Kommando-Logik nicht doppelt zu halten.
 
         `feature["on"]`/`feature["off"]` sind normalerweise ein einzelner
         Kommando-String, koennen aber auch eine Liste sein (Nutzerentscheid
@@ -605,9 +651,6 @@ class PanasonicAWDriver(CameraDriver):
             if enabled is None:
                 raise ValueError("'auto_iris' ist ein Toggle, 'enabled' erforderlich")
             await self.set_auto_iris(enabled)
-            return
-        if key == "aww_white":
-            await self.trigger_awb()
             return
         feature = self.BUTTON_FEATURES.get(key)
         if feature is None:

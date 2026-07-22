@@ -43,11 +43,19 @@ PEDESTAL_CENTER_DATA = 0x96
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
+# ND-Filter (OFT/QFT), `HDIntegratedCamera_InterfaceSpecifications-E.pdf`
+# §3.2.1.4, Gruppe "AW-HE130/AW-HR140": NUR drei gueltige Werte (0/3/4),
+# Data 1/2 existieren fuer diese Gruppe nicht -- Reihenfolge der Liste
+# entspricht der Durchdreh-Reihenfolge (kein einfacher 0..3-Bereich).
+ND_FILTER_OPTIONS: list[tuple[int, str]] = [
+    (0, "THROUGH"),
+    (3, "1/64"),
+    (4, "1/8"),
+]
+
 BUTTON_FEATURES: dict[str, dict] = {
     "auto_focus": {"kind": "toggle", "on": "OAF:1", "off": "OAF:0", "query": "QAF", "query_on_value": "1"},
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
-    "awb_black": {"kind": "trigger", "cmd": "OAS"},
-    "aww_white": {"kind": "trigger", "cmd": "OWS"},
     "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
     "drs_mid": {"kind": "toggle", "on": "OSE:33:2", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "2"},
     "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
@@ -67,6 +75,4 @@ BUTTON_FEATURE_LABELS: dict[str, str] = {
     "knee_auto": "Knee: Auto",
     "osd": "OSD",
     "white_clip": "White Clip",
-    "awb_black": "ABB (Black)",
-    "aww_white": "AWW (White)",
 }
