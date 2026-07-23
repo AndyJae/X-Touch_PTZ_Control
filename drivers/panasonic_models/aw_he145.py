@@ -38,6 +38,11 @@ Pedestal ueber `OSJ:0F`/`QSJ:0F` Master Pedestal, Data 738h=-200/800h=0/
 AW-UE150 0..+42dB (nicht -3..+42dB) angibt. Nutzerentscheid 2026-07-18: das
 neuere, dedizierte PDF gilt als massgeblich -- `aw_ue150.py`s GAIN_MIN_DB
 wurde entsprechend von 0 auf -3 korrigiert (siehe dortiger Kommentar).
+
+Iris F-Nummer (2026-07-23, `QIF`/`OIF`, siehe drivers/panasonic_aw.py::
+_F_NUMBER_DATA_MIN): dasselbe dedizierte PDF (AW-UE150HE145_
+InterfaceSpecification_E.pdf) bestaetigt dieselben Ankerpunkte wie
+AW-UE160/AW-UE150A.
 """
 
 from drivers.panasonic_models.aw_ue150 import BUTTON_FEATURE_LABELS, BUTTON_FEATURES  # noqa: F401
@@ -45,6 +50,8 @@ from drivers.panasonic_models.aw_ue150 import BUTTON_FEATURE_LABELS, BUTTON_FEAT
 CAMERA_ID = "AW-HE145"
 CAMERA_ID_ALIASES = ["AW-UE145", "AW-UE150HE", "AW-UE150HE145"]
 DISPLAY_NAME = "Panasonic AW-HE145"
+
+SUPPORTS_IRIS_F_NUMBER = True
 
 GAIN_MIN_DB = -3
 GAIN_MAX_DB = 42

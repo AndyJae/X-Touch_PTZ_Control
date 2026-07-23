@@ -11,7 +11,23 @@
 </head>
 
 <body>
-    <main class="app-shell">
+    {# Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
+       2026-07-23) -- verstecktes Overlay per default (siehe app.css
+       .startup-overlay), von initStartupChoiceDialog() in app.js bei Bedarf
+       eingeblendet (GET /api/startup/status). Liegt bewusst außerhalb von
+       .app-shell, damit es dessen "is-dimmed"-Grauwert (siehe app.css)
+       überlagert statt selbst mitgedimmt zu werden. #}
+    <div class="startup-overlay" data-startup-overlay hidden>
+        <div class="startup-dialog">
+            <h2>X-Touch PTZ Control</h2>
+            <p>Vorherige Konfiguration laden oder neu beginnen?</p>
+            <div class="button-row">
+                <button type="button" data-startup-load-previous>Load previous config</button>
+                <button type="button" data-startup-new-config>Start new config</button>
+            </div>
+        </div>
+    </div>
+    <main class="app-shell" data-app-shell>
         <header class="topbar">
             <div class="topbar-heading">
                 <img src="/static/images/logot.png" alt="" class="topbar-logo" />
@@ -21,7 +37,6 @@
             <nav class="topnav">
                 <a href="/" class="{{ 'active' if active_page == 'surface' else '' }}">Control</a>
                 <a href="/setup" class="{{ 'active' if active_page == 'setup' else '' }}">Setup</a>
-                <a href="/config" class="{{ 'active' if active_page == 'config' else '' }}">Config</a>
                 <a href="/logs" class="{{ 'active' if active_page == 'logs' else '' }}">Logs</a>
             </nav>
         </header>

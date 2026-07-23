@@ -46,6 +46,13 @@ the case of the AW-HE40/AW-UE70/AW-HE42") annotiert den `OFT`-Eintrag
 explizit mit "*only AW-UE70/AW-HE42" -- AW-HE40 selbst hat keinen
 physischen ND-Filter. `aw_he42.py`/`aw_ue70.py` haben deshalb eine eigene,
 lokale ND_FILTER_OPTIONS-Konstante statt sie von hier zu importieren.
+
+Bewusst KEIN SUPPORTS_IRIS_F_NUMBER (2026-07-23, PDF-Pruefung, siehe
+drivers/panasonic_aw.py::_F_NUMBER_DATA_MIN): dieselbe PDF nennt "Iris F
+value" (`QIF`/`OIF`) explizit "Only supported by the AK-UB300/AW-UE150" --
+AW-HE40 (und die davon abgeleiteten AW-HE42/AW-UE70, siehe dort) werden
+dort nicht genannt, `query_f_number()` fragt fuer diese Modelle deshalb gar
+nicht erst an.
 """
 
 CAMERA_ID = "AW-HE40"

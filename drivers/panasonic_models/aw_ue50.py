@@ -21,6 +21,7 @@ from drivers.panasonic_models.aw_ue80 import (  # noqa: F401
     PEDESTAL_QUERY_COMMAND,
     PEDESTAL_SCALE,
     SUPER_GAIN_QUERY_COMMAND,
+    SUPPORTS_IRIS_F_NUMBER,
 )
 
 CAMERA_ID = "AW-UE50"

@@ -31,6 +31,13 @@ explizit **"Only supported by the AW-HE130/AW-HR140/AW-UE150"**, AW-HE120
 wird dort NICHT genannt. Der Eintrag wurde deshalb komplett entfernt
 (kein erfundenes/falsches Feature) -- exakt dieselbe Art Fehler wie zuvor
 bei `knee` (siehe oben).
+
+Bewusst KEIN SUPPORTS_IRIS_F_NUMBER (2026-07-23, PDF-Pruefung, siehe
+drivers/panasonic_aw.py::_F_NUMBER_DATA_MIN): dieselbe PDF nennt "Iris F
+value" (`QIF`/`OIF`) explizit "Only supported by the AK-UB300/AW-UE150" --
+AW-HE120 wird dort nicht genannt (gleiches Muster wie bei `knee`/
+`white_clip` oben), `query_f_number()` fragt fuer dieses Modell deshalb gar
+nicht erst an.
 """
 
 CAMERA_ID = "AW-HE120"

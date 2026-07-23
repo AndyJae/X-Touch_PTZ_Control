@@ -63,11 +63,20 @@ weiterhin ohne Query (kein erfundener Wert) UND ohne endgueltige
 Bestaetigung, ob `OSI:28` ueberhaupt AK-UB300-exklusiv ist -- Status
 unveraendert zu vorher, nur die Begruendung praezisiert. `drs` bleibt aus
 demselben Grund wie oben ohne Query.
+
+Iris F-Nummer (2026-07-23, `QIF`/`OIF`, siehe drivers/panasonic_aw.py::
+_F_NUMBER_DATA_MIN): §3.2.x "Iris F value" derselben PDF nennt AK-UB300
+explizit **"Only supported by the AK-UB300/AW-UE150"** mit denselben
+Ankerpunkten (0Eh=F1.4/1Ch=F2.8/38h=F5.6/A0h=F16/FFh=CLOSE) wie bei den
+AW-Modellen -- ungewoehnlich fuer eine B4-Objektiv-Studiokamera, aber so in
+der Tabelle dokumentiert (kein erfundener Wert).
 """
 
 CAMERA_ID = "AK-UB300"
 CAMERA_ID_ALIASES = ["AK-UB300GJ", "AK-UB300EJ"]
 DISPLAY_NAME = "Panasonic AK-UB300"
+
+SUPPORTS_IRIS_F_NUMBER = True
 
 PEDESTAL_COMMAND = "OSG:4A"
 PEDESTAL_QUERY_COMMAND = "QSG:4A"

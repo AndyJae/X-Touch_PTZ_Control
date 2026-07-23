@@ -23,6 +23,13 @@ Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
 (`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `knee_manual`/
 `knee_auto` (`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle
 direkt in der o. g. PDF als Request/Response-Paar verifiziert.
+
+Bewusst KEIN SUPPORTS_IRIS_F_NUMBER (2026-07-23, PDF-Pruefung, siehe
+drivers/panasonic_aw.py::_F_NUMBER_DATA_MIN): dieselbe PDF nennt "Iris F
+value" (`QIF`/`OIF`) explizit "Only supported by the AK-UB300/AW-UE150" --
+trotz sonst gleicher Knee-/White-Clip-Gruppe wird AW-HE130 dort NICHT
+genannt, `query_f_number()` fragt fuer dieses Modell deshalb gar nicht
+erst an.
 """
 
 CAMERA_ID = "AW-HE130"

@@ -38,11 +38,20 @@ E.pdf`/`AW-UE150HE145_InterfaceSpecification_E.pdf`): `query`/
 `drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `knee_manual`/`knee_auto`
 (`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle direkt in
 diesen PDFs als Request/Response-Paar verifiziert.
+
+Iris F-Nummer (2026-07-23, `QIF`/`OIF`, siehe drivers/panasonic_aw.py::
+_F_NUMBER_DATA_MIN): eigene PDF (AW-UE150A_InterfaceSpecification_E.pdf)
+bestaetigt dieselben Ankerpunkte wie AW-UE160 (0Eh=F1.4/1Ch=F2.8/38h=F5.6/
+A0h=F16/FFh=CLOSE); die allgemeine HDIntegratedCamera-PDF nennt "Iris F
+value" zudem explizit "Only supported by the AK-UB300/AW-UE150" -- deckt
+sich mit CAMERA_ID_ALIASES hier.
 """
 
 CAMERA_ID = "AW-UE150A"
 CAMERA_ID_ALIASES = ["AW-UE150", "AW-UE155", "AW-UN145"]
 DISPLAY_NAME = "Panasonic AW-UE150A"
+
+SUPPORTS_IRIS_F_NUMBER = True
 
 GAIN_MIN_DB = -3
 GAIN_MAX_DB = 42

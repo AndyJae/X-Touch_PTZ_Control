@@ -354,3 +354,46 @@ def test_nd_filter_absent_for_he40_he50_he60() -> None:
 
     for module in (aw_he40, aw_he50, aw_he60):
         assert getattr(module, "ND_FILTER_OPTIONS", None) is None, module
+
+
+def test_iris_f_number_supported_for_pdf_confirmed_models() -> None:
+    # "Iris F value" (QIF/OIF) steht mit identischen Ankerpunkten
+    # (0Eh=F1.4/1Ch=F2.8/38h=F5.6/A0h=F16/FFh=CLOSE) in den eigenen PDFs von
+    # AW-UE160/AW-UE100/AW-UE150A/AW-HE145/AW-UE80(+UE30/40/50), sowie in der
+    # allgemeinen HDIntegratedCamera-PDF fuer AK-UB300/AW-UE150 (Nutzerauftrag
+    # 2026-07-23 "check pdfs first" -> "implement for the camera models that
+    # are pdf confirmed").
+    from drivers.panasonic_models import (
+        ak_ub300,
+        aw_he145,
+        aw_ue30,
+        aw_ue40,
+        aw_ue50,
+        aw_ue80,
+        aw_ue100,
+        aw_ue150,
+        aw_ue160,
+    )
+
+    for module in (aw_ue160, aw_ue100, aw_ue150, aw_he145, aw_ue80, aw_ue30, aw_ue40, aw_ue50, ak_ub300):
+        assert module.SUPPORTS_IRIS_F_NUMBER is True, module
+
+
+def test_iris_f_number_absent_for_models_not_named_in_general_pdf() -> None:
+    # HDIntegratedCamera_InterfaceSpecifications-E.pdf nennt "Iris F value"
+    # explizit "Only supported by the AK-UB300/AW-UE150" -- die restlichen,
+    # von dieser PDF abgedeckten Modelle (auch die sonst mit AW-UE150
+    # verwandten HE130/HR140-Knee/White-Clip-Gruppe) sind damit ausgenommen.
+    from drivers.panasonic_models import (
+        aw_he40,
+        aw_he42,
+        aw_he50,
+        aw_he60,
+        aw_he120,
+        aw_he130,
+        aw_hr140,
+        aw_ue70,
+    )
+
+    for module in (aw_he40, aw_he42, aw_he50, aw_he60, aw_he120, aw_he130, aw_hr140, aw_ue70):
+        assert getattr(module, "SUPPORTS_IRIS_F_NUMBER", False) is False, module

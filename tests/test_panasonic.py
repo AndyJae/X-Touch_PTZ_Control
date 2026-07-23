@@ -342,6 +342,34 @@ def test_apply_model_catalog_resolves_sparse_nd_options_for_he130() -> None:
     assert driver.nd_options == [(0, "THROUGH"), (3, "1/64"), (4, "1/8")]
 
 
+def test_apply_model_catalog_resolves_supports_iris_f_number_true_for_ue160() -> None:
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-UE160"
+    driver._apply_model_catalog()
+
+    assert driver.supports_iris_f_number is True
+
+
+def test_apply_model_catalog_supports_iris_f_number_false_for_he130_not_in_pdf() -> None:
+    # HDIntegratedCamera_InterfaceSpecifications-E.pdf nennt "Iris F value"
+    # explizit "Only supported by the AK-UB300/AW-UE150" -- AW-HE130 (sonst
+    # in derselben Knee-/White-Clip-Gruppe wie AW-UE150) ist davon
+    # ausgenommen.
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "AW-HE130"
+    driver._apply_model_catalog()
+
+    assert driver.supports_iris_f_number is False
+
+
+def test_apply_model_catalog_supports_iris_f_number_false_for_unrecognized_model() -> None:
+    driver = PanasonicAWDriver(host="127.0.0.1", port=80)
+    driver.model = "SOME-UNKNOWN-CAMERA"
+    driver._apply_model_catalog()
+
+    assert driver.supports_iris_f_number is False
+
+
 def test_apply_model_catalog_resolves_gain_pedestal_for_ue160() -> None:
     driver = PanasonicAWDriver(host="127.0.0.1", port=80)
     driver.model = "AW-UE160"
@@ -600,7 +628,7 @@ def test_query_iris_parses_position_and_mode() -> None:
         return httpx.Response(200, text="gi7ff1")
 
     driver = _build_driver(handler)
-    iris, auto_iris = _run(driver._query_iris())
+    iris, auto_iris = _run(driver.query_iris())
 
     assert iris == pytest.approx(_data_to_iris(0x7FF))
     assert auto_iris is True
@@ -622,6 +650,24 @@ def test_query_f_number_falls_back_to_raw_hex_in_unconfirmed_gap() -> None:
 
     driver = _build_driver(handler)
     assert _run(driver.query_f_number()) == "C0"
+
+
+def test_query_f_number_skips_request_for_model_without_pdf_support() -> None:
+    # AW-HE130 ist laut HDIntegratedCamera_InterfaceSpecifications-E.pdf
+    # ("Iris F value ... Only supported by the AK-UB300/AW-UE150") nicht
+    # dokumentiert -- query_f_number() darf dafuer gar keinen Request senden.
+    requests_seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append(request)
+        return httpx.Response(200, text="OIF:6E")
+
+    driver = _build_driver(handler)
+    driver.model = "AW-HE130"
+    driver._apply_model_catalog()
+
+    assert _run(driver.query_f_number()) is None
+    assert requests_seen == []
 
 
 def test_get_state_aggregates_queries() -> None:

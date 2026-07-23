@@ -70,11 +70,6 @@ def test_setup_page_returns_ok(client) -> None:
     assert response.status_code == 200
 
 
-def test_config_page_returns_ok(client) -> None:
-    response = client.get("/config")
-    assert response.status_code == 200
-
-
 def test_logs_page_returns_ok(client) -> None:
     response = client.get("/logs")
     assert response.status_code == 200
@@ -238,6 +233,35 @@ def test_disconnect_camera_endpoint_unmapped_channel_returns_404(client) -> None
     response = client.post("/api/channels/5/camera/disconnect")
 
     assert response.status_code == 404
+
+
+def test_startup_status_pending_by_default(client) -> None:
+    response = client.get("/api/startup/status")
+
+    assert response.status_code == 200
+    assert response.json() == {"pending": True}
+
+
+def test_startup_load_previous_marks_answered_without_touching_cameras(client) -> None:
+    response = client.post("/api/startup/load-previous")
+
+    assert response.status_code == 200
+    assert web_app.app.state.ptz.startup_choice_pending is False
+    assert "cam1" in web_app.app.state.ptz.drivers
+
+    status = client.get("/api/startup/status")
+    assert status.json() == {"pending": False}
+
+
+def test_startup_new_config_endpoint_disconnects_camera_and_resets_config(client) -> None:
+    response = client.post("/api/startup/new-config")
+
+    assert response.status_code == 200
+    state = web_app.app.state.ptz
+    assert state.startup_choice_pending is False
+    assert "cam1" not in state.drivers
+    assert state.config.cameras == []
+    assert state.config.banks == []
 
 
 def test_rename_camera_endpoint_updates_name_without_disconnecting(client) -> None:

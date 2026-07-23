@@ -3,6 +3,10 @@
 Gleicher Befehlssatz wie AW-HE50 (siehe `aw_he50.py`) -- nur CAMERA_ID/
 CAMERA_ID_ALIASES/DISPLAY_NAME unterscheiden sich, analog zu
 `C:\\smart_reset_work\\camera_plugins\\panasonic\\aw_he60.py`.
+
+Iris F-Nummer: bewusst KEIN SUPPORTS_IRIS_F_NUMBER, siehe aw_he50.py --
+"Iris F value" ist laut derselben PDF nur fuer AK-UB300/AW-UE150
+dokumentiert, nicht fuer AW-HE60.
 """
 
 from drivers.panasonic_models.aw_he50 import (  # noqa: F401

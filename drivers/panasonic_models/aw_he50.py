@@ -37,6 +37,13 @@ Bewusst KEIN ND_FILTER_OPTIONS (Nutzerauftrag 2026-07-22, ND-Filter als
 InterfaceSpecifications-E.pdf` §3.2.1.4/Menu-Tabelle 4-4-1 fuehrt fuer
 AW-HE50/AW-HE60 KEINEN `OFT`-Eintrag -- diese Modelle haben schlicht keinen
 physischen ND-Filter (im Unterschied zu AW-UE70/AW-HE42, siehe dort).
+
+Bewusst KEIN SUPPORTS_IRIS_F_NUMBER (2026-07-23, PDF-Pruefung, siehe
+drivers/panasonic_aw.py::_F_NUMBER_DATA_MIN): dieselbe PDF nennt "Iris F
+value" (`QIF`/`OIF`) explizit "Only supported by the AK-UB300/AW-UE150" --
+AW-HE50 (und das davon abgeleitete AW-HE60, siehe dort) werden dort nicht
+genannt, `query_f_number()` fragt fuer diese Modelle deshalb gar nicht
+erst an.
 """
 
 CAMERA_ID = "AW-HE50"

@@ -33,10 +33,16 @@ dokumentiert und nicht verifizierbar. Eine Abfrage nur ueber `QSA:2D` waere
 eine Vermutung ueber dieses Zusammenspiel -- deshalb bleibt der Zustand
 dieser beiden Features weiterhin nur lokal getrackt (wie vor dieser
 Korrektur), bis das an echter Hardware verifiziert werden kann.
+
+Iris F-Nummer (2026-07-23, `QIF`/`OIF`, live gegen eine reale AW-UE160
+kalibriert -- siehe drivers/panasonic_aw.py::_F_NUMBER_DATA_MIN): eigene PDF
+bestaetigt die Ankerpunkte 0Eh=F1.4/A0h=F16/FFh=CLOSE.
 """
 
 CAMERA_ID = "AW-UE160"
 DISPLAY_NAME = "Panasonic AW-UE160"
+
+SUPPORTS_IRIS_F_NUMBER = True
 
 GAIN_MIN_DB = -6
 GAIN_MAX_DB = 12

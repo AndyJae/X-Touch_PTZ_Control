@@ -36,6 +36,7 @@ from core.application import (
     disconnect_camera,
     register_camera,
     rename_camera,
+    reset_to_new_config,
     trigger_companion_select,
 )
 from core.companion import CompanionError, is_reachable
@@ -132,6 +133,36 @@ def _ptz_state(request: Request) -> AppState:
     return request.app.state.ptz
 
 
+@app.get("/api/startup/status")
+async def api_startup_status(request: Request) -> JSONResponse:
+    """Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
+    2026-07-23) -- vom Frontend bei jedem Seitenaufruf abgefragt (nicht in den
+    Seiten-Kontext gehängt, damit es unabhängig davon funktioniert, welche
+    Seite zuerst geöffnet wird). `pending` bleibt `True`, bis eine der beiden
+    Aktionen unten aufgerufen wurde, danach für den Rest des Prozesses `False`."""
+    return JSONResponse({"pending": _ptz_state(request).startup_choice_pending})
+
+
+@app.post("/api/startup/load-previous")
+async def api_startup_load_previous(request: Request) -> JSONResponse:
+    """"Load previous config": kein Reset noetig -- die App hat beim Boot
+    bereits ganz normal mit der zuletzt gespeicherten config.yaml verbunden
+    (siehe lifespan()), hier wird nur der Dialog als beantwortet markiert."""
+    _ptz_state(request).startup_choice_pending = False
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/startup/new-config")
+async def api_startup_new_config(request: Request) -> JSONResponse:
+    """"Start new config": disconnect-after-the-fact (Nutzerentscheid,
+    siehe reset_to_new_config()) -- trennt alle beim Boot verbundenen
+    Kameras und setzt config.yaml auf den Schema-Default-Zustand zurueck."""
+    state = _ptz_state(request)
+    await reset_to_new_config(state)
+    state.startup_choice_pending = False
+    return JSONResponse({"ok": True})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def surface_page(request: Request) -> HTMLResponse:
     state = _ptz_state(request)
@@ -159,11 +190,6 @@ async def setup_page(request: Request) -> HTMLResponse:
             "companion_connected": state.companion_connected,
         },
     )
-
-
-@app.get("/config", response_class=HTMLResponse)
-async def config_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request=request, name="config.html", context={"active_page": "config"})
 
 
 _LOG_LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"]

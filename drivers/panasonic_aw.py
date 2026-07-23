@@ -31,6 +31,21 @@ _IRIS_DATA_MAX = 0xFFF
 # ueber die normale Iris-Steuerung nicht einzeln anwaehlbar zu sein. Wird
 # deshalb bewusst NICHT dekodiert (kein erfundener Wert), `query_f_number()`
 # faellt dafuer auf den rohen Hex-Wert zurueck.
+#
+# Modelluebergreifende Bestaetigung (2026-07-23, PDF-Pruefung statt Live-Test,
+# Nutzerauftrag "check pdfs first"): dieselben Ankerpunkte (0Eh=F1.4, 1Ch=F2.8,
+# 38h=F5.6, A0h=F16, FFh=CLOSE) stehen wortgleich in den eigenen PDFs von
+# AW-UE150A, AW-UE100 und AW-UE150/AW-HE145 sowie in der allgemeinen
+# `HDIntegratedCamera_InterfaceSpecifications-E.pdf`. AW-UE80/UE50/UE40/UE30
+# dokumentiert nur die ersten beiden Ankerpunkte (0Eh/1Ch), aber keinen
+# Widerspruch. Die Formel gilt hier deshalb als modelluebergreifend
+# bestaetigt -- WELCHE Modelle den Befehl `QIF` ueberhaupt unterstuetzen, ist
+# aber eine eigene Frage (siehe `supports_iris_f_number`/`SUPPORTS_IRIS_
+# F_NUMBER` unten): dieselbe allgemeine PDF nennt "Iris F value" explizit
+# **"Only supported by the AK-UB300/AW-UE150"** unter den dort gefuehrten
+# Modellen (AW-HE40/50/60/120/130, AW-HR140, AW-UE70, AW-HE42, AK-UB300) --
+# fuer diese Gruppe (ausser AK-UB300) wird `QIF` deshalb bewusst gar nicht
+# erst angefragt.
 _F_NUMBER_DATA_MIN = 0x0E  # F1.4 (Spec-Anker)
 _F_NUMBER_DATA_MAX = 0xA0  # F16.0 (Spec-Anker)
 _F_NUMBER_CLOSE_DATA = 0xFF
@@ -185,10 +200,15 @@ class PanasonicAWDriver(CameraDriver):
     **Scope-Grenze nach dem Modell-Registry-Umbau (§9a):** `BUTTON_FEATURES`/
     `BUTTON_FEATURE_LABELS` sowie Gain/Pedestal-Bereich/-Kommando (siehe
     `_apply_model_catalog()`) sind modellabhaengig und werden aus dem per
-    `QID` erkannten Modell (`drivers/panasonic_models`) aufgeloest. Iris
-    bleibt weiterhin NUR fuer AW-UE160 verifiziert (`_IRIS_DATA_MIN/MAX`) --
-    fuer andere Modelle ist die Iris-Formel in der Spec nicht bestaetigt,
-    das ist ein separater, noch offener Punkt (siehe CLAUDE.md).
+    `QID` erkannten Modell (`drivers/panasonic_models`) aufgeloest. Iris-
+    POSITION (`_IRIS_DATA_MIN/MAX`, #AXI/#GI) bleibt weiterhin NUR fuer
+    AW-UE160 verifiziert -- fuer andere Modelle ist diese Formel in der Spec
+    nicht bestaetigt, das ist ein separater, noch offener Punkt (siehe
+    CLAUDE.md). Die Iris-F-NUMMER (`_F_NUMBER_DATA_MIN/MAX`, QIF/OIF) ist
+    davon unabhaengig und seit 2026-07-23 per PDF-Pruefung modelluebergreifend
+    bestaetigt (siehe Kommentar dort) -- ob ein Modell `QIF` ueberhaupt
+    unterstuetzt, steuert `supports_iris_f_number`/`SUPPORTS_IRIS_F_NUMBER`
+    je Modell-Modul.
 
     Gain-Encoding (Data = 0x08 + db, 0x80 = AGC) ist laut beiden lokalen
     Referenz-PDFs modellUNabhaengig identisch -- nur Bereich/Schrittweite
@@ -291,6 +311,12 @@ class PanasonicAWDriver(CameraDriver):
         # lokalen Referenz-PDFs keinen physischen ND-Filter" (z. B.
         # AW-HE40/AW-HE50/AW-HE60), kein erfundener Fallback.
         self.nd_options: list[tuple[int, str]] | None = None
+        # Iris-F-Nummer-Unterstuetzung (siehe _apply_model_catalog() und
+        # `query_f_number()`) -- `False` heisst "Modell laut lokalen
+        # Referenz-PDFs (HDIntegratedCamera_InterfaceSpecifications-E.pdf:
+        # 'Iris F value ... Only supported by the AK-UB300/AW-UE150') ohne
+        # QIF-Unterstuetzung, oder unbekanntes Modell", kein Query-Versuch.
+        self.supports_iris_f_number: bool = False
 
     # --- Lifecycle -----------------------------------------------------
 
@@ -328,6 +354,7 @@ class PanasonicAWDriver(CameraDriver):
         self.super_gain_query_command = getattr(module, "SUPER_GAIN_QUERY_COMMAND", None) if module else None
         nd_options = getattr(module, "ND_FILTER_OPTIONS", None) if module else None
         self.nd_options = list(nd_options) if nd_options else None
+        self.supports_iris_f_number = bool(getattr(module, "SUPPORTS_IRIS_F_NUMBER", False)) if module else False
 
     async def disconnect(self) -> None:
         await self.stop_lens_feedback()
@@ -717,7 +744,7 @@ class PanasonicAWDriver(CameraDriver):
         Fallback), Aufrufer behalten dann das bisherige Verhalten (Zustand
         erst nach dem ersten Druck lokal bekannt)."""
         if key == "auto_iris":
-            _, auto_iris = await self._query_iris()
+            _, auto_iris = await self.query_iris()
             return auto_iris
         feature = self.BUTTON_FEATURES.get(key)
         if feature is None or feature.get("kind") != "toggle":
@@ -741,7 +768,7 @@ class PanasonicAWDriver(CameraDriver):
     # --- Status ----------------------------------------------------------
 
     async def get_state(self) -> CameraState:
-        iris, auto_iris = await self._query_iris()
+        iris, auto_iris = await self.query_iris()
         gain_db, gain_auto = await self._query_gain_state()
         # Aktualisiert den zwischengespeicherten Super-Gain-Zustand (siehe
         # `effective_gain_max_db`) -- get_state() wird sowohl bei connect()
@@ -775,7 +802,12 @@ class PanasonicAWDriver(CameraDriver):
             return None
         return _extract_value(body)
 
-    async def _query_iris(self) -> tuple[float | None, bool | None]:
+    async def query_iris(self) -> tuple[float | None, bool | None]:
+        # Oeffentlich (kein Underscore-Praefix, Bugfix 2026-07-23, gleiches
+        # Muster wie query_f_number()): apply_iris() ruft dies erneut auf,
+        # wenn Auto-Iris aktiv ist, um die wirkliche (durch #AXI unveraendert
+        # gebliebene) Position + Modus zu erhalten, statt den wirkungslosen
+        # Zielwert des Fader-Zugs als gueltig anzunehmen.
         try:
             body = await self._request("aw_ptz", "#GI")
         except CameraCommandError:
@@ -801,6 +833,15 @@ class PanasonicAWDriver(CameraDriver):
         # get_state()), damit die F-Nummer live waehrend des Ziehens
         # mitlaeuft -- eine einzelne QIF-Abfrage ist klein genug, um das
         # nicht spuerbar zusaetzlich zu belasten.
+        #
+        # Modell-Gating (2026-07-23, PDF-Pruefung, siehe Kommentar bei
+        # _F_NUMBER_DATA_MIN oben): fuer Modelle ohne PDF-bestaetigte QIF-
+        # Unterstuetzung (`supports_iris_f_number` aus `_apply_model_catalog()`)
+        # wird gar nicht erst angefragt -- vermeidet unnoetige Requests bei
+        # jedem Fader-Tick fuer Kameras, die laut Referenz-PDF ohnehin nur mit
+        # einem Fehler antworten wuerden.
+        if not self.supports_iris_f_number:
+            return None
         try:
             body = await self._request("aw_cam", "QIF")
         except CameraCommandError:

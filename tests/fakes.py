@@ -50,6 +50,11 @@ class FakeCameraDriver:
         self.iris = 0.0
         self.iris_f_number: str | None = None
         self.query_f_number_calls = 0
+        # Auto-Iris (Bugfix 2026-07-23): solange True, ignoriert set_iris()
+        # den Zielwert (simuliert die reale Kamera, die #AXI dann
+        # stillschweigend ignoriert, siehe drivers/panasonic_aw.py).
+        self.auto_iris = False
+        self.query_iris_calls = 0
         self.gain_db = 0
         self.gain_auto = False
         # Simuliert eine kameraseitige Ablehnung (z. B. ER3, siehe
@@ -100,7 +105,12 @@ class FakeCameraDriver:
 
     async def set_iris(self, value: float) -> None:
         self.set_iris_calls.append(value)
-        self.iris = value
+        if not self.auto_iris:
+            self.iris = value
+
+    async def query_iris(self) -> tuple[float | None, bool | None]:
+        self.query_iris_calls += 1
+        return self.iris, self.auto_iris
 
     async def set_auto_iris(self, on: bool) -> None:
         pass
@@ -182,7 +192,7 @@ class FakeCameraDriver:
         return CameraState(
             iris=self.iris,
             iris_f_number=self.iris_f_number,
-            auto_iris=False,
+            auto_iris=self.auto_iris,
             gain_db=self.gain_db,
             gain_auto=self.gain_auto,
             pedestal=self.pedestal,

@@ -134,18 +134,6 @@ body::before {
     margin-top: 0;
 }
 
-.code-block {
-    background: #050b16;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-    font-family: "Cascadia Code", Consolas, monospace;
-    font-size: 0.85rem;
-    line-height: 1.55;
-    color: #b9e6ff;
-    overflow-x: auto;
-}
-
 .log-list {
     display: flex;
     flex-direction: column;
@@ -690,4 +678,55 @@ button:last-child {
         align-items: flex-start;
         gap: 12px;
     }
+}
+
+/* Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
+   2026-07-23) -- Overlay liegt außerhalb von .app-shell (siehe base.html),
+   damit es dessen Grauwert unten überlagert statt selbst mitgedimmt zu
+   werden. */
+.startup-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(2, 4, 10, 0.72);
+    backdrop-filter: blur(2px);
+}
+
+.startup-overlay[hidden] {
+    display: none;
+}
+
+.startup-dialog {
+    background: linear-gradient(180deg, rgba(9, 16, 29, 0.98), rgba(14, 22, 40, 0.99));
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 32px;
+    max-width: 420px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+}
+
+.startup-dialog h2 {
+    margin: 0 0 10px;
+}
+
+.startup-dialog p {
+    color: var(--muted);
+    margin: 0 0 6px;
+}
+
+.startup-dialog .button-row {
+    justify-content: center;
+}
+
+/* Web-UI im Hintergrund "grau", waehrend der Startup-Dialog offen ist --
+   sichtbar, aber nicht bedienbar (Nutzerauftrag: "web ui in the background
+   but grayed out" statt eines rein nativen Dialogs). */
+.app-shell.is-dimmed {
+    filter: grayscale(1) brightness(0.55);
+    pointer-events: none;
+    user-select: none;
 }

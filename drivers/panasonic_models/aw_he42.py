@@ -10,6 +10,10 @@ InterfaceSpecifications-E.pdf` §3.2.1.4 fuehrt "AW-UE70/AW-HE42" als eigene
 Gruppe MIT ND-Filter (5 Werte inkl. Auto), waehrend AW-HE40 in derselben
 PDF explizit ausgenommen ist (Menu-Tabelle 4-4-4: "OFT ND Filter *only
 AW-UE70/AW-HE42"). Eigene, lokale Konstante statt Re-Export.
+
+Iris F-Nummer: bewusst KEIN SUPPORTS_IRIS_F_NUMBER, siehe aw_he40.py --
+"Iris F value" ist laut derselben PDF nur fuer AK-UB300/AW-UE150
+dokumentiert, nicht fuer AW-HE42.
 """
 
 from drivers.panasonic_models.aw_he40 import (  # noqa: F401

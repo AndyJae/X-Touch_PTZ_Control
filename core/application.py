@@ -27,7 +27,10 @@ from core.config import (
     BankChannelConfig,
     BankConfig,
     CameraConfig,
+    ChannelDefaultsConfig,
+    CompanionConfig,
     CompanionTarget,
+    MidiConfig,
     save_config,
 )
 from core.mapping import MappingEngine, build_mapping_from_config
@@ -94,6 +97,14 @@ class AppState:
     # gerade). Startet konservativ bei False, bis eine echte Pruefung das
     # Gegenteil belegt.
     companion_connected: bool = False
+    # Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
+    # 2026-07-23) -- True bis eine der beiden Web-UI-Aktionen sie beantwortet
+    # hat, danach fuer den Rest des Prozesses False. Rein Laufzeitzustand,
+    # nicht Teil von config.yaml. Startet bewusst `True`: die App verbindet
+    # beim Boot bereits ganz normal mit der zuletzt gespeicherten
+    # config.yaml (kein deferred startup, Nutzerentscheid) -- "Start new
+    # config" raeumt das ueber `reset_to_new_config()` erst danach wieder auf.
+    startup_choice_pending: bool = True
 
     async def broadcast(self, payload: dict) -> None:
         stale: list[WebSocket] = []
@@ -311,6 +322,33 @@ async def disconnect_camera(state: AppState, camera_id: str) -> None:
     await state.event_bus.publish("config_changed", {"channel_index": channel_index})
 
 
+async def reset_to_new_config(state: AppState) -> None:
+    """"Start new config" -- Startup-Dialog (Nutzerauftrag 2026-07-23):
+    trennt jede aktuell verbundene Kamera (`disconnect_camera()`, entfernt
+    dabei bereits deren Registrierung aus `config.yaml`, siehe dort) und
+    setzt Companion/MIDI/Bank-/Kanal-Defaults auf die Schema-Defaults
+    zurueck, sodass `config.yaml` danach dem Zustand einer frisch
+    angelegten Datei entspricht. "Disconnect-after-the-fact"
+    (Nutzerentscheid) statt deferred startup: die App verbindet beim Boot
+    wie gewohnt zuerst ganz normal mit der zuletzt gespeicherten
+    `config.yaml` -- dieser Use-Case raeumt das erst auf explizite
+    Nutzeranfrage (Startup-Dialog) danach wieder auf."""
+    for camera_id in list(state.drivers):
+        await disconnect_camera(state, camera_id)
+    state.config.banks = []
+    state.config.midi = MidiConfig()
+    state.config.channel_defaults = ChannelDefaultsConfig()
+    state.config.companion = CompanionConfig()
+    state.companion_connected = False
+    state.mapping = MappingEngine()
+    state.encoder_function_index.clear()
+    state.encoder_tick_history.clear()
+    state.encoder_pending_delta.clear()
+    state.encoder_saved.clear()
+    save_config(state.config_path, state.config)
+    await state.event_bus.publish("config_changed", {})
+
+
 async def register_camera(
     state: AppState, channel_index: int, *, name: str, host: str, port: int
 ) -> None:
@@ -450,7 +488,21 @@ async def apply_iris(state: AppState, channel_index: int, value: float, *, final
     einzelne QIF-Abfrage ist klein genug, um pro Tick keinen spuerbaren
     Zusatz-Traffic zu verursachen -- `query_f_number()` fragt bewusst nur
     dieses eine Feld ab, nicht den vollen `get_state()` (Gain/Pedestal/ND/
-    Fehler waeren hier unnoetig)."""
+    Fehler waeren hier unnoetig).
+
+    Bugfix 2026-07-23 (Bugreport: Fader blieb bei aktivem Auto-Iris optisch
+    auf der gezogenen Position stehen, statt automatisch zurueckzuspringen):
+    die Kamera ignoriert `#AXI` stillschweigend, solange Auto-Iris aktiv ist
+    (kein Fehler, aber keine Wirkung auf die echte Position, siehe
+    CLAUDE.md/Spec §14 Punkt 3). Ist `cam_state.auto_iris` (zuletzt bekannter
+    Stand) `True`, wird deshalb nicht mehr blind der Zielwert des Fader-Zugs
+    uebernommen, sondern per `driver.query_iris()` die tatsaechliche
+    Position + der tatsaechliche Auto-Iris-Modus neu abgefragt und
+    veroeffentlicht -- Web-Slider und Motorfader springen damit auf jedem
+    weiterhin durchgelassenen Tick zurueck auf die echte Position, solange
+    Auto-Iris aktiv bleibt. Ist Auto-Iris (soweit bekannt) aus, bleibt das
+    bisherige, guenstigere Verhalten (Zielwert direkt uebernehmen, keine
+    zusaetzliche Abfrage) unveraendert."""
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
         return
@@ -468,11 +520,18 @@ async def apply_iris(state: AppState, channel_index: int, value: float, *, final
     except CameraCommandError as exc:
         cam_state.error = str(exc)
         await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
+        return
+    cam_state.error = None
+    if cam_state.auto_iris:
+        real_iris, real_auto_iris = await driver.query_iris()
+        if real_iris is not None:
+            cam_state.iris = real_iris
+        if real_auto_iris is not None:
+            cam_state.auto_iris = real_auto_iris
     else:
         cam_state.iris = value
-        cam_state.error = None
-        cam_state.iris_f_number = await driver.query_f_number()
-        await state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": value})
+    cam_state.iris_f_number = await driver.query_f_number()
+    await state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": cam_state.iris})
 
 
 # --- Encoder-Funktionsauswahl + -Drehung (Spec §9) --------------------------
@@ -1051,6 +1110,13 @@ async def apply_button_action(state: AppState, channel_index: int, button_slot: 
             new_enabled = not bool(cam_state.feature_states.get(feature_key, False))
             await driver.trigger_button_feature(feature_key, enabled=new_enabled)
             cam_state.feature_states[feature_key] = new_enabled
+            if feature_key == "auto_iris":
+                # Bugfix 2026-07-23: apply_iris()s Snapback-Logik prueft
+                # cam_state.auto_iris (nicht feature_states), das hier bisher
+                # nicht aktualisiert wurde -- ein Fader-Zug nach Druck auf den
+                # Auto-Iris-Button ignorierte dadurch weiterhin den veralteten
+                # Stand statt sofort zurueckzuspringen.
+                cam_state.auto_iris = new_enabled
         else:  # "trigger"
             await driver.trigger_button_feature(feature_key)
     except CameraCommandError as exc:

@@ -55,6 +55,24 @@ class FailingOutPort:
         pass
 
 
+class FakeInPort:
+    """Simuliert den MIDI-Eingang fuer `_poll_once()` -- entweder liefert
+    `iter_pending()` eine feste Liste an Nachrichten, oder es wirft die
+    uebergebene Ausnahme (Bugreport 2026-07-23: ein Fehler beim Lesen selbst,
+    nicht nur bei der Verarbeitung einer Nachricht, riss `_poll_loop()`
+    zuvor ebenfalls dauerhaft ab -- "gar keine Reaktion mehr auf dem
+    Controller", nicht nur ein einzelnes Feature)."""
+
+    def __init__(self, messages: list | None = None, raise_on_iter: Exception | None = None) -> None:
+        self._messages = messages or []
+        self._raise_on_iter = raise_on_iter
+
+    def iter_pending(self):
+        if self._raise_on_iter is not None:
+            raise self._raise_on_iter
+        return iter(self._messages)
+
+
 # button2 -> "drs" (Toggle, siehe drivers/panasonic_models/aw_ue160.py, von
 # FakeCameraDriver wiederverwendet); button3 bewusst unbelegt (No-Op-Test);
 # companion-Ziel fuer den Select-Test. cam2/Kanal 2 bewusst NICHT verbunden
@@ -192,6 +210,83 @@ def test_select_press_companion_error_is_caught_not_raised(monkeypatch, caplog) 
     _run(fader._handle(_note_on(_SELECT_NOTE_BASE + 0)))  # darf nicht raisen
 
     assert "Companion-SELECT fehlgeschlagen" in caplog.text
+
+
+def test_handle_safely_logs_and_swallows_exception_instead_of_killing_poll_loop(
+    monkeypatch, caplog
+) -> None:
+    # Bugreport 2026-07-23: eine Ausnahme in _handle() (beobachtet nach dem
+    # Auto-Iris-Fix, der apply_iris() bei aktivem Auto-Iris zusaetzlich
+    # driver.query_iris() aufrufen laesst) riss zuvor den gesamten
+    # Rx-Poll-Loop ab -- danach reagierten Rec/Solo/Mute/Select/Fader auf
+    # KEINEM Kanal mehr, nicht nur der betroffene. _handle_safely() (von
+    # _poll_loop() statt _handle() direkt aufgerufen) faengt das jetzt ab.
+    fader, _state, _out_port = _build_fader(monkeypatch)
+
+    async def failing_handle(msg):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fader, "_handle", failing_handle)
+
+    _run(fader._handle_safely(_note_on(_REC_NOTE_BASE + 0)))  # darf nicht raisen
+
+    assert "MIDI-Eingang-Verarbeitung fehlgeschlagen" in caplog.text
+
+
+def test_handle_safely_does_not_block_subsequent_messages(monkeypatch) -> None:
+    fader, state, _out_port = _build_fader(monkeypatch)
+    original_handle = fader._handle
+    call_count = 0
+
+    async def flaky_handle(msg):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("boom")
+        await original_handle(msg)
+
+    monkeypatch.setattr(fader, "_handle", flaky_handle)
+
+    _run(fader._handle_safely(_note_on(_SOLO_NOTE_BASE + 0)))  # 1. Aufruf wirft, wird geschluckt
+    _run(fader._handle_safely(_note_on(_SOLO_NOTE_BASE + 0)))  # 2. Aufruf funktioniert normal
+
+    assert state.drivers["cam1"].button_feature_calls == [("drs", True)]
+
+
+def test_poll_once_logs_and_returns_when_reading_input_fails(monkeypatch, caplog) -> None:
+    # Fortsetzung des Bugreports 2026-07-23: `_handle_safely()` (s. o.)
+    # schuetzt nur die Nachrichten-VERARBEITUNG -- das Lesen selbst
+    # (`self._in_port.iter_pending()`) war weiterhin ungeschuetzt und riss
+    # `_poll_loop()` bei einem Lesefehler ebenfalls dauerhaft ab (gemeldetes
+    # Symptom: gar keine Reaktion mehr auf dem Controller, nicht nur ND/
+    # Button 1). `_poll_once()` faengt das jetzt ebenfalls ab.
+    fader, _state, _out_port = _build_fader(monkeypatch)
+    fader._in_port = FakeInPort(raise_on_iter=RuntimeError("boom"))
+
+    _run(fader._poll_once())  # darf nicht raisen
+
+    assert "MIDI-Eingang-Lesen fehlgeschlagen" in caplog.text
+
+
+def test_poll_once_processes_pending_messages_normally(monkeypatch) -> None:
+    fader, state, _out_port = _build_fader(monkeypatch)
+    fader._in_port = FakeInPort(messages=[_note_on(_SOLO_NOTE_BASE + 0)])
+
+    _run(fader._poll_once())
+
+    assert state.drivers["cam1"].button_feature_calls == [("drs", True)]
+
+
+def test_poll_once_recovers_on_next_call_after_a_failed_read(monkeypatch) -> None:
+    fader, state, _out_port = _build_fader(monkeypatch)
+    fader._in_port = FakeInPort(raise_on_iter=RuntimeError("boom"))
+
+    _run(fader._poll_once())  # 1. Takt: Lesefehler, wird geschluckt
+
+    fader._in_port = FakeInPort(messages=[_note_on(_SOLO_NOTE_BASE + 0)])
+    _run(fader._poll_once())  # 2. Takt: liest/verarbeitet wieder normal
+
+    assert state.drivers["cam1"].button_feature_calls == [("drs", True)]
 
 
 def test_refresh_button_leds_reflects_unknown_state_as_off(monkeypatch) -> None:

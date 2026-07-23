@@ -197,25 +197,63 @@ class XTouchFader:
     async def _poll_loop(self) -> None:
         assert self._in_port is not None
         while True:
-            # Innerhalb eines Polling-Takts nur die jeweils juengste
-            # Pitchbend-Nachricht pro Kanal verarbeiten (Rate-Limiter-Vertrag
-            # "Latest-wins", siehe core/ratelimit.py) -- sonst arbeitet der
-            # Loop bei einer schnellen Fader-Bewegung eine Warteschlange aus
-            # laengst ueberholten Zwischenwerten ab, waehrend der reale
-            # Kamera-Request auf ein langsames Netzwerk wartet (beobachteter
-            # Nachlauf/"hackt" beim Live-Test).
-            latest_pitch: dict[int, mido.Message] = {}
-            other_messages: list[mido.Message] = []
+            await self._poll_once()
+            await asyncio.sleep(_POLL_INTERVAL)
+
+    async def _poll_once(self) -> None:
+        """Ein Polling-Takt: Nachrichten lesen + verarbeiten. Bugreport
+        2026-07-23 (Fortsetzung): die vorherige Fassung fing Ausnahmen nur
+        in `_handle()` ab (siehe `_handle_safely()`) -- `self._in_port.
+        iter_pending()` selbst (das eigentliche Port-Lesen) war weiterhin
+        UNGESCHUETZT. Nutzer meldete danach "gar keine Reaktion mehr auf dem
+        Controller" (Fader/Rec/Solo/Mute/Select gleichermassen betroffen,
+        nicht nur ein Feature) -- passt zu einer Ausnahme beim Lesen selbst
+        (z. B. einem transienten `rtmidi`-Fehler), die weiterhin den
+        gesamten `_poll_loop()` mitgerissen haette. War als "Rx-Seite hat
+        keine eigene Fehlerbehandlung beim Lesen" bereits als offener,
+        unbestaetigter Risikopfad dokumentiert (CLAUDE.md) -- jetzt ebenfalls
+        abgefangen, analog zum bereits behobenen `_send()`-Tx-Fehler."""
+        # Innerhalb eines Polling-Takts nur die jeweils juengste
+        # Pitchbend-Nachricht pro Kanal verarbeiten (Rate-Limiter-Vertrag
+        # "Latest-wins", siehe core/ratelimit.py) -- sonst arbeitet der
+        # Loop bei einer schnellen Fader-Bewegung eine Warteschlange aus
+        # laengst ueberholten Zwischenwerten ab, waehrend der reale
+        # Kamera-Request auf ein langsames Netzwerk wartet (beobachteter
+        # Nachlauf/"hackt" beim Live-Test).
+        latest_pitch: dict[int, mido.Message] = {}
+        other_messages: list[mido.Message] = []
+        try:
             for msg in self._in_port.iter_pending():
                 if msg.type == "pitchwheel":
                     latest_pitch[msg.channel] = msg
                 else:
                     other_messages.append(msg)
-            for msg in other_messages:
-                await self._handle(msg)
-            for msg in latest_pitch.values():
-                await self._handle(msg)
-            await asyncio.sleep(_POLL_INTERVAL)
+        except Exception:
+            LOGGER.exception("MIDI-Eingang-Lesen fehlgeschlagen")
+            return
+        for msg in other_messages:
+            await self._handle_safely(msg)
+        for msg in latest_pitch.values():
+            await self._handle_safely(msg)
+
+    async def _handle_safely(self, msg: mido.Message) -> None:
+        """Bugreport 2026-07-23: ein Fader-Zug bei aktivem Auto-Iris loeste
+        (ueber `apply_iris()`s neue `driver.query_iris()`-Abfrage, siehe
+        core/application.py) auf dem echten Geraet offenbar eine Ausnahme
+        aus, die `_handle()` unbehandelt durchliess -- ohne eigene
+        Fehlerbehandlung riss das `_poll_loop()` dauerhaft ab (kein
+        Supervisor/Neustart), wodurch DANACH auch Rec/Solo/Mute/Select/
+        Fader auf allen Kanaelen nicht mehr reagierten (nicht nur der Kanal,
+        an dem es passierte) -- exakt das beobachtete "Button 1 laesst sich
+        nicht mehr umschalten". War als Rx-seitiger Gegenpart zum bereits
+        behobenen Tx-Fehler (`_send()`, s. o.) schon als offener, bisher
+        unbestaetigter Risikopfad dokumentiert (CLAUDE.md) -- hiermit
+        bestaetigt. Ein fehlgeschlagener Handler wird jetzt geloggt und
+        uebersprungen, statt den gesamten Rx-Poll-Loop mitzureissen."""
+        try:
+            await self._handle(msg)
+        except Exception:
+            LOGGER.exception("MIDI-Eingang-Verarbeitung fehlgeschlagen fuer %r", msg)
 
     async def _handle(self, msg: mido.Message) -> None:
         if msg.type == "pitchwheel":

@@ -34,6 +34,7 @@ from core.application import (
     encoder_preview,
     register_camera,
     rename_camera,
+    reset_to_new_config,
     trigger_companion_select,
 )
 from core.companion import CompanionError
@@ -292,6 +293,87 @@ def test_apply_iris_refreshes_f_number_on_every_tick(monkeypatch) -> None:
     assert state.state_store.get_camera("cam1").iris_f_number == "F4.0"
 
 
+def test_apply_iris_snaps_back_to_real_position_while_auto_iris_active(monkeypatch) -> None:
+    # Bugreport 2026-07-23: die Kamera ignoriert #AXI stillschweigend,
+    # solange Auto-Iris aktiv ist -- der Fader blieb bisher trotzdem optisch
+    # auf der gezogenen (wirkungslosen) Position stehen. apply_iris() muss
+    # jetzt die tatsaechliche Position per query_iris() neu abfragen und
+    # verwenden, statt den Zielwert des Fader-Zugs zu uebernehmen.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.auto_iris = True
+    driver.iris = 0.3  # tatsaechliche, von Auto-Iris gehaltene Position
+    cam_state = state.state_store.get_camera("cam1")
+    cam_state.auto_iris = True
+    cam_state.iris = 0.3
+
+    _run(apply_iris(state, 1, 0.9, final=False))  # Fader auf 0.9 gezogen
+
+    # set_iris() wurde gesendet (kein Fehler), aber die Kamera ignoriert es --
+    # FakeCameraDriver.set_iris() laesst iris bei aktivem auto_iris unveraendert.
+    assert driver.set_iris_calls == [0.9]
+    assert cam_state.iris == pytest.approx(0.3)  # nicht 0.9 -- zurueckgesprungen
+    assert cam_state.auto_iris is True
+
+
+def test_apply_iris_publishes_real_position_while_auto_iris_active(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.auto_iris = True
+    driver.iris = 0.3
+    cam_state = state.state_store.get_camera("cam1")
+    cam_state.auto_iris = True
+    cam_state.iris = 0.3
+    received = []
+
+    async def on_iris_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("iris_changed", on_iris_changed)
+
+    _run(apply_iris(state, 1, 0.9, final=False))
+
+    assert received[-1] == {"camera_id": "cam1", "value": pytest.approx(0.3)}
+
+
+def test_apply_iris_detects_auto_iris_turned_off_via_query(monkeypatch) -> None:
+    # query_iris() liefert bei aktivem cam_state.auto_iris auch den
+    # tatsaechlichen Modus zurueck -- schaltet die Kamera Auto-Iris
+    # zwischenzeitlich selbst aus (z. B. per Kamera-eigener Bedienung),
+    # uebernimmt apply_iris() das sofort, statt am veralteten "True" haengen
+    # zu bleiben. Auto-Iris ist jetzt tatsaechlich aus, der Fader-Zug wirkt
+    # sich deshalb (wie im Normalfall) auf die echte Position aus -- das
+    # unterscheidet diesen Test vom "Auto-Iris bleibt an"-Fall oben, wo die
+    # echte Position trotz Fader-Zug unveraendert bleibt.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    driver.auto_iris = False  # Kamera meldet jetzt Auto-Iris aus
+    driver.iris = 0.3
+    cam_state = state.state_store.get_camera("cam1")
+    cam_state.auto_iris = True  # App-Zustand ist noch veraltet
+
+    _run(apply_iris(state, 1, 0.9, final=False))
+
+    assert cam_state.auto_iris is False
+    assert cam_state.iris == pytest.approx(0.9)
+
+
+def test_apply_iris_normal_behavior_unaffected_when_auto_iris_off(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+    cam_state = state.state_store.get_camera("cam1")
+    assert cam_state.auto_iris is False  # Default nach connect_camera()
+
+    _run(apply_iris(state, 1, 0.9, final=True))
+
+    assert cam_state.iris == pytest.approx(0.9)
+    assert driver.query_iris_calls == 0  # keine zusaetzliche Abfrage noetig
+
+
 def test_apply_iris_on_unmapped_channel_is_ignored(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
@@ -394,6 +476,66 @@ def test_disconnect_camera_resets_iris_to_zero(monkeypatch) -> None:
     _run(disconnect_camera(state, "cam1"))
 
     assert state.state_store.get_camera("cam1").iris == 0.0
+
+
+def test_reset_to_new_config_disconnects_camera_and_clears_config(monkeypatch) -> None:
+    # Startup-Dialog "Start new config" (Nutzerauftrag 2026-07-23):
+    # disconnect-after-the-fact -- die App hat beim Boot bereits normal mit
+    # TEST_CONFIG (eine Kamera) verbunden, reset_to_new_config() raeumt das
+    # danach auf Wunsch komplett auf.
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+
+    _run(reset_to_new_config(state))
+
+    assert state.drivers == {}
+    assert state.cameras == {}
+    assert state.rate_limiters == {}
+    assert state.encoder_rate_limiters == {}
+    assert state.config.cameras == []
+    assert state.config.banks == []
+    assert state.config.companion.host == ""
+    assert state.config.midi.input_port == ""
+    assert state.config.midi.output_port == ""
+    assert state.mapping.get_channel("fader", 1) is None
+    assert state.companion_connected is False
+
+
+def test_reset_to_new_config_persists_empty_config_to_file(monkeypatch, tmp_path) -> None:
+    config_path = str(tmp_path / "config.yaml")
+    state = _build_state(monkeypatch, config_path=config_path)
+    _run(connect_camera(state, "cam1"))
+
+    _run(reset_to_new_config(state))
+
+    reloaded = load_config(config_path)
+    assert reloaded.cameras == []
+    assert reloaded.banks == []
+    assert reloaded.companion.host == ""
+
+
+def test_reset_to_new_config_publishes_config_changed(monkeypatch) -> None:
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    received = []
+
+    async def on_config_changed(payload: dict) -> None:
+        received.append(payload)
+
+    state.event_bus.subscribe("config_changed", on_config_changed)
+
+    _run(reset_to_new_config(state))
+
+    assert received[-1] == {}
+
+
+def test_reset_to_new_config_with_no_cameras_is_noop_safe(monkeypatch) -> None:
+    empty_config = AppConfig()
+    state = _build_state(monkeypatch, config=empty_config)
+
+    _run(reset_to_new_config(state))  # darf nicht raisen
+
+    assert state.config.cameras == []
 
 
 def test_available_button_features_returns_driver_catalog(monkeypatch) -> None:
@@ -500,6 +642,26 @@ def test_apply_button_action_toggle_flips_state(monkeypatch) -> None:
     driver = state.drivers["cam1"]
     assert driver.button_feature_calls == [("drs", True), ("drs", False)]
     assert state.state_store.get_camera("cam1").feature_states["drs"] is False
+
+
+def test_apply_button_action_auto_iris_toggle_updates_cam_state_auto_iris(monkeypatch) -> None:
+    # Bugreport 2026-07-23: Druck auf einen "auto_iris"-Button schaltete die
+    # Kamera und cam_state.feature_states["auto_iris"] korrekt um, liess aber
+    # das separate cam_state.auto_iris-Feld (das apply_iris() fuer die
+    # Snapback-Logik prueft) auf dem veralteten Stand -- ein Fader-Zug direkt
+    # nach dem Knopfdruck sprang deshalb nicht zurueck.
+    state = _build_state(monkeypatch, config=_config_with_button("button2", "auto_iris"))
+    _run(connect_camera(state, "cam1"))
+    cam_state = state.state_store.get_camera("cam1")
+    assert cam_state.auto_iris is False  # Default nach connect_camera()
+
+    _run(apply_button_action(state, 1, "button2"))
+    assert cam_state.auto_iris is True
+    assert cam_state.feature_states["auto_iris"] is True
+
+    _run(apply_button_action(state, 1, "button2"))
+    assert cam_state.auto_iris is False
+    assert cam_state.feature_states["auto_iris"] is False
 
 
 def test_apply_button_action_trigger_ignores_state(monkeypatch) -> None:

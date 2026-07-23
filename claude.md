@@ -147,9 +147,38 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
 - ~~Verhalten von `#AXI` bei aktivem Auto-Iris testen~~ **Verifiziert (2026-07-20, reale
   AW-UE160 `192.168.0.10`, siehe Spec §14 Punkt 3):** `#AXI` wird bei aktivem Auto-Iris
   (`ORS:1`) stillschweigend ignoriert (kein Fehler, aber keine Wirkung auf die Iris-
-  Position; Auto-Iris bleibt aktiv). **Daraus folgender, noch offener Implementierungs-
-  punkt:** Fader-Touch löst aktuell kein automatisches `ORS:0` aus — eine Fader-Bewegung
-  bei aktivem Auto-Iris ist deshalb derzeit wirkungslos, ohne dass die UI das anzeigt.
+  Position; Auto-Iris bleibt aktiv). ~~Daraus folgender, noch offener Implementierungs-
+  punkt: Fader-Touch löst aktuell kein automatisches `ORS:0` aus — eine Fader-Bewegung
+  bei aktivem Auto-Iris ist deshalb derzeit wirkungslos, ohne dass die UI das anzeigt.~~
+  **UI-Teil behoben (Nutzerauftrag 2026-07-23, Bugreport "Fader springt beim Ziehen
+  waehrend Auto-Iris nicht automatisch auf die korrekte Position zurueck"):**
+  `core/application.py::apply_iris()` uebernimmt den Fader-Zielwert nicht mehr blind in
+  `cam_state.iris`, wenn `cam_state.auto_iris` (zuletzt bekannter Stand) `True` ist --
+  stattdessen wird `driver.query_iris()` (neu, oeffentliche Umbenennung der bisherigen
+  `PanasonicAWDriver._query_iris()`, liest weiterhin `#GI`, jetzt auch Teil der
+  `CameraDriver`-ABC in `drivers/base.py`) erneut abgefragt und die daraus gelesene
+  ECHTE Position + der ECHTE Auto-Iris-Modus verwendet -- Web-Slider und Motorfader
+  springen damit auf jedem weiterhin durchgelassenen Tick zurueck auf die tatsaechliche
+  Position, solange Auto-Iris aktiv bleibt (und uebernehmen dabei auch gleich mit, wenn
+  die Kamera zwischenzeitlich selbst auf Auto-Iris AUS gewechselt hat). Ist Auto-Iris
+  (soweit bekannt) aus, bleibt das bisherige, guenstigere Verhalten (Zielwert direkt
+  uebernehmen, keine zusaetzliche Abfrage) unveraendert -- kein zusaetzlicher
+  Netzwerk-Overhead im Normalfall. `tests/fakes.py::FakeCameraDriver` simuliert das
+  reale Ignorieren jetzt ebenfalls (`set_iris()` laesst `iris` unveraendert, wenn
+  `auto_iris=True`), neue `query_iris()`-Methode. Getestet in
+  `tests/test_application.py` (`test_apply_iris_snaps_back_to_real_position_while_
+  auto_iris_active`, `test_apply_iris_publishes_real_position_while_auto_iris_active`,
+  `test_apply_iris_detects_auto_iris_turned_off_via_query`,
+  `test_apply_iris_normal_behavior_unaffected_when_auto_iris_off`). 319 Tests bestehen
+  (vorher 315), keine Regression. **Weiterhin unveraendert offen (bewusst NICHT Teil
+  dieses Fixes, Nutzerauftrag war nur die Anzeige-Korrektur):** Fader-Touch loest
+  weiterhin kein automatisches `ORS:0` aus -- ein Fader-Zug bei aktivem Auto-Iris bleibt
+  also weiterhin wirkungslos auf die Kamera, springt jetzt aber wenigstens sofort
+  sichtbar auf die echte Position zurueck, statt optisch falsch stehen zu bleiben.
+  **Nicht live gegen eine reale Kamera verifiziert** -- nur unittest-abgesichert
+  (`FakeCameraDriver`), das reale `#AXI`-Ignorierverhalten selbst war zuvor bereits
+  hardwareverifiziert (s. o.), aber der neue Korrektur-Codepfad (erneute `#GI`-Abfrage
+  nach einem ignorierten `#AXI`) wurde nicht erneut an echter Hardware durchgespielt.
 - ~~Scribble-Strip-Offsets / Device-ID des Extenders verifizieren~~ **Verifiziert**: Device-ID
   `0x15` (nicht `0x14` wie beim regulären X-Touch) — mit `0x14` blieb das Display leer, mit
   `0x15` erscheint der Text. Offsets (0x00–0x37 obere Zeile, 0x38–0x6F untere Zeile) bestätigt.
@@ -594,11 +623,15 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   eigentlichen Bugreport: `apply_button_action()` darf trotz kaputtem MIDI-Ausgang nicht
   abbrechen). 270 Tests bestehen (vorher 267), keine Regression. **Bewusst NICHT
   Teil dieses Fixes** (Nutzerentscheid: Scope war "Fix + Reconnect-Versuch bei
-  Send-Fehler", nicht die volle Hotplug-Spec): die Rx-Seite (`_poll_loop()`s
+  Send-Fehler", nicht die volle Hotplug-Spec): ~~die Rx-Seite (`_poll_loop()`s
   `self._in_port.iter_pending()`) hat weiterhin keine eigene Fehlerbehandlung/
   Reconnect-Logik — ein direkter Fehler beim Lesen (statt beim Senden) würde den
   Poll-Loop nach wie vor dauerhaft abreißen. Das ist ein anderer, bisher nicht
-  beobachteter/bestätigter Fehlerpfad, kein Teil dieses Bugreports. **Nicht verifiziert:**
+  beobachteter/bestätigter Fehlerpfad, kein Teil dieses Bugreports.~~ **Der Fehlerpfad
+  wurde am 2026-07-23 tatsaechlich beobachtet und behoben, siehe eigener Eintrag weiter
+  unten ("Button 1 liess sich nach einem Fader-Zug bei aktivem Auto-Iris nicht mehr
+  umschalten") -- `_poll_loop()` faengt Ausnahmen einzelner Handler jetzt ab, statt sich
+  von ihnen mitreissen zu lassen. **Nicht verifiziert:**
   ob Windows-USB-Energieverwaltung tatsächlich der externe Auslöser für den fehlgeschlagenen
   Send ist (plausibelste Erklärung, aber nicht am Gerät nachgestellt) und ob der Fix live
   gegen das reale Gerät nach einer echten Inaktivitätsphase greift (nur unittest-verifiziert,
@@ -1285,6 +1318,253 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   zeigt jetzt bei einer erneuten Auto-Iris-Bewegung die korrekte F-Nummer --
   wurde bisher nicht durch einen weiteren Auto-Iris-Test am echten Geraet
   bestaetigt).
+- **Iris-F-Nummer-Formel modelluebergreifend PDF-bestaetigt, `QIF`-Anfrage
+  jetzt modellabhaengig gegated (Nutzerauftrag 2026-07-23, "check pdfs
+  first" -> "implement for the camera models that are pdf confirmed"):**
+  die live gegen eine reale AW-UE160 kalibrierte Formel (Data/10 = F-Nummer,
+  siehe vorheriger Punkt) wurde durch Pruefung aller sechs lokalen
+  Referenz-PDFs (kein Live-Test) gegengecheckt: `AW-UE150A_
+  InterfaceSpecification_E.pdf`, `AW-UE100_InterfaceSpecification_E.pdf` und
+  `AW-UE150HE145_InterfaceSpecification_E.pdf` zeigen wortgleich dieselben
+  Ankerpunkte (0Eh=F1.4/1Ch=F2.8/38h=F5.6/A0h=F16/FFh=CLOSE) wie die eigene
+  AW-UE160-PDF; `AW-UE80UE50UE40_InterfaceSpecification_E.pdf` bestaetigt nur
+  die ersten beiden Punkte (0Eh/1Ch), aber ohne Widerspruch. Damit gilt die
+  Formel selbst als modelluebergreifend bestaetigt (kein Modell-Branching in
+  `_decode_f_number()` noetig).
+  **Wichtigerer Befund:** `HDIntegratedCamera_InterfaceSpecifications-E.pdf`
+  (deckt die Modellgruppe AW-HE40/50/60/120/130, AW-HR140, AW-UE70, AW-HE42,
+  AK-UB300 ab) nennt "Iris F value" (`QIF`) explizit **"Only supported by the
+  AK-UB300/AW-UE150"** -- fuer die uebrigen acht Modelle dieser Gruppe war
+  `query_f_number()` bisher ein sinnloser Request (haette vermutlich nur
+  einen Fehler zurueckbekommen, `CameraCommandError` wurde zwar schon vorher
+  abgefangen, aber unnoetig bei JEDEM Fader-Tick versucht). Neues Feld
+  `PanasonicAWDriver.supports_iris_f_number` (aufgeloest in
+  `_apply_model_catalog()` aus `SUPPORTS_IRIS_F_NUMBER` je Modell-Modul,
+  Default `False`, analog zum bestehenden `nd_options`-Muster) -- `query_
+  f_number()` gibt jetzt sofort `None` zurueck, ohne `QIF` zu senden, wenn
+  das verbundene Modell nicht in der PDF-bestaetigten Liste steht.
+  `SUPPORTS_IRIS_F_NUMBER = True` gesetzt bei: AW-UE160, AW-UE100,
+  AW-UE150A (+Alias AW-UE150), AW-HE145 (+Alias AW-UE145), AW-UE80 (+UE30/
+  UE40/UE50, re-exportiert), AK-UB300. Bewusst NICHT gesetzt (nur
+  Docstring-Vermerk, kein erfundener Fallback noetig, da `getattr(...,
+  False)` bereits ohne den Konstante nach `False` aufloest) bei: AW-HE40,
+  AW-HE42, AW-HE50, AW-HE60, AW-HE120, AW-HE130, AW-HR140, AW-UE70 --
+  bemerkenswert bei AW-HE130/AW-HR140, da diese sonst zur selben
+  Knee-/White-Clip-Gruppe wie AW-UE150 gehoeren, hier aber trotzdem
+  ausgenommen sind (unterschiedliche Feature-Untermengen je PDF-Tabelle,
+  kein einheitliches "Tier"). Getestet in `tests/test_panasonic_models.py`
+  (`test_iris_f_number_supported_for_pdf_confirmed_models`,
+  `test_iris_f_number_absent_for_models_not_named_in_general_pdf`),
+  `tests/test_panasonic.py`
+  (`test_apply_model_catalog_resolves_supports_iris_f_number_true_for_ue160`,
+  `test_apply_model_catalog_supports_iris_f_number_false_for_he130_not_in_pdf`,
+  `test_apply_model_catalog_supports_iris_f_number_false_for_unrecognized_model`,
+  `test_query_f_number_skips_request_for_model_without_pdf_support`). 309
+  Tests bestehen (vorher 302 vor dieser Aenderung, plus die vorherigen zwei
+  F-Nummer-Eintraege in Summe). **Nicht live verifiziert** -- diese Aenderung
+  beruht ausschliesslich auf PDF-Pruefung (Nutzerauftrag "check pdfs first"),
+  nicht auf einem Test gegen eine echte AW-HE-Serie/AW-HR140/AK-UB300-Kamera;
+  ob diese Modelle `QIF` tatsaechlich ablehnen (statt es z. B. stillschweigend
+  zu ignorieren oder doch zu beantworten), ist damit weiterhin nur aus der
+  PDF-Formulierung abgeleitet, nicht am Geraet bestaetigt.
+- **Config-Editor-Seite (Spec §10 Punkt 3) entfernt statt umgesetzt
+  (Nutzerentscheid 2026-07-23):** die Seite war seit ihrer urspruenglichen
+  Anlage ein reines Mockup -- `web/templates/config.html` zeigte fest
+  einprogrammiertes Beispiel-YAML statt der tatsaechlich geladenen
+  `config.yaml`, und der "Reload Config"-Button hatte weder ein
+  `data-*`-Attribut noch irgendeine JS-/Backend-Anbindung (`core/config.py`
+  hatte zu keinem Zeitpunkt eine reload-in-die-laufende-App-Funktion, nur
+  `load_config()`/`save_config()`). Im Unterschied zur bereits frueher
+  entfernten MIDI-Port-Dropdown-Mockup (siehe Eintrag oben) steht dieser
+  Editor aber ausdruecklich in Spec §10 Punkt 3 als vorgesehenes v1-Feature
+  ("nur Anzeige des geladenen YAML + 'Reload Config'") -- die Entfernung ist
+  damit eine bewusste Scope-Abweichung von der Spec, kein reines
+  Mockup-Aufraeumen, und wird deshalb hier ausdruecklich festgehalten (Spec
+  §10 selbst bleibt unveraendert als historischer v1-Plan stehen, wie beim
+  MIDI-Dropdown-Vorfall auch). Grund fuer die Entfernung: die Seite zeigte in
+  ihrem aktuellen Zustand aktiv falsche Daten (fixes Beispiel-YAML statt der
+  echten Config) und suggerierte eine funktionierende Reload-Funktion, die
+  nie existierte -- dieselbe "lieber entfernen als eine Mockup-Attrappe
+  stehen lassen"-Logik wie beim MIDI-Dropdown. Entfernt: Nav-Link in
+  `web/templates/base.html`, Route `GET /config` (`config_page()`) in
+  `web/app.py`, Template `web/templates/config.html`, das dort einzige
+  genutzte `.code-block`-CSS in `web/static/app.css` (dead code nach der
+  Template-Loeschung), sowie `tests/test_web_app.py::
+  test_config_page_returns_ok`. 308 Tests bestehen (vorher 309, ein Test
+  entfernt statt ersetzt, keine Regression bei den verbleibenden). Kein
+  Ersatz-Feature umgesetzt -- Konfigurationsaenderungen jenseits von
+  Kamera-Stammdaten (die weiterhin ueber die Setup-Seite laufen) bleiben wie
+  zuvor nur ueber direktes Bearbeiten von `config.yaml` + App-Neustart
+  moeglich, keine Live-Reload-Moeglichkeit. Falls der urspruengliche
+  Anwendungsfall (Config-Aenderungen ohne Neustart pruefen/uebernehmen)
+  doch noch gebraucht wird, ist das ein separater, neuer Auftrag.
+- **Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
+  2026-07-23, bewusste Erweiterung ueber v1 hinaus, kein Spec-Bezug):** beim
+  Oeffnen der Web-UI (jede Seite, nicht nur die Control-Seite -- falls eine
+  andere Seite zuerst geladen/eine alte Tab neu geladen wird) erscheint ein
+  Overlay-Dialog mit zwei Optionen. "Load previous config" ist ein reines
+  No-Op (die App hat beim Boot bereits normal mit der zuletzt gespeicherten
+  `config.yaml` verbunden, siehe `lifespan()` in `web/app.py`) -- markiert
+  die Frage nur als beantwortet. "Start new config" ruft
+  `core/application.py::reset_to_new_config()` auf: trennt jede beim Boot
+  verbundene Kamera (`disconnect_camera()`, entfernt dabei bereits deren
+  Registrierung aus `config.yaml`) und setzt Companion/MIDI/Bank-/Kanal-
+  Defaults zusaetzlich auf die Schema-Defaults zurueck, sodass `config.yaml`
+  danach dem Zustand einer frisch angelegten Datei entspricht.
+  **"Disconnect-after-the-fact" statt deferred startup (Nutzerentscheid):**
+  urspruenglich war erwogen worden, das Laden von `config.yaml` bis nach der
+  Nutzerantwort aufzuschieben (echter "leerer Start"), das haette aber einen
+  groesseren Umbau der Startup-Reihenfolge (Config-Laden vor Server-Start,
+  Kamera-Connect in `lifespan()`) erfordert -- stattdessen verbindet die App
+  beim Boot weiterhin ganz normal wie bisher, und "Start new config" raeumt
+  das im Nachhinein wieder auf. Neue `AppState.startup_choice_pending`
+  (Default `True`, rein Laufzeitzustand, nicht in `config.yaml`) sowie drei
+  Routen: `GET /api/startup/status`, `POST /api/startup/load-previous`,
+  `POST /api/startup/new-config`. Frontend (`web/static/app.js::
+  initStartupChoiceDialog()`) fragt den Status bei jedem Seitenaufruf ab und
+  zeigt bei `pending=true` ein Overlay (`web/templates/base.html`,
+  `.startup-overlay`/`.startup-dialog` in `app.css`) -- die dahinterliegende
+  Web-UI bleibt sichtbar, aber per `.app-shell.is-dimmed`
+  (`filter: grayscale(1) brightness(0.55)` + `pointer-events: none`)
+  gedimmt/nicht bedienbar (Nutzerauftrag: "web ui in the background but
+  grayed out" statt eines rein nativen Dialogs -- passt ausserdem besser
+  zum bestehenden FastAPI+HTMX-Stack als ein natives tkinter-Fenster, keine
+  neue Abhaengigkeit noetig). "Start new config" hat client-seitig ein
+  `confirm()`-Popup davor (destruktive Aktion: trennt alle Kameras und
+  ueberschreibt `config.yaml`), beide Aktionen laden danach die Seite neu
+  (`location.reload()`, gleiches Muster wie beim bestehenden Kamera-Connect/
+  Disconnect-Button). Getestet in `tests/test_application.py`
+  (`test_reset_to_new_config_disconnects_camera_and_clears_config`,
+  `test_reset_to_new_config_persists_empty_config_to_file`,
+  `test_reset_to_new_config_publishes_config_changed`,
+  `test_reset_to_new_config_with_no_cameras_is_noop_safe`),
+  `tests/test_web_app.py` (`test_startup_status_pending_by_default`,
+  `test_startup_load_previous_marks_answered_without_touching_cameras`,
+  `test_startup_new_config_endpoint_disconnects_camera_and_resets_config`).
+  315 Tests bestehen (vorher 308). **Live gegen eine echte laufende
+  Instanz verifiziert (2026-07-23, separates Scratch-Verzeichnis + eigene
+  `config.yaml`-Kopie, NICHT die echte Projekt-`config.yaml`):** `GET /`
+  liefert das Overlay-Markup, `app.css`/`app.js` liefern die neuen
+  Regeln/Funktion aus, `POST /api/startup/new-config` hat live eine
+  registrierte Testkamera getrennt und die Scratch-`config.yaml` auf den
+  Default-Zustand zurueckgesetzt (`cameras: []`, `banks: []` usw.) --
+  serverseitiger Roundtrip vollstaendig bestaetigt. **Nicht verifiziert:**
+  das Overlay/Dimmen visuell im Browser (kein Browser-Automatisierungs-
+  Tool auf dieser Windows-Maschine verfuegbar, nur `curl`-basierte Pruefung
+  von HTML/CSS/JS-Inhalt und API-Roundtrip) sowie das Verhalten des
+  `confirm()`-Popups selbst.
+- **Button 1 liess sich nach einem Fader-Zug bei aktivem Auto-Iris nicht mehr
+  umschalten (Bugreport 2026-07-23, direkte Folge des Auto-Iris-Snapback-
+  Fixes weiter oben):** Nutzer meldete nach Bestaetigung des Snapback-Fixes
+  ("it is workin now"), dass Rec/Button 1 (Encoder-Funktionsauswahl)
+  danach auf KEINEM Kanal mehr reagierte, nicht nur auf dem betroffenen.
+  **Root Cause (per Code-Lesen erschlossen, nicht durch einen mitgeschnittenen
+  Traceback bestaetigt -- ein etwaiger Fehler haette wie beim analogen,
+  bereits behobenen Tx-Bug oben nur als "Task exception was never retrieved"
+  ueber den asyncio-Root-Logger geloggt, NICHT ueber den vom `/logs`-
+  Ringpuffer abgehoerten `ptz_control`-Logger, siehe dortiger Fix):**
+  `midi/fader.py::_poll_loop()` rief `_handle(msg)` bisher ohne jede eigene
+  Fehlerbehandlung auf -- eine Ausnahme aus IRGENDEINEM Handler (z. B. dem
+  neuen `driver.query_iris()`-Aufruf in `apply_iris()` bei aktivem
+  Auto-Iris, siehe Fix oben) haette den gesamten `while True`-Poll-Loop
+  dauerhaft abgerissen (kein Supervisor/Neustart) -- danach reagiert das
+  physische Geraet auf KEINE Note/Pitchbend-Nachricht mehr, exakt das
+  gemeldete Symptom. Dieser Fehlerpfad war bereits als offener, bisher
+  unbestaetigter Risikopunkt dokumentiert (s. o., "Rx-Seite hat weiterhin
+  keine eigene Fehlerbehandlung") -- jetzt durch diesen Bugreport praktisch
+  bestaetigt. Neue `XTouchFader._handle_safely()`-Methode (von `_poll_loop()`
+  statt `_handle()` direkt aufgerufen) faengt jede Ausnahme ab, loggt sie
+  (`LOGGER.exception(...)`, landet damit -- anders als das asyncio-Root-
+  Logger-Verhalten oben -- diesmal korrekt im `/logs`-Ringpuffer) und macht
+  mit der naechsten Nachricht weiter, statt den Loop mitzureissen. Getestet
+  in `tests/test_fader.py`
+  (`test_handle_safely_logs_and_swallows_exception_instead_of_killing_poll_loop`,
+  `test_handle_safely_does_not_block_subsequent_messages` -- Letzterer bildet
+  das gemeldete Symptom direkt nach: ein fehlschlagender erster Aufruf darf
+  einen erfolgreichen zweiten Aufruf auf demselben Kanal nicht verhindern).
+  321 Tests bestehen (vorher 319), keine Regression. **Nicht abschliessend
+  geklärt:** die exakte Ausnahme, die beim Nutzer tatsaechlich auftrat, wurde
+  NICHT durch einen mitgeschnittenen Traceback bestaetigt (per Code-Lesen
+  konnte keine offensichtliche unbehandelte Ausnahme in `query_iris()`/
+  `query_f_number()`/`apply_iris()` gefunden werden -- beide fangen
+  `CameraCommandError` bereits ab) -- der Fix haertet `_poll_loop()` deshalb
+  generell gegen JEDE Handler-Ausnahme ab (robuster, unabhaengig von der
+  exakten Ursache), statt eine einzelne, nicht zweifelsfrei belegte Ursache
+  gezielt zu patchen. Falls das Symptom nach diesem Fix erneut auftritt,
+  waere jetzt zumindest eine Log-Zeile (`MIDI-Eingang-Verarbeitung
+  fehlgeschlagen fuer ...`) im `/logs`-Ringpuffer zu erwarten, die die
+  tatsaechliche Ausnahme benennt -- bisher nicht live gegen die reale
+  Hardware nachgestellt.
+  **Fortsetzung, noch am selben Tag (Bugreport: "on bank 1 the button 1 is
+  still stuck at ND", danach "nothing is reacting to the controler" fuer
+  ALLE Bedienelemente):** der Fix oben deckte nur `_handle()` (die
+  Nachrichten-VERARBEITUNG) ab -- `self._in_port.iter_pending()` selbst
+  (das eigentliche Port-LESEN, direkt in `_poll_loop()`s `while True`-Rumpf,
+  ausserhalb jedes try/except) blieb ungeschuetzt. Ein Fehler dort (z. B.
+  ein transienter `rtmidi`-Lesefehler) haette den Poll-Loop weiterhin
+  dauerhaft mitgerissen -- passt exakt zum gemeldeten "gar keine Reaktion
+  mehr auf dem Controller" (Fader/Rec/Solo/Mute/Select gleichermassen
+  betroffen, nicht nur ND/Button 1). Das war derselbe, bereits in CLAUDE.md
+  als offen dokumentierte Risikopfad ("Rx-Seite hat weiterhin keine eigene
+  Fehlerbehandlung beim Lesen") -- durch diesen zweiten Bugreport jetzt
+  ebenfalls praktisch bestaetigt. `_poll_loop()`s Rumpf wurde dafuer in eine
+  neue `_poll_once()`-Methode extrahiert (testbar ohne die eigentliche
+  Endlosschleife laufen zu lassen); das Lesen (`iter_pending()`) hat jetzt
+  ein eigenes try/except (`LOGGER.exception("MIDI-Eingang-Lesen
+  fehlgeschlagen")`, bricht den aktuellen Takt ab, naechster Takt startet
+  normal), waehrend die Verarbeitung weiterhin ueber `_handle_safely()`
+  laeuft (unveraendert). Getestet in `tests/test_fader.py`
+  (`test_poll_once_logs_and_returns_when_reading_input_fails`,
+  `test_poll_once_processes_pending_messages_normally`,
+  `test_poll_once_recovers_on_next_call_after_a_failed_read` -- neue
+  `FakeInPort`-Testklasse simuliert sowohl einen werfenden `iter_pending()`
+  als auch eine normale Nachrichtenliste). 324 Tests bestehen (vorher 321),
+  keine Regression. **Wichtig fuer den Nutzer:** dieser Fix wird erst nach
+  einem vollstaendigen Neustart der App wirksam (nicht durch bloßes
+  Neuladen der Browser-Seite) -- ob er das gemeldete Symptom tatsaechlich
+  behebt, ist damit erst nach einem erneuten Test am echten Geraet bekannt.
+  **Weiterhin nicht abschliessend geklärt:** wie beim ersten Teil dieses
+  Bugreports wurde auch hier kein tatsaechlicher Traceback vom Nutzer
+  eingesehen (nur die Symptombeschreibung) -- die Ursache des Lesefehlers
+  selbst (Windows-USB-Energieverwaltung? etwas anderes?) bleibt unbestaetigt,
+  nur die fehlende Fehlerbehandlung drumherum wurde behoben.
+- **`config.yaml` versehentlich per "Start new config" auf die reale Projekt-
+  Config statt nur eine Scratch-Kopie angewendet (2026-07-23):** die
+  MIDI-Ports (`midi.input_port`/`output_port`) sowie alle 5 Kameras/Bank A/
+  Companion waren in der (uncommitteten) Arbeitskopie auf die Schema-
+  Defaults zurueckgesetzt -- deckungsgleich mit `reset_to_new_config()`
+  (Startup-Dialog "Start new config", siehe Eintrag oben). Root Cause fuer
+  den gemeldeten "keine Verbindung zum X-Touch": `web/app.py`s Lifespan
+  versucht den MIDI-Connect nur, wenn `config.midi.input_port` truthy ist --
+  mit leerem String wurde gar nicht erst versucht zu verbinden (kein
+  Hardware-/Treiberproblem). Per `git checkout -- config.yaml` auf den
+  letzten committeten Stand zurueckgesetzt (Nutzerentscheid: voller Restore,
+  nicht nur die MIDI-Zeilen). Dabei zusaetzlich verifiziert (nicht nur
+  angenommen): echte Hardware-Portnamen sind `X-Touch-Ext 0` (Input)/
+  `X-Touch-Ext 1` (Output) -- der konfigurierte Kurzname `X-Touch-Ext` matcht
+  darueber per Substring (`web/app.py::_find_midi_port()`, Spec §5.5), kein
+  eigener Fehlerpfad.
+- **Auto-Iris-Snapback (siehe Eintrag oben, urspruenglich 2026-07-23 gefixt)
+  griff nach Druck auf einen Auto-Iris-Button nicht (Bugreport 2026-07-23,
+  direkt im Anschluss an den vorigen Punkt gemeldet: "wir hatten das schon
+  gefixt, dann kam aber die Verbindungstrennung dazwischen"):** Root Cause
+  gefunden, unabhaengig vom fruehren `_poll_loop()`-Crash-Bug (der war
+  bereits vorher behoben, siehe Eintraege oben) -- `apply_button_action()`
+  in `core/application.py` aktualisierte beim Umschalten eines
+  "auto_iris"-Toggle-Buttons bisher nur `cam_state.feature_states
+  ["auto_iris"]` (fuer die Button-LED), nicht aber das separate
+  `cam_state.auto_iris`-Feld, das `apply_iris()`s Snapback-Logik tatsaechlich
+  prueft (siehe dortiger Eintrag) -- ein Fader-Zug direkt nach Druck auf den
+  Auto-Iris-Button sah deshalb weiterhin den veralteten Auto-Iris-Stand (i. d.
+  R. `False` seit dem letzten Connect) und sprang nicht zurueck, obwohl die
+  Kamera laengst auf Auto-Iris stand. Neuer Zweig in `apply_button_action()`:
+  bei `feature_key == "auto_iris"` wird nach dem Toggle zusaetzlich
+  `cam_state.auto_iris = new_enabled` gesetzt. Getestet in
+  `tests/test_application.py`
+  (`test_apply_button_action_auto_iris_toggle_updates_cam_state_auto_iris`).
+  325 Tests bestehen (vorher 324), keine Regression. **Nicht live
+  nachgeprueft** -- der Fix ist nur unittest-abgesichert, noch nicht erneut
+  am echten X-Touch/einer echten Kamera gegengetestet.
 
 ## Abschlussregel
 

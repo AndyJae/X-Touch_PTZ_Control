@@ -94,5 +94,16 @@ class CameraDriver(ABC):
         ...
 
     @abstractmethod
+    async def query_iris(self) -> tuple[float | None, bool | None]:
+        """Aktuelle Iris-Position (0.0-1.0) + Auto-Iris-Modus, in einer
+        Abfrage -- separat von `get_state()` aufrufbar. Bugfix 2026-07-23:
+        `set_iris()` wird von der Kamera stillschweigend ignoriert, solange
+        Auto-Iris aktiv ist (kein Fehler, aber keine Wirkung, siehe
+        CLAUDE.md) -- `apply_iris()` ruft dies danach erneut auf, um die
+        tatsaechliche (unveraenderte) Position statt des wirkungslosen
+        Zielwerts anzuzeigen."""
+        ...
+
+    @abstractmethod
     def subscribe(self, callback: Callable[[dict], None]) -> None:
         ...

@@ -1,3 +1,48 @@
+// Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
+// 2026-07-23) -- auf JEDER Seite geprueft (GET /api/startup/status), nicht
+// nur auf der Control-Seite, falls der Nutzer eine andere Seite zuerst
+// oeffnet/eine alte Tab neu laedt, bevor die Frage beantwortet wurde.
+// Grauwert-Overlay statt eines nativen Dialogs (Nutzerauftrag: Web-UI bleibt
+// sichtbar, aber gedimmt/nicht bedienbar dahinter), siehe app.css
+// .startup-overlay/.app-shell.is-dimmed. "Start new config" trennt alle
+// Kameras UND setzt config.yaml zurueck (reset_to_new_config(), disconnect-
+// after-the-fact statt deferred startup) -- deshalb vorher ein confirm().
+function initStartupChoiceDialog() {
+    const overlay = document.querySelector("[data-startup-overlay]");
+    const shell = document.querySelector("[data-app-shell]");
+    if (!overlay || !shell) return;
+
+    fetch("/api/startup/status")
+        .then((res) => res.json())
+        .then((data) => {
+            if (data.pending) {
+                overlay.hidden = false;
+                shell.classList.add("is-dimmed");
+            }
+        })
+        .catch(() => {});
+
+    const loadButton = overlay.querySelector("[data-startup-load-previous]");
+    const newButton = overlay.querySelector("[data-startup-new-config]");
+
+    async function answer(url) {
+        loadButton.disabled = true;
+        newButton.disabled = true;
+        try {
+            await fetch(url, { method: "POST" });
+        } finally {
+            location.reload();
+        }
+    }
+
+    loadButton.addEventListener("click", () => answer("/api/startup/load-previous"));
+    newButton.addEventListener("click", () => {
+        if (confirm("Start new config? This disconnects all cameras and resets config.yaml.")) {
+            answer("/api/startup/new-config");
+        }
+    });
+}
+
 // Surface-Ansicht: Button 1 waehlt die Encoder-Funktion des Kanals (Spec §9,
 // physisches Aequivalent: Rec-Taste). Loest nur die Auswahl serverseitig aus
 // (POST /api/channels/{i}/encoder/select, Aequivalent zu cycle_encoder_function())
@@ -557,6 +602,7 @@ function initLogLevelFilter() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+    initStartupChoiceDialog();
     initEncoderFunctionSelect();
     initCameraConnectButtons();
     initCameraNameInputs();

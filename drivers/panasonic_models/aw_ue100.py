@@ -47,10 +47,16 @@ Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
 (`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `knee_manual`/
 `knee_auto` (`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle
 direkt in dieser PDF als Request/Response-Paar verifiziert.
+
+Iris F-Nummer (2026-07-23, `QIF`/`OIF`, siehe drivers/panasonic_aw.py::
+_F_NUMBER_DATA_MIN): eigene PDF bestaetigt dieselben Ankerpunkte
+(0Eh=F1.4/1Ch=F2.8/38h=F5.6/A0h=F16/FFh=CLOSE) wie AW-UE160.
 """
 
 CAMERA_ID = "AW-UE100"
 DISPLAY_NAME = "Panasonic AW-UE100"
+
+SUPPORTS_IRIS_F_NUMBER = True
 
 GAIN_MIN_DB = 0
 GAIN_MAX_DB = 42
