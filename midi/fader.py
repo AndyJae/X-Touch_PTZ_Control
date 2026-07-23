@@ -328,7 +328,7 @@ class XTouchFader:
             # Spec §5.4: waehrend Touch nicht gegen den Finger schreiben --
             # gilt nur fuer den Motor, nicht fuer die Strip-Anzeige unten.
             self._send_fader_position(channel_index, payload["value"])
-        self._send_iris_percent_line(channel_index, payload["value"])
+        self._refresh_channel_line2(channel_index)
 
     async def _on_connection_changed(self, payload: dict) -> None:
         """Faehrt den Motorfader auf die aktuelle `cam_state.iris`-Position
@@ -438,29 +438,24 @@ class XTouchFader:
         if entry is None:
             return
         camera_cfg = self._state.cameras.get(entry.camera_id)
-        cam_state = self._state.state_store.get_camera(entry.camera_id)
         upper = channel_line1_text(self._state, channel_index, camera_cfg.name if camera_cfg else None)
-        lower = channel_display_text(self._state, channel_index, cam_state.iris)
+        lower = channel_display_text(self._state, channel_index)
         self._send_scribble_strip(channel_index, upper, lower)
 
     def _refresh_channel_line2(self, channel_index: int) -> None:
-        """Aktualisiert Zeile 2 nur des einen betroffenen Kanals nach einem
-        Encoder-Ereignis (Drehen/Push) -- Zeile 1 (Kameraname/Funktionsname)
-        aendert sich dabei nicht, kein Vollabzug aller 8 Strips noetig."""
+        """Aktualisiert Zeile 2 nur des einen betroffenen Kanals -- nach einem
+        Encoder-Ereignis (Drehen/Push, Zeile 1 aendert sich dabei nicht) oder
+        nach `iris_changed` (respektiert die aktive Encoder-Funktion ueber
+        `channel_display_text()` -- Bugfix: zeigte vorher immer die Iris-
+        Anzeige, auch wenn Zeile 2 gerade gain/pedestal anzeigte, und
+        ueberschrieb das kurzzeitig waehrend eines Fader-Zugs). Kein Vollabzug
+        aller 8 Strips noetig."""
         if self._out_port is None:
             return
         entry = self._state.mapping.get_channel("fader", channel_index)
         if entry is None:
             return
-        cam_state = self._state.state_store.get_camera(entry.camera_id)
-        self._send_line2_text(channel_index, channel_display_text(self._state, channel_index, cam_state.iris))
-
-    def _send_iris_percent_line(self, channel_index: int, value: float) -> None:
-        """Ausgeloest durch `iris_changed` -- respektiert die aktive Encoder-
-        Funktion ueber `channel_display_text()` (Bugfix: zeigte vorher immer
-        Iris-%, auch wenn Zeile 2 gerade gain/pedestal anzeigte, und
-        ueberschrieb das kurzzeitig waehrend eines Fader-Zugs)."""
-        self._send_line2_text(channel_index, channel_display_text(self._state, channel_index, value))
+        self._send_line2_text(channel_index, channel_display_text(self._state, channel_index))
 
     def _send_line2_text(self, channel_index: int, text: str) -> None:
         strip = channel_index - 1

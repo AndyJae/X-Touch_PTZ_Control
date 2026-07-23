@@ -86,5 +86,13 @@ class CameraDriver(ABC):
         ...
 
     @abstractmethod
+    async def query_f_number(self) -> str | None:
+        """Aktuelle Iris-F-Nummer (z. B. "F9.8", "CLOSE") -- separat von
+        `get_state()` aufrufbar, damit ein Fader-Zug sie live nachfuehren
+        kann, ohne bei jedem Tick den kompletten Kamerastatus (Gain/Pedestal/
+        ND/Fehler) mitabzufragen (core/application.py::apply_iris())."""
+        ...
+
+    @abstractmethod
     def subscribe(self, callback: Callable[[dict], None]) -> None:
         ...

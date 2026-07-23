@@ -9,6 +9,7 @@ from drivers.base import CameraCommandError
 from drivers.panasonic_aw import (
     PanasonicAWDriver,
     _data_to_iris,
+    _decode_f_number,
     _iris_to_data,
     _parse_lens_info_iris,
     _parse_notification_payload,
@@ -39,6 +40,37 @@ def test_iris_scaling_boundaries() -> None:
     assert _iris_to_data(1.0) == 0xFFF
     assert _data_to_iris(0x555) == pytest.approx(0.0)
     assert _data_to_iris(0xFFF) == pytest.approx(1.0)
+
+
+def test_decode_f_number_matches_live_calibration() -> None:
+    # Live gegen eine reale AW-UE160 kalibriert (2026-07-23, manuelles
+    # Durchstufen der Iris am Kamera-OSD, QIF direkt mitgeschnitten) --
+    # F4.0 bis F11.0, siehe drivers/panasonic_aw.py-Modul-Docstring dort.
+    assert _decode_f_number(0x28) == "F4.0"
+    assert _decode_f_number(0x5D) == "F9.3"
+    assert _decode_f_number(0x5E) == "F9.4"
+    assert _decode_f_number(0x60) == "F9.6"
+    assert _decode_f_number(0x62) == "F9.8"
+    assert _decode_f_number(0x64) == "F10.0"
+    assert _decode_f_number(0x67) == "F10.3"
+    assert _decode_f_number(0x69) == "F10.5"
+    assert _decode_f_number(0x6E) == "F11.0"
+    # Spec-dokumentierte Ankerpunkte (§7.2), nicht live nachgestellt, aber
+    # deckungsgleich mit der live verifizierten Formel Data/10.
+    assert _decode_f_number(0x0E) == "F1.4"
+    assert _decode_f_number(0xA0) == "F16.0"
+
+
+def test_decode_f_number_close_sentinel() -> None:
+    assert _decode_f_number(0xFF) == "CLOSE"
+
+
+def test_decode_f_number_unconfirmed_gap_returns_none() -> None:
+    # 0xA1-0xFE liegt zwischen dem F16-Anker und dem CLOSE-Sentinel -- live
+    # nicht erreichbar (siehe Modul-Docstring), deshalb bewusst nicht
+    # dekodiert statt einen ungeprueften Wert zu erfinden.
+    assert _decode_f_number(0xA1) is None
+    assert _decode_f_number(0xFE) is None
 
 
 def test_set_iris_sends_correct_url_and_hash_encoding() -> None:
@@ -574,6 +606,24 @@ def test_query_iris_parses_position_and_mode() -> None:
     assert auto_iris is True
 
 
+def test_query_f_number_decodes_known_range() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="OIF:6E")
+
+    driver = _build_driver(handler)
+    assert _run(driver.query_f_number()) == "F11.0"
+
+
+def test_query_f_number_falls_back_to_raw_hex_in_unconfirmed_gap() -> None:
+    # 0xA1-0xFE ist nicht dekodiert (siehe _decode_f_number()) -- Aufrufer
+    # bekommen den rohen Hex-Wert statt eines erfundenen Labels.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="OIF:C0")
+
+    driver = _build_driver(handler)
+    assert _run(driver.query_f_number()) == "C0"
+
+
 def test_get_state_aggregates_queries() -> None:
     responses = {
         "cmd=%23GI": "gi5551",
@@ -596,7 +646,7 @@ def test_get_state_aggregates_queries() -> None:
 
     assert state.iris == pytest.approx(0.0)
     assert state.auto_iris is True
-    assert state.iris_f_number == "0E"
+    assert state.iris_f_number == "F1.4"
     assert state.gain_db == 0
     assert state.pedestal == 0
     assert state.nd_index == 2

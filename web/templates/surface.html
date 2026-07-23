@@ -40,7 +40,7 @@
             </div>
 
             <div class="surface-buttons">
-                <button type="button" class="surf-btn" data-encoder-fn-select data-channel-index="{{ ch.index }}">{{ enc.function | replace('_', ' ') | upper }}</button>
+                <button type="button" class="surf-btn" data-encoder-fn-select data-channel-index="{{ ch.index }}">{{ 'CAMERA INFO' if enc.function == 'camera_status' else (enc.function | replace('_', ' ') | upper) }}</button>
                 {% for slot in ["button2", "button3"] %}
                 {% set assigned = ch.buttons[slot] %}
                 {# Zahnrad oeffnet ein Popover zur Funktionsauswahl direkt hier auf der

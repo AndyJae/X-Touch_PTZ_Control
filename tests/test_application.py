@@ -195,6 +195,49 @@ def test_driver_pedestal_changed_event_updates_state_and_publishes(monkeypatch) 
     assert received == [{"camera_id": "cam1", "value": -50}]
 
 
+def test_driver_iris_changed_event_refreshes_f_number_on_position_change(monkeypatch) -> None:
+    # Bugreport 2026-07-23 (live gegen die reale AW-UE160): externe
+    # Iris-Bewegung (z. B. Auto-Iris) liefert nur die Iris-POSITION ueber das
+    # lPI-Lens-Info-Frame (§7.3.2) -- ohne diesen Zweig blieb `iris_f_number`
+    # dabei auf dem zuletzt bekannten Stand stehen (App zeigte "F11.0",
+    # Kamera-QIF/-OSD zeigten "F6.4").
+    state = _build_state(monkeypatch)
+
+    async def scenario() -> None:
+        await connect_camera(state, "cam1")
+        driver = state.drivers["cam1"]
+        driver.iris_f_number = "F6.4"
+        driver.subscribed_callback({"type": "iris_changed", "value": 0.9})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    _run(scenario())
+
+    cam_state = state.state_store.get_camera("cam1")
+    assert cam_state.iris == pytest.approx(0.9)
+    assert cam_state.iris_f_number == "F6.4"
+
+
+def test_driver_iris_changed_event_skips_f_number_refresh_when_position_unchanged(monkeypatch) -> None:
+    # lPI-Frames kommen laut Spec §7.3.1 als ~300ms-Heartbeat, nicht nur bei
+    # tatsaechlicher Bewegung -- ein zusaetzlicher QIF-Request bei jedem
+    # unveraenderten Frame waere unnoetiger Dauer-Traffic.
+    state = _build_state(monkeypatch)
+
+    async def scenario() -> None:
+        await connect_camera(state, "cam1")
+        driver = state.drivers["cam1"]
+        driver.query_f_number_calls = 0
+        driver.subscribed_callback({"type": "iris_changed", "value": state.state_store.get_camera("cam1").iris})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    _run(scenario())
+
+    driver = state.drivers["cam1"]
+    assert driver.query_f_number_calls == 0
+
+
 def test_driver_nd_changed_event_updates_state_and_publishes(monkeypatch) -> None:
     # Nutzerreport 2026-07-22 (reale AW-UE160): externe ND-Aenderung (z. B.
     # am Kamera-eigenen Bedienfeld) wurde bisher nicht erkannt.
@@ -228,6 +271,25 @@ def test_apply_iris_clamps_and_calls_driver(monkeypatch) -> None:
     driver = state.drivers["cam1"]
     assert driver.set_iris_calls == [1.0]
     assert state.state_store.get_camera("cam1").iris == 1.0
+
+
+def test_apply_iris_refreshes_f_number_on_every_tick(monkeypatch) -> None:
+    # Nutzerauftrag 2026-07-23 (revidiert -- erste Fassung fragte nur bei
+    # final=True): eine einzelne QIF-Abfrage ist klein genug, um die F-Nummer
+    # live waehrend des Ziehens mitlaufen zu lassen, nicht erst beim
+    # Loslassen -- jeder vom Rate-Limiter durchgelassene Tick fragt sie per
+    # query_f_number() neu ab (keine Formel aus der Fader-Position ableitbar).
+    state = _build_state(monkeypatch)
+    _run(connect_camera(state, "cam1"))
+    driver = state.drivers["cam1"]
+
+    driver.iris_f_number = "F9.8"
+    _run(apply_iris(state, 1, 0.5, final=False))
+    assert state.state_store.get_camera("cam1").iris_f_number == "F9.8"
+
+    driver.iris_f_number = "F4.0"
+    _run(apply_iris(state, 1, 1.0, final=True))
+    assert state.state_store.get_camera("cam1").iris_f_number == "F4.0"
 
 
 def test_apply_iris_on_unmapped_channel_is_ignored(monkeypatch) -> None:
@@ -494,15 +556,16 @@ def test_apply_button_action_publishes_feature_changed(monkeypatch) -> None:
 
 def test_cycle_encoder_function_advances_and_wraps(monkeypatch) -> None:
     # Feste Reihenfolge (Nutzerentscheid, core/application.py._ENCODER_FUNCTIONS):
-    # gain -> pedestal -> nd -> camera_status -> wrap.
+    # camera_status -> gain -> pedestal -> nd -> wrap. camera_status steht am
+    # Anfang, damit Button 1 beim Start zuerst Camera Info zeigt (Nutzerauftrag).
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
+    assert _run(cycle_encoder_function(state, 1)) == "camera_status"
     assert _run(cycle_encoder_function(state, 1)) == "gain"
     assert _run(cycle_encoder_function(state, 1)) == "pedestal"
     assert _run(cycle_encoder_function(state, 1)) == "nd"
-    assert _run(cycle_encoder_function(state, 1)) == "camera_status"
-    assert _run(cycle_encoder_function(state, 1)) == "gain"  # wrap
+    assert _run(cycle_encoder_function(state, 1)) == "camera_status"  # wrap
 
 
 def test_cycle_encoder_function_queries_camera_baseline(monkeypatch) -> None:
@@ -512,6 +575,7 @@ def test_cycle_encoder_function_queries_camera_baseline(monkeypatch) -> None:
     driver.gain_db = 4
     driver.pedestal = -50
 
+    _run(cycle_encoder_function(state, 1))  # -> "camera_status" (Default, kein Query)
     _run(cycle_encoder_function(state, 1))  # -> "gain"
     assert state.state_store.get_camera("cam1").gain_db == 4
 
@@ -526,6 +590,7 @@ def test_apply_encoder_turn_sends_live_to_camera(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     _run(apply_encoder_turn(state, 1, 1))  # aktive Funktion: "gain", +1
 
@@ -541,6 +606,7 @@ def test_apply_encoder_turn_accumulates_pending_delta_when_rate_limited(monkeypa
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
@@ -562,6 +628,7 @@ def test_apply_encoder_turn_clamps_preview_to_spec_range(monkeypatch) -> None:
     # das Clamping nie am tatsaechlich gesendeten Wert pruefen.
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
@@ -589,6 +656,7 @@ def test_apply_encoder_turn_gain_auto_further_turns_down_stay_in_auto(monkeypatc
     # Herunterdrehen waehrend Auto bleibt ein No-Op (kein Kamerabefehl).
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
     cam_state = state.state_store.get_camera("cam1")
     cam_state.gain_db = None
     cam_state.gain_auto = True
@@ -608,6 +676,7 @@ def test_apply_encoder_turn_gain_auto_turn_up_exits_to_gain_min_db(monkeypatch) 
     # CLAUDE.md) -- Sequenz "Auto, 0, +1, +2" beim Hochdrehen.
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
     cam_state = state.state_store.get_camera("cam1")
     cam_state.gain_db = None
     cam_state.gain_auto = True
@@ -634,6 +703,7 @@ def test_apply_encoder_turn_gain_auto_exit_continues_proportionally_like_normal_
     # geclampt.
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
     cam_state = state.state_store.get_camera("cam1")
     cam_state.gain_db = None
     cam_state.gain_auto = True
@@ -669,6 +739,7 @@ def test_apply_encoder_turn_rejected_gain_value_clears_stale_pending_delta(monke
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
 
@@ -692,6 +763,7 @@ def test_apply_encoder_turn_respects_gain_step_db_for_3db_step_models(monkeypatc
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
     driver.gain_step_db = 3
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     _run(apply_encoder_turn(state, 1, 1))
 
@@ -713,6 +785,7 @@ def test_apply_encoder_turn_gain_step_combines_with_acceleration(monkeypatch) ->
     driver.gain_step_db = 3
     driver.gain_min_db = 0
     driver.gain_max_db = 48
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
@@ -733,8 +806,7 @@ def test_apply_encoder_turn_pedestal_ignores_gain_step_db(monkeypatch) -> None:
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
     driver.gain_step_db = 3
-    _run(cycle_encoder_function(state, 1))  # -> "gain"
-    _run(cycle_encoder_function(state, 1))  # -> "pedestal"
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("pedestal")
 
     _run(apply_encoder_turn(state, 1, 1))
 
@@ -746,7 +818,8 @@ def test_apply_encoder_turn_uses_function_selected_via_button1(monkeypatch) -> N
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
-    _run(cycle_encoder_function(state, 1))  # -> "gain" (Index -1 -> 0, Baseline-Bestaetigung)
+    _run(cycle_encoder_function(state, 1))  # -> "camera_status" (Index -1 -> 0, Default)
+    _run(cycle_encoder_function(state, 1))  # -> "gain" (Baseline-Bestaetigung)
     _run(cycle_encoder_function(state, 1))  # -> "pedestal"
     _run(apply_encoder_turn(state, 1, 1))
 
@@ -757,6 +830,7 @@ def test_apply_encoder_turn_accelerates_after_three_fast_clicks(monkeypatch) -> 
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
@@ -783,6 +857,7 @@ def test_apply_encoder_turn_on_disconnected_camera_is_noop(monkeypatch) -> None:
 def test_cycle_encoder_function_discards_pending_value_of_previous_function(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
@@ -791,7 +866,7 @@ def test_cycle_encoder_function_discards_pending_value_of_previous_function(monk
     _run(apply_encoder_turn(state, 1, 1))  # zu schnell danach -> vom Limiter zurueckgehalten
     assert state.encoder_pending_delta[1] == 1  # noch nicht gesendetes Delta fuer "gain"
 
-    _run(cycle_encoder_function(state, 1))  # -> "gain" erneut, verwirft das Pending-Delta
+    _run(cycle_encoder_function(state, 1))  # -> "pedestal", verwirft das Pending-Delta von "gain"
     assert state.encoder_pending_delta[1] == 0
 
 
@@ -802,6 +877,7 @@ def test_commit_encoder_value_sets_saved_flag_without_sending_to_camera(monkeypa
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     _run(apply_encoder_turn(state, 1, 1))  # sofort live gesendet
     driver.step_gain_calls.clear()  # nur den Effekt des Commits selbst pruefen
@@ -819,6 +895,7 @@ def test_apply_encoder_turn_resets_saved_flag(monkeypatch) -> None:
     # "Gespeichert" (rot) gilt nur bis zum naechsten Dreh-Tick (Nutzerentscheid).
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     _run(apply_encoder_turn(state, 1, 1))
     _run(commit_encoder_value(state, 1))
@@ -832,33 +909,32 @@ def test_apply_encoder_turn_resets_saved_flag(monkeypatch) -> None:
 def test_commit_encoder_value_is_noop_for_camera_status(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
-
-    for _ in range(4):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd -> camera_status
+    # Default (kein Button-1-Druck) ist bereits "camera_status" (Nutzerauftrag:
+    # Button 1 soll beim Start zuerst Camera Info zeigen).
 
     _run(commit_encoder_value(state, 1))
 
-    assert state.encoder_saved.get(1) is False  # von cycle_encoder_function zurueckgesetzt, nicht gesetzt
+    assert state.encoder_saved.get(1) is None  # camera_status: commit_encoder_value() ist ein No-Op
 
 
 def test_encoder_preview_shows_default_function_without_any_button_press(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
-    # Ohne Button-1-Druck ist die erste Funktion aktiv ("gain") -- das
-    # Baseline-Ansehen kommt bereits aus dem initialen connect_camera()-
-    # get_state().
-    assert encoder_preview(state, 1) == ("gain", 0)
+    # Ohne Button-1-Druck ist "camera_status" (Camera Info) aktiv (Nutzerauftrag
+    # 2026-07-23: Button 1 soll beim Start zuerst Camera Info zeigen) -- reiner
+    # Anzeige-Eintrag ohne Preview-Wert.
+    assert encoder_preview(state, 1) is None
 
 
 def test_encoder_preview_none_for_camera_status(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
-    assert encoder_preview(state, 1) == ("gain", 0)  # Default: erste Funktion
+    assert encoder_preview(state, 1) is None  # Default: "camera_status"
 
-    for _ in range(4):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd -> camera_status
+    for _ in range(5):  # camera_status -> gain -> pedestal -> nd -> camera_status (wrap)
+        _run(cycle_encoder_function(state, 1))
     assert encoder_preview(state, 1) is None
 
 
@@ -866,9 +942,7 @@ def test_apply_encoder_turn_is_noop_for_camera_status(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
-
-    for _ in range(4):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd -> camera_status
+    # Default (kein Button-1-Druck) ist bereits "camera_status".
 
     _run(apply_encoder_turn(state, 1, 1))
 
@@ -880,9 +954,7 @@ def test_apply_encoder_turn_is_noop_for_camera_status(monkeypatch) -> None:
 def test_channel_line1_shows_camera_name_for_camera_status(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
-
-    for _ in range(4):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd -> camera_status
+    # Default (kein Button-1-Druck) ist bereits "camera_status".
 
     assert channel_line1_text(state, 1, "CAM 1") == "CAM 1"
 
@@ -894,10 +966,10 @@ def test_channel_line1_shows_function_name_for_gain_and_pedestal(monkeypatch) ->
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
-    assert channel_line1_text(state, 1, "CAM 1") == "GAIN"  # Default-Funktion
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
+    assert channel_line1_text(state, 1, "CAM 1") == "GAIN"
 
-    _run(cycle_encoder_function(state, 1))  # -> "gain" erneut
-    _run(cycle_encoder_function(state, 1))  # -> "pedestal"
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("pedestal")
     assert channel_line1_text(state, 1, "CAM 1") == "PEDESTAL"
 
 
@@ -909,18 +981,18 @@ def test_channel_display_text_shows_raw_value_without_percent_or_prefix(monkeypa
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
 
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
 
     _run(apply_encoder_turn(state, 1, 5))  # aktive Funktion: "gain"
-    assert channel_display_text(state, 1, None) == "+5dB"
+    assert channel_display_text(state, 1) == "+5dB"
 
-    _run(cycle_encoder_function(state, 1))  # -> "gain" (bestaetigt erneut)
     _run(cycle_encoder_function(state, 1))  # -> "pedestal"
     fake_now[0] += 1.0
     _run(apply_encoder_turn(state, 1, -45))
-    assert channel_display_text(state, 1, None) == "-45"  # kein "%", kein "P"-Praefix
+    assert channel_display_text(state, 1) == "-45"  # kein "%", kein "P"-Praefix
 
 
 # --- ND-Filter als 4. Encoder-Funktion (Nutzerauftrag 2026-07-22) -----------
@@ -932,10 +1004,7 @@ def test_apply_encoder_turn_nd_steps_through_options_by_position(monkeypatch) ->
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
-
-    _run(cycle_encoder_function(state, 1))  # -> "gain"
-    _run(cycle_encoder_function(state, 1))  # -> "pedestal"
-    _run(cycle_encoder_function(state, 1))  # -> "nd"
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("nd")
 
     _run(apply_encoder_turn(state, 1, 1))
 
@@ -951,11 +1020,10 @@ def test_apply_encoder_turn_nd_clamps_at_last_option_no_wrap(monkeypatch) -> Non
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
 
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("nd")
+
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
-
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
 
     for _ in range(10):  # weit ueber die letzte Position (3) hinausdrehen
         _run(apply_encoder_turn(state, 1, 1))
@@ -971,11 +1039,10 @@ def test_apply_encoder_turn_nd_clamps_at_first_option_no_wrap(monkeypatch) -> No
     driver = state.drivers["cam1"]
     driver.nd_index = 3
 
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("nd")
+
     fake_now = [1000.0]
     monkeypatch.setattr(core_application.time, "monotonic", lambda: fake_now[0])
-
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
 
     for _ in range(10):  # weit unter die erste Position (0) hinausdrehen
         _run(apply_encoder_turn(state, 1, -1))
@@ -993,9 +1060,7 @@ def test_apply_encoder_turn_nd_sparse_group_skips_missing_indices(monkeypatch) -
     driver = state.drivers["cam1"]
     driver.nd_options = [(0, "THROUGH"), (3, "1/64"), (4, "1/8")]
     driver.nd_index = 0
-
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("nd")
 
     _run(apply_encoder_turn(state, 1, 1))
 
@@ -1008,9 +1073,7 @@ def test_apply_encoder_turn_nd_rejected_value_clears_stale_pending_delta(monkeyp
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
     driver.raise_on_next_set_nd = CameraCommandError("ER3", command="OFT")
-
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("nd")
 
     _run(apply_encoder_turn(state, 1, 1))
 
@@ -1023,20 +1086,17 @@ def test_encoder_function_unsupported_nd_shows_na_for_model_without_nd_filter(mo
     _run(connect_camera(state, "cam1"))
     driver = state.drivers["cam1"]
     driver.nd_options = None  # z. B. AW-HE50 (kein physischer ND-Filter)
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("nd")
 
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
-
-    assert channel_display_text(state, 1, None) == "n/a"
+    assert channel_display_text(state, 1) == "n/a"
     assert channel_line1_text(state, 1, "CAM 1") == "ND"
 
 
 def test_commit_encoder_value_marks_saved_for_nd(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("nd")
 
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
     _run(apply_encoder_turn(state, 1, 1))
     assert state.encoder_saved.get(1) is False  # von apply_encoder_turn zurueckgesetzt
 
@@ -1048,23 +1108,24 @@ def test_commit_encoder_value_marks_saved_for_nd(monkeypatch) -> None:
 def test_channel_display_text_shows_nd_label(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
+    state.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("nd")
 
-    for _ in range(3):
-        _run(cycle_encoder_function(state, 1))  # -> gain -> pedestal -> nd
-
-    assert channel_display_text(state, 1, None) == "THROUGH"  # nd_index startet bei 0
+    assert channel_display_text(state, 1) == "THROUGH"  # nd_index startet bei 0
 
     _run(apply_encoder_turn(state, 1, 1))
-    assert channel_display_text(state, 1, None) == "1/4"
+    assert channel_display_text(state, 1) == "1/4"
 
 
 def test_channel_snapshot_exposes_display_line1_and_text(monkeypatch) -> None:
     state = _build_state(monkeypatch)
     _run(connect_camera(state, "cam1"))
 
+    # Default (kein Button-1-Druck) ist "camera_status" -> Kameraname + Iris-
+    # F-Nummer. FakeCameraDriver liefert keine F-Nummer (iris_f_number bleibt
+    # None), daher "n/a" statt eines erfundenen Werts.
     channel1 = next(c for c in channel_snapshot(state) if c["index"] == 1)
-    assert channel1["display_line1"] == "GAIN"
-    assert channel1["display_text"] == "+0dB"
+    assert channel1["display_line1"] == "CAM 1"
+    assert channel1["display_text"] == "n/a"
 
 
 def test_channel_snapshot_includes_button_assignment_and_state(monkeypatch) -> None:

@@ -37,7 +37,7 @@ cameras:
     update_notifications: false
     lens_info: false
 - id: cam1
-  name: CAM 1
+  name: ABC 1
   driver: panasonic_aw
   host: 192.168.11.134
   port: 80
@@ -48,7 +48,9 @@ banks:
 - name: Bank A
   channels:
   - camera: cam1
-    buttons: {}
+    buttons:
+      button2: auto_focus
+      button3: auto_iris
   - camera: cam2
     buttons:
       button2: drs_low

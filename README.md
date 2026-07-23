@@ -33,7 +33,7 @@ Kamera-eigenes Web-UI), über das Lens-Info-Feedback (`#LPC1`, Spec §7.3) in
 `drivers/panasonic_aw.py`.
 
 Rec (Button 1) schaltet pro Kanal fest durch vier Encoder-Funktionen:
-**Gain → Pedestal → ND → Camera Status** (nicht mehr über `config.yaml`
+**Gain → Pedestal → ND → Camera Info** (nicht mehr über `config.yaml`
 konfigurierbar, siehe `core/application.py._ENCODER_FUNCTIONS`). Drehen
 sendet bei Gain/Pedestal/ND **sofort live** einen Kamerabefehl (über eine eigene
 Rate-Limiter-Instanz je Kamera, `apply_encoder_turn` in `core/application.py`,
@@ -48,8 +48,8 @@ der Web-UI, bis zum nächsten Dreh-Tick).
 Es gibt pro Kanal genau **eine** Anzeige (Web-UI und physisches Scribble-
 Strip zeigen exakt denselben Text, `channel_line1_text()`/
 `channel_display_text()` in `core/application.py`): bei `camera_status`
-Zeile 1 Kameraname + Zeile 2 Iris-% (Platzhalter bis zur Klärung der
-F-Nummer-Tabelle, siehe Spec §14 Punkt 10); bei Gain/Pedestal zeigt Zeile 1
+Zeile 1 Kameraname + Zeile 2 Iris-F-Nummer (z. B. "F9.8"/"CLOSE", live gegen
+eine reale AW-UE160 kalibriert, siehe Spec §14 Punkt 10); bei Gain/Pedestal zeigt Zeile 1
 stattdessen den Funktionsnamen (GAIN/PEDESTAL) und Zeile 2 den unitlosen
 Rohwert (z. B. Pedestal `-45`, kein Prozentwert, kein zusätzliches
 Funktions-Präfix — das übernimmt jetzt Zeile 1). Nicht verbundene Kanäle

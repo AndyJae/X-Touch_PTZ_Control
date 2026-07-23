@@ -433,7 +433,7 @@ function applySurfaceSnapshot(channels) {
         const enc = ch.encoder;
         const fnButton = article.querySelector("[data-encoder-fn-select]");
         const encKnob = article.querySelector("[data-encoder]");
-        if (fnButton) fnButton.textContent = enc.function.replace(/_/g, " ").toUpperCase();
+        if (fnButton) fnButton.textContent = enc.function === "camera_status" ? "CAMERA INFO" : enc.function.replace(/_/g, " ").toUpperCase();
         // Rot bis zum naechsten Dreh-Tick (Nutzerentscheid, siehe
         // commit_encoder_value()/apply_encoder_turn()).
         if (scribbleStrip) scribbleStrip.classList.toggle("is-saved", !!enc.saved);

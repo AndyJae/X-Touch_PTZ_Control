@@ -163,6 +163,17 @@ def _channel_config(state: AppState, channel_index: int) -> BankChannelConfig | 
     return channels[channel_index - 1]
 
 
+async def _refresh_f_number_from_notification(state: AppState, camera_id: str, driver: CameraDriver) -> None:
+    """Fragt die F-Nummer separat nach (`driver.query_f_number()`, nur dieses
+    eine Feld statt des vollen `get_state()`) und publiziert erneut
+    `iris_changed`, damit Web-UI-Snapshot und Scribble-Strip (beide bereits
+    auf dieses Topic abonniert) die aufgefrischte F-Nummer mitnehmen --
+    siehe Aufrufstelle in `_wire_camera_events()`."""
+    cam_state = state.state_store.get_camera(camera_id)
+    cam_state.iris_f_number = await driver.query_f_number()
+    await state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": cam_state.iris})
+
+
 def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -> None:
     """Bruecke Treiber-Events (`subscribe()`, sync per ABC §6) auf den
     EventBus (async) -- damit reagieren Web-UI und MIDI-Motorfader auch auf
@@ -175,10 +186,24 @@ def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -
     def on_event(event: dict) -> None:
         event_type = event.get("type")
         if event_type == "iris_changed":
-            state.state_store.get_camera(camera_id).iris = event["value"]
+            cam_state = state.state_store.get_camera(camera_id)
+            position_changed = cam_state.iris != event["value"]
+            cam_state.iris = event["value"]
             asyncio.create_task(
                 state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": event["value"]})
             )
+            if position_changed:
+                # Bugreport 2026-07-23 (live gegen die reale AW-UE160,
+                # externe Auto-Iris-Bewegung): das lPI-Lens-Info-Frame (§7.3.2)
+                # traegt nur die rohe Iris-POSITION, keine F-Nummer -- ohne
+                # diesen Zweig blieb `iris_f_number` bei jeder extern (nicht
+                # ueber apply_iris()) ausgeloesten Positionsaenderung auf dem
+                # zuletzt bekannten Stand stehen (live bestaetigt: App zeigte
+                # "F11.0", Kamera-QIF/-OSD zeigten "F6.4"). Nur bei
+                # tatsaechlicher Positionsaenderung (nicht bei jedem
+                # ~300ms-Notification-Heartbeat) neu abfragen, analog zur
+                # Drosselung in apply_iris() ueber den Rate-Limiter.
+                asyncio.create_task(_refresh_f_number_from_notification(state, camera_id, driver))
         elif event_type == "feature_changed":
             state.state_store.get_camera(camera_id).feature_states[event["key"]] = event["enabled"]
             asyncio.create_task(
@@ -414,7 +439,18 @@ async def trigger_companion_select(state: AppState, channel_index: int) -> None:
 
 
 async def apply_iris(state: AppState, channel_index: int, value: float, *, final: bool) -> None:
-    """Datenfluss Fader -> Kamera, Spec §3: Mapping -> Rate-Limiter -> Driver."""
+    """Datenfluss Fader -> Kamera, Spec §3: Mapping -> Rate-Limiter -> Driver.
+
+    Fragt nach jedem tatsaechlich gesendeten Tick (d. h. jedem Tick, den der
+    Rate-Limiter durchlaesst, nicht nur bei `final=True`) zusaetzlich die
+    F-Nummer-Anzeige neu ab (`driver.query_f_number()`) -- Nutzerentscheid
+    2026-07-23, revidiert (erste Fassung fragte nur bei `final=True`):
+    anders als die lokal berechenbare Iris-%, gibt es fuer die F-Nummer keine
+    Formel aus der Fader-Position, nur die Kamera-eigene QIF-Abfrage. Eine
+    einzelne QIF-Abfrage ist klein genug, um pro Tick keinen spuerbaren
+    Zusatz-Traffic zu verursachen -- `query_f_number()` fragt bewusst nur
+    dieses eine Feld ab, nicht den vollen `get_state()` (Gain/Pedestal/ND/
+    Fehler waeren hier unnoetig)."""
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
         return
@@ -435,15 +471,20 @@ async def apply_iris(state: AppState, channel_index: int, value: float, *, final
     else:
         cam_state.iris = value
         cam_state.error = None
+        cam_state.iris_f_number = await driver.query_f_number()
         await state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": value})
 
 
 # --- Encoder-Funktionsauswahl + -Drehung (Spec §9) --------------------------
 # Button 1 (physisch Rec) schaltet fest durch diese Liste (Nutzerentscheid:
 # nicht mehr ueber `config.yaml` konfigurierbar, siehe core/config.py).
+# `camera_status` steht bewusst an erster Stelle (Nutzerauftrag 2026-07-23):
+# ohne jeden Button-1-Druck (App-Start, Kamera-Connect) zeigt Button 1 damit
+# zuerst "Camera Info" statt "Gain" -- alle Default-Index-Lookups fallen auf
+# `.get(channel_index, 0)` zurueck (siehe channel_display_text() u. a.).
 # Shutter ist per Nutzerentscheid komplett aus dem Scope entfernt (kein
 # Treiber-Code, keine Config, kein Encoder-Eintrag), nicht nur zurueckgestellt.
-_ENCODER_FUNCTIONS = ("gain", "pedestal", "nd", "camera_status")
+_ENCODER_FUNCTIONS = ("camera_status", "gain", "pedestal", "nd")
 
 _ENCODER_STEP_METHODS = {
     "gain": "step_gain",
@@ -817,16 +858,6 @@ def _encoder_function_unsupported(state: AppState, channel_index: int) -> str | 
     return function_name
 
 
-def _iris_percent_text(value: float | None) -> str:
-    """Platzhalter-Anzeige (Spec §5.3 nennt F-Nummer, die Hex->F-Nummer-
-    Tabelle ist laut Spec aber nicht vollstaendig dokumentiert, siehe
-    PanasonicAWDriver._query_f_number) -- Iris in Prozent, bis die
-    Umrechnung nachgeruestet wird."""
-    if value is None:
-        return ""
-    return f"{round(value * 100)}%"
-
-
 def _nd_label(driver: CameraDriver | None, index: int | None) -> str | None:
     """Label des ND-Filter-Data-Werts `index` laut `driver.nd_options`
     (z. B. "1/64") -- `None`, wenn `index` unbekannt ist oder der Treiber
@@ -859,21 +890,28 @@ def _encoder_value_text(function_name: str, value: int | None) -> str:
     return f"{value:+d}{suffix}"
 
 
-def channel_display_text(state: AppState, channel_index: int, iris: float | None) -> str:
+def channel_display_text(state: AppState, channel_index: int) -> str:
     """Zeile 2 der EINEN Kanal-Anzeige -- Nutzerentscheid: physisches
     Scribble-Strip (`midi/fader.py`) und Web-UI zeigen exakt denselben Wert
     ueber dieselbe Funktion, kein eigenes Web-UI-Format mehr. Bei
-    `camera_status` die Iris-%, bei `gain`/`pedestal` der jeweilige
-    Funktionswert (siehe `encoder_preview`), bei `nd` das Label des
+    `camera_status` die Iris-F-Nummer (`cam_state.iris_f_number`, z. B.
+    "F9.8"/"CLOSE" -- Nutzerauftrag 2026-07-23: F-Nummer statt Iris-% als
+    Anzeige, live gegen eine reale AW-UE160 kalibriert, siehe
+    drivers/panasonic_aw.py::_decode_f_number()), bei `gain`/`pedestal` der
+    jeweilige Funktionswert (siehe `encoder_preview`), bei `nd` das Label des
     Ziel-Data-Werts (z. B. "1/64", siehe `_nd_label`) -- oder "n/a", wenn
     das Modell diese Funktion gar nicht unterstuetzt
     (`_encoder_function_unsupported()`, Nutzerentscheid 2026-07-18: explizit
-    statt stillschweigend auf die Iris-%-Anzeige zurueckzufallen)."""
+    statt stillschweigend auf eine Platzhalter-Anzeige zurueckzufallen) oder
+    die F-Nummer (noch) nicht bekannt ist."""
     preview = encoder_preview(state, channel_index)
     if preview is None:
         if _encoder_function_unsupported(state, channel_index) is not None:
             return "n/a"
-        return _iris_percent_text(iris)
+        entry = state.mapping.get_channel("fader", channel_index)
+        cam_state = state.state_store.get_camera(entry.camera_id) if entry is not None else None
+        f_number = cam_state.iris_f_number if cam_state is not None else None
+        return f_number if f_number is not None else "n/a"
     function_name, value = preview
     if function_name == "nd":
         entry = state.mapping.get_channel("fader", channel_index)
@@ -1053,10 +1091,10 @@ def channel_snapshot(state: AppState) -> list[dict]:
                 "encoder": _channel_encoder_snapshot(state, index),
                 # EINE Kanal-Anzeige fuer Web-UI und physisches Scribble-Strip
                 # (Nutzerentscheid): Zeile 1 Kameraname/Funktionsname, Zeile 2
-                # Iris-%/Funktionswert -- siehe channel_line1_text()/
+                # Iris-F-Nummer/Funktionswert -- siehe channel_line1_text()/
                 # channel_display_text().
                 "display_line1": channel_line1_text(state, index, camera_cfg.name if camera_cfg else None),
-                "display_text": channel_display_text(state, index, cam_state.iris if cam_state else None),
+                "display_text": channel_display_text(state, index),
             }
         )
     return channels

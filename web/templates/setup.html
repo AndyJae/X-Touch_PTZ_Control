@@ -4,33 +4,18 @@
 {% block badge %}Setup{% endblock %}
 
 {% block content %}
-<section class="grid-2">
-    <div class="panel">
-        <h2>MIDI</h2>
-        <label for="midi-port">Port</label>
-        <select id="midi-port">
-            <option>System MIDI Port</option>
-            <option>USB MIDI-Controller</option>
-        </select>
-        <div class="button-row">
-            <button type="button">Resync Surface</button>
-            <button type="button">Reconnect</button>
-        </div>
-    </div>
-
-    <div class="panel">
-        <h2>Companion Config</h2>
-        {# Bewusste Erweiterung über v1 hinaus (Spec §9): SELECT-Button löst
-           einen Bitfocus-Companion-Button fern aus. Eine Instanz global für
-           alle Kanäle (Nutzerentscheid). #}
-        <label for="companion-host">Host IP</label>
-        <input type="text" id="companion-host" data-companion-host value="{{ companion.host }}" placeholder="192.168.0.50" />
-        <label for="companion-port">Port</label>
-        <input type="text" id="companion-port" data-companion-port value="{{ companion.port }}" placeholder="8000" />
-        <div class="button-row">
-            <button type="button" class="{{ 'is-connected' if companion_connected }}" data-companion-save>{{ 'Saved' if companion_connected else 'Save' }}</button>
-            <button type="button" data-companion-disconnect>Disconnect</button>
-        </div>
+<section class="panel">
+    <h2>Companion Config</h2>
+    {# Bewusste Erweiterung über v1 hinaus (Spec §9): SELECT-Button löst
+       einen Bitfocus-Companion-Button fern aus. Eine Instanz global für
+       alle Kanäle (Nutzerentscheid). #}
+    <label for="companion-host">Host IP</label>
+    <input type="text" id="companion-host" data-companion-host value="{{ companion.host }}" placeholder="192.168.0.50" />
+    <label for="companion-port">Port</label>
+    <input type="text" id="companion-port" data-companion-port value="{{ companion.port }}" placeholder="8000" />
+    <div class="button-row">
+        <button type="button" class="{{ 'is-connected' if companion_connected }}" data-companion-save>{{ 'Saved' if companion_connected else 'Save' }}</button>
+        <button type="button" data-companion-disconnect>Disconnect</button>
     </div>
 </section>
 

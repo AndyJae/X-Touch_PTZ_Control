@@ -48,6 +48,8 @@ class FakeCameraDriver:
         self.model: str | None = None
         self._connected = False
         self.iris = 0.0
+        self.iris_f_number: str | None = None
+        self.query_f_number_calls = 0
         self.gain_db = 0
         self.gain_auto = False
         # Simuliert eine kameraseitige Ablehnung (z. B. ER3, siehe
@@ -172,9 +174,14 @@ class FakeCameraDriver:
         self.query_button_feature_calls.append(key)
         return self.query_button_feature_result
 
+    async def query_f_number(self) -> str | None:
+        self.query_f_number_calls += 1
+        return self.iris_f_number
+
     async def get_state(self) -> CameraState:
         return CameraState(
             iris=self.iris,
+            iris_f_number=self.iris_f_number,
             auto_iris=False,
             gain_db=self.gain_db,
             gain_auto=self.gain_auto,

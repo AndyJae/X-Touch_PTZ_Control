@@ -603,8 +603,23 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   Send ist (plausibelste Erklärung, aber nicht am Gerät nachgestellt) und ob der Fix live
   gegen das reale Gerät nach einer echten Inaktivitätsphase greift (nur unittest-verifiziert,
   mit `FailingOutPort`/gemocktem `mido.open_output`).
-- Web-UI-Port-Auswahl für MIDI (Setup-Seite) ist weiterhin ein statisches Mockup, nicht mit
-  echten `mido`-Ports verbunden — Port kommt aktuell nur aus `config.yaml`
+- ~~Web-UI-Port-Auswahl für MIDI (Setup-Seite) ist weiterhin ein statisches Mockup, nicht mit
+  echten `mido`-Ports verbunden — Port kommt aktuell nur aus `config.yaml`~~ **Nutzerentscheid
+  2026-07-23: nicht umgesetzt, Mockup entfernt statt ausgebaut.** Eine volle Implementierung
+  (echte `mido`-Port-Enumeration, Live-Reconnect ohne App-Neustart) wurde durchgeplant, aber
+  verworfen — PTZ_Control ist ein Ein-Geräte-Tool (nur der X-Touch Extender), der reale
+  Anwendungsfall ("Portname hat sich geändert") ist bereits durch `config.yaml`-Bearbeitung +
+  Neustart (seit dem Startup-Geschwindigkeits-Fix weiter oben schnell) abgedeckt, und es besteht
+  kein Bedarf, den X-Touch waehrend einer laufenden Session zu wechseln — faellt er aus, laeuft
+  die Software per Web-UI trotzdem weiter. Da das Panel (Port-Dropdown mit zwei fest
+  einprogrammierten Fake-Optionen, unwirksame "Resync Surface"/"Reconnect"-Buttons) ohne
+  Umsetzung nur vortäuschte, etwas zu tun, wurde es aus `web/templates/setup.html` entfernt statt
+  als Mockup stehen zu bleiben (die umschließende `grid-2`-Section wurde dabei zu `panel` auf dem
+  verbleibenden Companion-Config-Panel vereinfacht, damit keine leere zweite Spalte übrig bleibt).
+  Keine JS-/Backend-Aenderung noetig (war nie verdrahtet). Spec §5.5 ("Port-Handling",
+  insbesondere die dort beschriebene automatische Hotplug-Erkennung/-Reconnect) bleibt damit
+  ebenfalls unimplementiert -- weiterhin ein offener Punkt, falls sich der Anwendungsfall
+  (z. B. Mehrgeräte-Betrieb oder Live-Wechsel während einer Show) künftig doch ergibt.
 - ~~Update-Notifications für andere Ereignisse als Iris (`OAW`, `OWS` etc., Spec §7.3.1) laufen
   technisch über denselben neuen Notification-Kanal, werden aber nicht ausgewertet
   (`PanasonicAWDriver._handle_notification` reagiert nur auf `lPI`)~~ **Umgesetzt (2026-07-19,
@@ -1152,6 +1167,124 @@ Die Spezifikation enthält eine eigene Liste offener Punkte. Diese sind als verb
   reale AW-UE160 + X-Touch zum Testen zur Verfügung (siehe Session-Notiz),
   ein echter Neustart mit mehreren konfigurierten, teils nicht erreichbaren
   Kameras würde das zusätzlich bestätigen.
+- **Button 1 zeigt beim Start zuerst "Camera Info" statt "Gain"
+  (Nutzerauftrag 2026-07-23):** `core/application.py._ENCODER_FUNCTIONS`
+  umsortiert zu `("camera_status", "gain", "pedestal", "nd")` -- da jede
+  Default-Index-Abfrage (`channel_display_text()`, `encoder_preview()`,
+  `channel_line1_text()`, der Web-Snapshot, `cycle_encoder_function()`s
+  erster Druck) auf `.get(channel_index, 0)` zurueckfaellt, zeigt Button 1
+  ohne jeden Druck (App-Start, Kamera-Connect) jetzt zuerst "Camera Info"
+  statt "Gain" -- der Zyklus selbst bleibt Gain→Pedestal→ND→Camera Info→wrap
+  (nur der Startpunkt verschob sich). Zusaetzlich: das Button-1-Label selbst
+  hiess vorher wortwoertlich "Camera Status" (aus dem Funktionsnamen
+  `camera_status` abgeleitet, `enc.function | replace('_',' ') | upper` in
+  `web/templates/surface.html` UND client-seitig nochmal in
+  `web/static/app.js` bei jedem WebSocket-Snapshot) -- auf "Camera Info"
+  umbenannt (Nutzerauftrag), interne Kennung `camera_status` bewusst
+  unveraendert gelassen (Nutzerentscheid: Umbenennung nur menschenlesbarer
+  Text, keine Code-Identifier). 24 Tests in `tests/test_application.py` und
+  3 in `tests/test_web_app.py` mussten dabei angepasst werden (sie nahmen
+  bisher "Gain" als impliziten Default an, meist durch direktes Setzen von
+  `state.encoder_function_index[...]` ersetzt statt durch Zaehlen von
+  Cycle-Druecken, um nicht fragil an der genauen Reihenfolge zu haengen).
+  295 Tests bestehen (vorher 269 vor dieser und der vorherigen ND-Aenderung
+  in Summe, siehe vorherige Eintraege), keine Regression.
+- **Iris-Anzeige bei `camera_status` zeigt jetzt die F-Nummer statt Iris-%
+  (Nutzerauftrag 2026-07-23, siehe Spec §14 Punkt 10 fuer die volle
+  Herleitung der Dekodier-Formel):** `drivers/panasonic_aw.py::
+  _decode_f_number()` dekodiert `QIF`/`OIF:[Data]` ueber die live gegen eine
+  reale AW-UE160 kalibrierte Formel `Data/10 = F-Nummer` (10 Live-Messpunkte,
+  F4.0-F11.0, exakt deckungsgleich mit den beiden Spec-Ankern 0Eh=F1.4/
+  A0h=F16) fuer den bestaetigten Bereich 0Eh-A0h, `FFh`→"CLOSE" als
+  separater Sentinel. Der Bereich A1h-FEh (zwischen F16-Anker und CLOSE)
+  bleibt bewusst UNdekodiert (`query_f_number()` faellt dort auf den rohen
+  Hex-Wert zurueck) -- zwei Live-Versuche in beide Richtungen sprangen in
+  einem einzigen Kamera-Klick direkt zwischen `FFh` und `6Eh`, ohne einen
+  Zwischenwert zu zeigen; bei der getesteten Zoomposition scheint dieser
+  Bereich ueber die normale Iris-Steuerung nicht einzeln anwaehlbar zu sein.
+  `channel_display_text()` in `core/application.py` liest dafuer jetzt
+  `cam_state.iris_f_number` (bisher nur roh durchgereicht, nie dekodiert)
+  statt der bisherigen `_iris_percent_text()`-Hilfsfunktion (entfernt, war
+  nur an dieser einen Stelle genutzt) -- Funktionssignatur verlor dabei den
+  `iris`-Parameter (nicht mehr gebraucht), alle drei Aufrufstellen in
+  `midi/fader.py` sowie `channel_snapshot()` angepasst; `_send_iris_percent_
+  line()` in `midi/fader.py` war dadurch identisch zu `_refresh_channel_
+  line2()` geworden und wurde entfernt (Aufrufer nutzt jetzt Letzteres).
+  **Live-Update-Verhalten waehrend eines Fader-Zugs:** anders als die
+  bisherige Iris-%-Anzeige (lokal aus der Fader-Position berechenbar) gibt
+  es fuer die F-Nummer keine Formel aus der Iris-Position -- nur die
+  kamera-eigene `QIF`-Abfrage, und die Positions/F-Nummer-Beziehung ist
+  selbst laut den Live-Messwerten nichtlinear. **Erste Fassung** fragte die
+  F-Nummer deshalb nur bei `final=True` (Loslassen) neu ab, um nicht bei
+  jedem Dreh-Tick einen zusaetzlichen Kamera-Request auszuloesen -- **noch
+  am selben Tag durch Live-Test am echten Fader revidiert (Nutzerauftrag):**
+  eine einzelne `QIF`-Abfrage ist klein genug (kleiner GET, wenige Bytes
+  Antwort), um live waehrend des Ziehens keinen spuerbaren Zusatz-Traffic zu
+  verursachen -- `apply_iris()` fragt die F-Nummer jetzt bei JEDEM vom
+  Rate-Limiter durchgelassenen Tick per `driver.query_f_number()` neu ab
+  (nicht mehr nur bei `final=True`). `query_f_number()` wurde dafuer von
+  `PanasonicAWDriver._query_f_number()` (intern, nur in `get_state()`
+  genutzt) zu einer oeffentlichen Methode der `CameraDriver`-ABC
+  (`drivers/base.py`) -- fragt bewusst nur dieses eine Feld ab, nicht den
+  vollen `get_state()` (Gain/Pedestal/ND/Fehler waeren pro Tick unnoetig).
+  Externe Iris-Aenderungen (Kamera-eigenes Web-UI, anderer Controller)
+  aktualisieren die F-Nummer weiterhin NICHT live -- die Kamera pusht ueber
+  den Update-Notification-Kanal nur die Iris-POSITION (`lPI`-Frame, §7.3.2,
+  dieselbe 555h-FFFh-Kodierung wie `#GI`), keine F-Nummer; das ist derselbe,
+  bereits dokumentierte Kanal, ueber den der Motorfader live nachgefuehrt
+  wird (Zeile 2 der Kanal-Anzeige bleibt bei einer externen Aenderung
+  entsprechend auf dem zuletzt bekannten Stand, bis zum naechsten expliziten
+  Fader-Zug/Reconnect -- analog zur bereits dokumentierten auto_focus/
+  auto_iris-Einschraenkung weiter oben). Getestet in `tests/test_panasonic.py`
+  (`test_decode_f_number_matches_live_calibration`,
+  `test_decode_f_number_close_sentinel`,
+  `test_decode_f_number_unconfirmed_gap_returns_none`,
+  `test_query_f_number_decodes_known_range`,
+  `test_query_f_number_falls_back_to_raw_hex_in_unconfirmed_gap`),
+  `tests/test_application.py`
+  (`test_apply_iris_refreshes_f_number_on_every_tick`). 301 Tests bestehen
+  (vorher 295), keine Regression. **Live gegen die reale AW-UE160
+  (`192.168.11.134`) + X-Touch verifiziert (2026-07-23):** Button 1 zeigte
+  "CAMERA INFO" (siehe vorheriger Punkt), physischer Fader-Zug hat laut
+  Nutzer funktioniert -- die konkrete "live waehrend des Ziehens
+  aktualisiert" vs. "nur bei final"-Unterscheidung selbst wurde dabei noch
+  nicht separat gegengeprueft (die Revision auf "jeder Tick" erfolgte direkt
+  im Anschluss an diesen Test, noch ungetestet am echten Geraet).
+- **Externe Iris-Bewegung (z. B. Auto-Iris) aktualisierte die F-Nummer-
+  Anzeige nicht (Bugreport 2026-07-23, live gegen die reale AW-UE160
+  `192.168.11.134` gefunden UND bestaetigt):** Nutzer schaltete Auto-Iris
+  direkt an der Kamera ein/aus (nicht ueber PTZ_Control) -- ein WS-Probe-
+  Skript bestaetigte, dass `cam_state.iris` (Position, ueber das
+  `lPI`-Lens-Info-Frame, §7.3.2) UND der physische Motorfader live korrekt
+  der Auto-Iris-Bewegung folgten, `cam_state.auto_iris` aber nie auf `True`
+  wechselte (bekannte Einschraenkung, `ORS` sendet keine Notification, siehe
+  weiter oben) -- das war NICHT der eigentliche Bug. Der eigentliche Bug
+  zeigte sich erst danach: App zeigte "F11.0", `QIF` direkt gegen die Kamera
+  UND deren eigenes OSD zeigten uebereinstimmend "F6.4" -- **Root Cause:**
+  das `lPI`-Frame traegt nur die rohe Iris-POSITION (555h-FFFh, dieselbe
+  Kodierung wie `#GI`), keine F-Nummer; `_wire_camera_events()`s
+  `iris_changed`-Zweig in `core/application.py` aktualisierte bisher nur
+  `cam_state.iris`, nie `cam_state.iris_f_number` -- die F-Nummer wurde also
+  ausschliesslich von `apply_iris()` aufgefrischt (nur bei PTZ_Control-
+  eigenen Fader-Zuegen, siehe vorheriger Punkt), nie bei extern (Kamera-
+  eigenes Auto-Iris/Web-UI/anderer Controller) ausgeloesten Positions-
+  aenderungen. Neue `_refresh_f_number_from_notification()`-Hilfsfunktion
+  fragt bei jeder ueber die Notification ankommenden `iris_changed`-
+  Positionsaenderung `driver.query_f_number()` zusaetzlich ab und publiziert
+  erneut `iris_changed` (aktualisiert damit sowohl Web-UI-Snapshot als auch
+  Scribble-Strip-Zeile 2, beide bereits auf dieses Topic abonniert) --
+  bewusst NUR bei tatsaechlicher Positionsaenderung (`cam_state.iris` vorher
+  != neuer Wert), nicht bei jedem ~300ms-lPI-Heartbeat, um keinen
+  Dauer-Traffic zu erzeugen, wenn sich nichts bewegt. Getestet in
+  `tests/test_application.py`
+  (`test_driver_iris_changed_event_refreshes_f_number_on_position_change`,
+  `test_driver_iris_changed_event_skips_f_number_refresh_when_position_
+  unchanged`). 302 Tests bestehen (vorher 301), keine Regression. **Noch
+  nicht erneut live gegengeprueft** (Fix direkt aus der Live-Diagnose
+  entwickelt, aber die konkrete Korrektur selbst -- App neu gestartet,
+  zeigt jetzt bei einer erneuten Auto-Iris-Bewegung die korrekte F-Nummer --
+  wurde bisher nicht durch einen weiteren Auto-Iris-Test am echten Geraet
+  bestaetigt).
 
 ## Abschlussregel
 

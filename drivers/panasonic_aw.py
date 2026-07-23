@@ -14,6 +14,27 @@ from drivers.panasonic_models.registry import resolve_model
 _IRIS_DATA_MIN = 0x555
 _IRIS_DATA_MAX = 0xFFF
 
+# --- Iris F-Nummer (QIF/OIF, §7.2): live gegen eine reale AW-UE160 verifiziert
+# (2026-07-23, manuelle Kalibrierung -- Nutzer stufte die Iris am Kamera-OSD
+# Klick fuer Klick durch, F-Nummer jeweils vom Kamera-eigenen Display abgelesen,
+# Data-Wert per QIF direkt mitgeschnitten): Data/10 = F-Nummer, exakt bei allen
+# 10 live gemessenen Punkten (Data 40/93/94/96/98/100/103/105/110 -> F4.0..F11.0)
+# UND deckungsgleich mit den beiden in der Spec dokumentierten Ankerpunkten
+# (0Eh=F1.4, A0h=F16, §7.2) -- deshalb hier als linearer Bereich 0Eh-A0h
+# angewendet, obwohl live nur der Teilbereich 28h-6Eh durchlaufen wurde (die
+# aktuelle Zoomposition/Optik liess die Iris nicht weiter als F4.0-F11.0 zu).
+# FFh=CLOSE ist ein separater Sentinel, kein Teil der linearen Formel.
+# Der Bereich A1h-FEh (zwischen dem F16-Anker und CLOSE) bleibt UNBESTAETIGT --
+# zwei Live-Versuche (in beide Richtungen) sprangen jeweils in einem einzigen
+# Kamera-Klick direkt von FFh (CLOSE) zu 6Eh (F11.0) bzw. zurueck, ohne einen
+# Zwischenwert zu zeigen; bei der aktuellen Zoomposition scheint dieser Bereich
+# ueber die normale Iris-Steuerung nicht einzeln anwaehlbar zu sein. Wird
+# deshalb bewusst NICHT dekodiert (kein erfundener Wert), `query_f_number()`
+# faellt dafuer auf den rohen Hex-Wert zurueck.
+_F_NUMBER_DATA_MIN = 0x0E  # F1.4 (Spec-Anker)
+_F_NUMBER_DATA_MAX = 0xA0  # F16.0 (Spec-Anker)
+_F_NUMBER_CLOSE_DATA = 0xFF
+
 # --- Gain (OGU/QGU): Data = 0x08 + db, 0x80 = AGC/Auto -- diese Anker sind laut
 # AW-UE160_InterfaceSpecification_E.pdf UND HDIntegratedCamera_InterfaceSpecifications-E.pdf
 # (§3.2.6) fuer JEDES dort dokumentierte Modell identisch, nur Bereich/Schrittweite
@@ -91,6 +112,18 @@ def _iris_to_data(value: float) -> int:
 
 def _data_to_iris(data: int) -> float:
     return (data - _IRIS_DATA_MIN) / (_IRIS_DATA_MAX - _IRIS_DATA_MIN)
+
+
+def _decode_f_number(data: int) -> str | None:
+    """QIF-Data -> F-Nummer-Label (siehe _F_NUMBER_DATA_MIN/-MAX/-CLOSE_DATA
+    oben fuer die Herleitung). `None`, wenn `data` außerhalb des live/Spec-
+    bestaetigten Bereichs liegt -- Aufrufer faellt dann auf den rohen Hex-Wert
+    zurueck statt einen ungeprueften Wert zu erfinden."""
+    if data == _F_NUMBER_CLOSE_DATA:
+        return "CLOSE"
+    if _F_NUMBER_DATA_MIN <= data <= _F_NUMBER_DATA_MAX:
+        return f"F{data / 10:.1f}"
+    return None
 
 
 def _extract_value(body: str) -> str | None:
@@ -720,7 +753,7 @@ class PanasonicAWDriver(CameraDriver):
             self.gain_super_gain_on = await self._query_super_gain()
         return CameraState(
             iris=iris,
-            iris_f_number=await self._query_f_number(),
+            iris_f_number=await self.query_f_number(),
             auto_iris=auto_iris,
             gain_db=gain_db,
             gain_auto=gain_auto,
@@ -757,15 +790,29 @@ class PanasonicAWDriver(CameraDriver):
             return None, None
         return _data_to_iris(pos), (mode == 1)
 
-    async def _query_f_number(self) -> str | None:
-        # OIF-Data->F-Nummer-Dekodiertabelle ist in der Spec nicht vollstaendig
-        # reproduziert (nur Ankerpunkte 0Eh=F1.4, A0h=F16, FFh=CLOSE genannt, §7.2).
-        # Ohne die vollstaendige Tabelle wird hier bewusst nicht dekodiert.
+    async def query_f_number(self) -> str | None:
+        # OIF-Data->F-Nummer-Dekodierung siehe _decode_f_number() oben (live
+        # gegen eine reale AW-UE160 kalibriert, 2026-07-23). Faellt auf den
+        # rohen Hex-Wert zurueck, wenn `data` außerhalb des bestaetigten
+        # Bereichs liegt (kein erfundener Wert) oder nicht als Hex parsbar ist.
+        # Oeffentlich (kein Underscore-Praefix mehr, Nutzerauftrag
+        # 2026-07-23): core/application.py::apply_iris() ruft dies bei JEDEM
+        # Fader-Tick separat auf (statt nur bei final=True + vollem
+        # get_state()), damit die F-Nummer live waehrend des Ziehens
+        # mitlaeuft -- eine einzelne QIF-Abfrage ist klein genug, um das
+        # nicht spuerbar zusaetzlich zu belasten.
         try:
             body = await self._request("aw_cam", "QIF")
         except CameraCommandError:
             return None
-        return _extract_value(body)
+        value = _extract_value(body)
+        if value is None:
+            return None
+        try:
+            data = int(value, 16)
+        except ValueError:
+            return value
+        return _decode_f_number(data) or value
 
     async def _query_gain_state(self) -> tuple[int | None, bool | None]:
         # QGU als Query-Kommando live gegen AW-UE160 verifiziert (Spec §14

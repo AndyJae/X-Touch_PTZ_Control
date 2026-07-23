@@ -19,7 +19,7 @@ Interface Specification Dec. 2023).
   Kamera-Modell-Erkennung dynamisch bereitgestellt, siehe §9a.
 - Encoder pro Kanal steuert die Funktion, die aktuell über Button 1 desselben
   Kanals ausgewählt ist (zyklisches Durchschalten einer festen Liste: Gain,
-  Pedestal, Camera Status, siehe §9 und §14 Punkt 8).
+  Pedestal, Camera Info, siehe §9 und §14 Punkt 8).
 - Scribble Strips zeigen Kameraname (Zeile 1) und F-Nummer (Zeile 2).
 - Motorfader-Feedback: Iris-Änderungen von außen (Auto-Iris, Web-UI der Kamera,
   anderer Controller) fahren den Fader nach.
@@ -277,7 +277,9 @@ class CameraDriver(ABC):
 @dataclass
 class CameraState:
     iris: float | None            # 0.0–1.0
-    iris_f_number: str | None     # "F4.0", "CLOSE"
+    iris_f_number: str | None     # "F4.0", "CLOSE", oder roher Hex-Wert
+                                   # (z. B. "C0") ausserhalb des dekodierten
+                                   # Bereichs 0Eh-A0h/FFh, siehe §14 Punkt 10
     auto_iris: bool | None
     gain_db: int | None
     nd_index: int | None
@@ -498,8 +500,11 @@ Pro Kamera eine Instanz. Regeln:
 - Jeder Druck auf Button 1 schaltet die aktive Encoder-Funktion zyklisch durch
   eine **feste** Liste (Nutzerentscheid, nicht mehr über `config.yaml`
   konfigurierbar, siehe `core/application.py._ENCODER_FUNCTIONS`): **Gain →
-  Pedestal → ND → Camera Status → (wrap)** (`nd` seit Nutzerauftrag
-  2026-07-22 ergänzt).
+  Pedestal → ND → Camera Info → (wrap)** (`nd` seit Nutzerauftrag
+  2026-07-22 ergänzt). Ohne jeden Button-1-Druck (App-Start, Kamera-Connect)
+  zeigt Button 1 zuerst **Camera Info** (Nutzerauftrag 2026-07-23, steht
+  deshalb als Listenanfang in `_ENCODER_FUNCTIONS`) — der erste Druck
+  wechselt dann auf Gain.
   Treiber-Methoden: `gain`→`step_gain`, `pedestal`→`step_pedestal` (Panasonic-
   Terminologie "Master Pedestal", §7.2), `nd`→`set_nd`; `camera_status` ist
   ein reiner Anzeige-Eintrag ohne Kamera-Aktion (zeigt Kameraname + Iris-%).
@@ -543,8 +548,9 @@ Pro Kamera eine Instanz. Regeln:
 "2 Displays in der Web-UI"-Entscheidung):** Das physische Scribble-Strip und
 die Web-UI zeigen exakt denselben Text über dieselben Funktionen
 (`channel_line1_text()`/`channel_display_text()` in `core/application.py`).
-Bei `camera_status`: Zeile 1 Kameraname, Zeile 2 Iris-% (Platzhalter bis zur
-F-Nummer-Tabelle, §14 Punkt 10). Bei `gain`/`pedestal` (Nutzerentscheid):
+Bei `camera_status`: Zeile 1 Kameraname, Zeile 2 Iris-F-Nummer (z. B. "F9.8",
+"CLOSE" oder "n/a" — live kalibriert, §14 Punkt 10). Bei `gain`/`pedestal`
+(Nutzerentscheid):
 Zeile 1 zeigt stattdessen den Funktionsnamen (GAIN/PEDESTAL) statt des
 Kameranamens, Zeile 2 den unitlosen Rohwert im bestätigten Gerätebereich
 (Pedestal z. B. `-45`, **kein** Prozentwert und kein zusätzliches
@@ -617,7 +623,7 @@ seither auch eine Liste von Kommandos (nicht nur einen einzelnen String),
 falls ein Zielzustand mehrere Befehle braucht (AW-UE160s Knee: Auto sendet
 z. B. `OSL:45:1` gefolgt von `OSA:2D:2`). Das Cycle-Konzept selbst existiert
 weiterhin, aber ausschließlich bei Button 1 (Encoder-Funktionsauswahl
-Gain/Pedestal/ND/Camera Status, siehe unten) — ein komplett getrennter
+Gain/Pedestal/ND/Camera Info, siehe unten) — ein komplett getrennter
 Mechanismus ohne Bezug zu `BUTTON_FEATURES`.
 
 Eine kleine Registry (`drivers/panasonic_models/registry.py`, angelehnt an
@@ -895,8 +901,8 @@ kürzliche Thread-Nutzereingabe sonst nicht auf Rechtsklicks).
    Datum schon beim Drehen live, siehe §9) — er markiert den Kanal nur noch
    visuell als "gespeichert" (`commit_encoder_value()` in
    `core/application.py`, verdrahtet in `midi/fader.py`).
-10. F-Nummer-Dekodiertabelle (`QIF`/`OIF:[Data]`, §7.2): **Geprüft, weiterhin offen —
-    genauere Analyse nötig, bevor eine echte F-Zahl (z. B. „F 4.0") angezeigt werden kann.**
+10. ~~F-Nummer-Dekodiertabelle (`QIF`/`OIF:[Data]`, §7.2): Geprüft, weiterhin offen —
+    genauere Analyse nötig, bevor eine echte F-Zahl (z. B. „F 4.0") angezeigt werden kann.
     AW-UE160_InterfaceSpecification_E.pdf (Kap. 9, S. 67, „REQUEST IRIS F NO.") nennt für
     AW-UE160 nur drei Ankerpunkte: 0Eh=F1.4, A0h=F16, FFh=CLOSE. Die Multi-Modell-Spec
     (HDIntegratedCamera_InterfaceSpecifications-E.pdf, S. 48/279) hat eine feinere
@@ -904,11 +910,52 @@ kürzliche Thread-Nutzereingabe sonst nicht auf Rechtsklicks).
     AK-UB300/AW-UE150 gilt, nicht AW-UE160. Diese vier Punkte sind zudem nicht gleichmäßig
     gestuft (0Eh→1Ch und 1Ch→38h verdoppeln den Hex-Wert je 1 Blendenstufe, 38h→A0h aber nur
     ~2,86× für 3 Blendenstufen) — eine Interpolation zwischen den Ankerpunkten wäre also
-    keine verlässliche Berechnung, sondern eine Annahme. **In der Spezifikation nicht
+    keine verlässliche Berechnung, sondern eine Annahme. In der Spezifikation nicht
     definiert; bis zur genaueren Analyse (z. B. Messung gegen eine echte Kamera) bleiben
     Web-UI und Scribble-Strip-Zeile 2 (`midi/fader.py`) bei einer Iris-Prozentanzeige statt
-    einer erfundenen F-Zahl.**
-    `drivers/panasonic_aw.py` gibt den Rohwert unverändert zurück, dekodiert nicht.
+    einer erfundenen F-Zahl. `drivers/panasonic_aw.py` gibt den Rohwert unverändert zurück,
+    dekodiert nicht.~~
+    **Verifiziert (2026-07-23, Nutzerauftrag, live gegen die reale AW-UE160
+    `192.168.11.134`, manuelle Kalibrierung):** der Nutzer stufte die Iris am
+    Kamera-OSD Klick für Klick durch und las die dort angezeigte F-Nummer ab,
+    während `QIF` parallel per CGI direkt mitgeschnitten wurde. Ergebnis:
+    **Data/10 = F-Nummer**, exakt bei allen 10 live gemessenen Punkten (Data
+    40/93/94/96/98/100/103/105/110 → F4.0..F11.0 — die aktuelle Zoomposition
+    ließ die Iris nicht weiter als diesen Bereich zu) UND deckungsgleich mit
+    den beiden bereits dokumentierten Ankerpunkten (0Eh=14→F1.4, A0h=160→F16).
+    Die oben beschriebene "ungleichmäßige Stufung" der 4-Punkte-Tabelle ist
+    dabei kein Widerspruch, sondern folgt bereits aus der Formel selbst — F-
+    Stufen sind photografisch geometrisch gestaffelt (×√2 pro Stufe), nicht
+    linear; die zugrundeliegende Data-Kodierung ist trotzdem durchgängig
+    linear (Data/10). `FFh=CLOSE` ist ein separater Sentinel, kein Teil der
+    linearen Formel. **Weiterhin unbestätigt:** der Bereich A1h-FEh (zwischen
+    dem F16-Anker und CLOSE) — zwei Live-Versuche (in beide Richtungen)
+    sprangen jeweils in einem einzigen Kamera-Klick direkt von FFh zu 6Eh
+    bzw. zurück, ohne einen Zwischenwert zu zeigen; bei der aktuellen
+    Zoomposition scheint dieser Bereich über die normale Iris-Steuerung nicht
+    einzeln anwählbar zu sein. `drivers/panasonic_aw.py::_decode_f_number()`
+    dekodiert deshalb bewusst nur 0Eh-A0h plus den FFh-Sentinel; für A1h-FEh
+    (und alles < 0Eh) fällt `query_f_number()` weiterhin auf den rohen
+    Hex-Wert zurück statt einen ungeprüften Wert zu erfinden. Web-UI und
+    Scribble-Strip-Zeile 2 (`channel_display_text()` in `core/application.py`)
+    zeigen bei `camera_status` seither die F-Nummer statt der bisherigen
+    Iris-Prozentanzeige — da es keine Formel aus der Fader-Position gibt (nur
+    die kamera-eigene `QIF`-Abfrage), fragt `apply_iris()` sie bei JEDEM vom
+    Rate-Limiter durchgelassenen Tick per `driver.query_f_number()` neu ab
+    (nicht den vollen `get_state()`, nur dieses eine Feld) — Nutzerentscheid
+    2026-07-23, revidiert (erste Fassung fragte nur bei `final=True`/
+    Loslassen ab; eine einzelne QIF-Abfrage ist klein genug, um live
+    während des Ziehens mitzulaufen). **Bugfix (2026-07-23, live gegen die
+    reale AW-UE160 gefunden):** externe Iris-Bewegung (z. B. Auto-Iris direkt
+    an der Kamera) lieferte über das `lPI`-Lens-Info-Frame (§7.3.2) zwar
+    live die korrekte Iris-Position (Motorfader folgte korrekt), aber die
+    F-Nummer-Anzeige blieb dabei stehen (App zeigte "F11.0", `QIF`/Kamera-OSD
+    zeigten übereinstimmend "F6.4") — `lPI` trägt nur die rohe Position,
+    keine F-Nummer, und nur `apply_iris()` (PTZ_Control-eigene Fader-Züge)
+    fragte bisher `query_f_number()` ab. `_wire_camera_events()` in
+    `core/application.py` fragt die F-Nummer jetzt zusätzlich bei jeder über
+    die Notification ankommenden tatsächlichen Positionsänderung neu ab
+    (nicht bei jedem ~300ms-Heartbeat ohne Änderung).
 11. ~~Response-Format von `QBR` (Bars-Status)~~ **Bestätigt:** `QBR` → `OBR:[Data]`
     (0=Off, 1=On), identisch zur Control-Kodierung von `DCB`
     (AW-UE160_InterfaceSpecification_E.pdf, Kap. 9, S. 34, „BAR"); laut Multi-Modell-Spec

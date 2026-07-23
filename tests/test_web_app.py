@@ -177,12 +177,15 @@ def test_encoder_select_endpoint_advances_function(client) -> None:
     response = client.post("/api/channels/1/encoder/select")
 
     assert response.status_code == 200
-    assert response.json()["function"] == "gain"
+    assert response.json()["function"] == "camera_status"
 
 
 def test_encoder_turn_over_websocket_sends_live_to_driver(client) -> None:
     # Nutzerentscheid: Drehen sendet gain/pedestal sofort live (ueber den
-    # Rate-Limiter), nicht erst nach dem Encoder-Push.
+    # Rate-Limiter), nicht erst nach dem Encoder-Push. Default-Funktion ist
+    # seit Nutzerauftrag "camera_status" -- fuer diesen Test explizit auf
+    # "gain" gesetzt.
+    web_app.app.state.ptz.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()  # initial snapshot
         ws.send_json({"type": "encoder_turn", "channel": 1, "delta": 1})
@@ -199,7 +202,9 @@ def test_encoder_turn_over_websocket_sends_live_to_driver(client) -> None:
 def test_encoder_commit_over_websocket_only_sets_saved_flag(client) -> None:
     # Encoder-Push sendet seit Nutzerentscheid keinen Kamerabefehl mehr --
     # der Wert ist durch das Drehen bereits live aktuell, Push ist rein
-    # visuelles "gespeichert"-Feedback.
+    # visuelles "gespeichert"-Feedback. Default-Funktion ist seit
+    # Nutzerauftrag "camera_status" -- fuer diesen Test explizit auf "gain".
+    web_app.app.state.ptz.encoder_function_index[1] = core_application._ENCODER_FUNCTIONS.index("gain")
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()  # initial snapshot
         ws.send_json({"type": "encoder_turn", "channel": 1, "delta": 1})
