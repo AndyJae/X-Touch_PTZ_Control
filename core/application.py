@@ -264,6 +264,7 @@ async def connect_camera(state: AppState, camera_id: str) -> None:
             return
         full_state.error = None
         state.state_store.set_camera(camera_id, full_state)
+        LOGGER.info("Kamera %s verbunden (Modell %s)", camera_id, driver.model)
         start_lens_feedback = getattr(driver, "start_lens_feedback", None)
         if start_lens_feedback is not None:
             try:
@@ -295,6 +296,7 @@ async def disconnect_camera(state: AppState, camera_id: str) -> None:
     if driver is None:
         return
     await driver.disconnect()
+    LOGGER.info("Kamera %s getrennt und aus config.yaml entfernt", camera_id)
     cam_state = state.state_store.get_camera(camera_id)
     cam_state.error = None
     cam_state.iris = 0.0
@@ -474,6 +476,13 @@ async def trigger_companion_select(state: AppState, channel_index: int) -> None:
         target.row,
         target.column,
     )
+    LOGGER.info(
+        "Kanal %s: Companion SELECT ausgeloest (Page %s/Row %s/Col %s)",
+        channel_index,
+        target.page,
+        target.row,
+        target.column,
+    )
 
 
 async def apply_iris(state: AppState, channel_index: int, value: float, *, final: bool) -> None:
@@ -616,6 +625,7 @@ async def cycle_encoder_function(state: AppState, channel_index: int) -> str | N
     function_name = _ENCODER_FUNCTIONS[new_index]
     state.encoder_pending_delta[channel_index] = 0
     state.encoder_saved[channel_index] = False
+    LOGGER.info("Kanal %s: Encoder-Funktion -> %s", channel_index, function_name)
 
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is not None:
@@ -1117,8 +1127,10 @@ async def apply_button_action(state: AppState, channel_index: int, button_slot: 
                 # Auto-Iris-Button ignorierte dadurch weiterhin den veralteten
                 # Stand statt sofort zurueckzuspringen.
                 cam_state.auto_iris = new_enabled
+            LOGGER.info("Kanal %s: %s -> %s", channel_index, feature_key, "on" if new_enabled else "off")
         else:  # "trigger"
             await driver.trigger_button_feature(feature_key)
+            LOGGER.info("Kanal %s: %s ausgeloest", channel_index, feature_key)
     except CameraCommandError as exc:
         cam_state.error = str(exc)
         await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})

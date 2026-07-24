@@ -48,6 +48,12 @@ LOGGER = logging.getLogger("ptz_control.web")
 
 _CONFIG_PATH = "config.yaml"
 
+# Bekannter Portname-Substring des Behringer X-Touch Extender (verifiziert:
+# reale Ports heissen "X-Touch-Ext 0"/"X-Touch-Ext 1", siehe CLAUDE.md) --
+# einziges v1-Zielgeraet (Spec §5), daher als Auto-Erkennungs-Default
+# vertretbar, wenn config.yaml keinen Port vorgibt (Nutzerauftrag 2026-07-24).
+_AUTO_DETECT_MIDI_SUBSTRING = "X-Touch-Ext"
+
 
 def _find_midi_port(names: list[str], substring: str) -> str | None:
     """Spec §5.5: Substring-Match gegen die verfuegbaren Ports."""
@@ -100,20 +106,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
 
     midi_fader: XTouchFader | None = None
-    # Spec §5.5: ohne konfigurierten Port wartet das Tool (UI-Auswahl folgt in
-    # einem spaeteren Schritt) -- kein Auto-Connect ohne explizite Config.
+    # Spec §5.5: explizit konfigurierter Port (config.yaml) hat weiterhin
+    # Vorrang und verhaelt sich exakt wie zuvor. Nutzerauftrag 2026-07-24:
+    # ist NICHTS konfiguriert, automatisch anhand des bekannten Behringer
+    # X-Touch-Extender-Portnamens erkennen (reiner Start-Scan, kein
+    # Hotplug/Live-Reconnect waehrend der Laufzeit -- das X-Touch muss vor
+    # dem Start bereits per USB angeschlossen sein, siehe Help-Seite).
     if config.midi.input_port:
-        input_port_name = _find_midi_port(mido.get_input_names(), config.midi.input_port)
-        if input_port_name is not None:
-            output_port_name = (
-                _find_midi_port(mido.get_output_names(), config.midi.output_port)
-                if config.midi.output_port
-                else None
-            )
-            midi_fader = XTouchFader(state, input_port_name, output_port_name)
-            await midi_fader.start()
-        else:
-            LOGGER.warning("MIDI-Eingangsport %r nicht gefunden", config.midi.input_port)
+        input_port_substring = config.midi.input_port
+        output_port_substring = config.midi.output_port
+    else:
+        input_port_substring = _AUTO_DETECT_MIDI_SUBSTRING
+        output_port_substring = _AUTO_DETECT_MIDI_SUBSTRING
+    input_port_name = _find_midi_port(mido.get_input_names(), input_port_substring)
+    if input_port_name is not None:
+        output_port_name = (
+            _find_midi_port(mido.get_output_names(), output_port_substring)
+            if output_port_substring
+            else None
+        )
+        midi_fader = XTouchFader(state, input_port_name, output_port_name)
+        await midi_fader.start()
+    else:
+        LOGGER.warning("MIDI-Eingangsport %r nicht gefunden", input_port_substring)
 
     yield
     for driver in state.drivers.values():
@@ -189,6 +204,15 @@ async def setup_page(request: Request) -> HTMLResponse:
             "companion": state.config.companion,
             "companion_connected": state.companion_connected,
         },
+    )
+
+
+@app.get("/help", response_class=HTMLResponse)
+async def help_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="help.html",
+        context={"active_page": "help"},
     )
 
 

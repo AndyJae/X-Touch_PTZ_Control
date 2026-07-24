@@ -54,7 +54,7 @@
                             data-feature-btn data-channel-index="{{ ch.index }}" data-button-slot="{{ slot }}"
                             {{ "disabled" if not assigned }}
                             title="{{ assigned.label if assigned else 'no function assigned' }}">
-                        {{ assigned.label if assigned else ('Button ' ~ (loop.index + 1)) }}
+                        {{ assigned.label if assigned else ('Solo' if slot == 'button2' else 'Mute') }}
                     </button>
                     <button type="button" class="gear-btn" data-gear-btn
                             data-channel-index="{{ ch.index }}" data-button-slot="{{ slot }}"

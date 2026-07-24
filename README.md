@@ -1,255 +1,188 @@
 # X-Touch PTZ Control
 
-MIDI-Blenden-/Shading-Controller für PTZ-Kameras (Behringer X-Touch Extender).
-Primäre Quelle der Wahrheit für Verhalten und Scope ist
-[ptz-shading-tool-spec.md](ptz-shading-tool-spec.md); dieses README beschreibt
-nur, wie der Code aktuell strukturiert ist.
+A MIDI shading/iris controller for Panasonic PTZ cameras, built around the
+Behringer X-Touch Extender and a local web UI. Pull a fader — physical or
+on-screen — and the camera's iris follows live, plus gain, pedestal and ND
+filter control, all from one 8-channel surface.
 
-**Aktueller Stand:** Iris-Steuerung läuft Ende-zu-Ende über das Web-UI
-(Setup verbindet Kamera, Control-Seite steuert Iris live). Kameras werden
-nicht mehr extern in `config.yaml` eingetragen, sondern über den "Connect
-Camera"-Button pro Kanal auf der Setup-Seite (Name/IP/Port) registriert —
-die App persistiert das selbst; erneutes Klicken bei bereits verbundener
-Kamera trennt sie wieder (Registrierung bleibt erhalten), Umbenennen läuft
-über ein eigenes, vom Verbindungsstatus unabhängiges Feld. Kamera-Feature-
-Buttons (Spec §9a, z. B. DRS/Knee/Auto-Iris für AW-UE160) sind Button 2/3
-pro Kanal zuweisbar — entweder auf der Setup-Seite oder direkt auf der
-Übersicht-Seite über ein Zahnrad-Icon neben dem jeweiligen Button (selber
-dynamischer Katalog, selbe Zuweisungs-Route) — und über die Control-Seite
-auslösbar; wird eine Funktion bei verbundener Kamera neu zugewiesen, fragt
-die App sofort deren Ist-Zustand ab (wo laut den lokalen PDFs ein
-Query-Kommando existiert), statt ihn erst nach dem ersten Druck zu kennen.
-Der SELECT-Button pro Kanal löst optional einen
-Bitfocus-Companion-Button fern aus (v3 HTTP-API, `core/companion.py`) —
-bewusste Erweiterung über v1 hinaus, siehe Spec §9. Kopfzeile trägt auf
-allen Seiten ein Logo (`web/static/images/`).
+## What it does
 
-Der X-Touch-Extender ist für den Fader/Iris-Pfad und für Rec+Encoder
-verdrahtet (`midi/fader.py`): physisches Fader-Ziehen steuert die Iris live
-(Rx, Note-/CC-Belegung gegen das reale Gerät verifiziert, siehe CLAUDE.md),
-und der Motorfader folgt Iris-Änderungen aus **jeder** Quelle zurück (Tx) —
-inklusive Änderungen, die nicht von PTZ_Control selbst ausgelöst wurden (z. B.
-Kamera-eigenes Web-UI), über das Lens-Info-Feedback (`#LPC1`, Spec §7.3) in
-`drivers/panasonic_aw.py`.
+- **Live iris control** per channel via a motorized fader (physical X-Touch
+  Extender) or the web UI — both stay in sync, including iris changes made
+  from the camera's own web interface.
+- **One encoder per channel** cycles through Gain, Pedestal, ND filter and
+  Camera Info (the REC button switches function; turning the encoder
+  adjusts the active one live).
+- **Two assignable Solo/Mute buttons** per channel trigger camera-specific
+  toggle features (e.g. Auto Focus, Knee, DRS — depends on the camera
+  model).
+- **A SELECT button** per channel can optionally trigger a Bitfocus
+  Companion button.
+- Everything is controlled from a local web UI — it works standalone, the
+  X-Touch Extender is optional.
 
-Rec (Button 1) schaltet pro Kanal fest durch vier Encoder-Funktionen:
-**Gain → Pedestal → ND → Camera Info** (nicht mehr über `config.yaml`
-konfigurierbar, siehe `core/application.py._ENCODER_FUNCTIONS`). Drehen
-sendet bei Gain/Pedestal/ND **sofort live** einen Kamerabefehl (über eine eigene
-Rate-Limiter-Instanz je Kamera, `apply_encoder_turn` in `core/application.py`,
-geclampt auf den Bereich des verbundenen Kameramodells, siehe
-`drivers/panasonic_models/*.py` und Spec §7.2 — z. B. AW-UE160 -6…+12dB/
--200…+200, AW-HE50 0…18dB/-10…+10; ND ist eine modellabhängige, teils
-lückenhafte Werteliste statt eines Zahlenbereichs, z. B. AW-HE130 nur
-Through/1/64/1/8) — Encoder-Push sendet seitdem nichts mehr an die Kamera,
-sondern markiert den Wert nur noch visuell als "gespeichert" (rote Anzeige in
-der Web-UI, bis zum nächsten Dreh-Tick).
+## Requirements
 
-Es gibt pro Kanal genau **eine** Anzeige (Web-UI und physisches Scribble-
-Strip zeigen exakt denselben Text, `channel_line1_text()`/
-`channel_display_text()` in `core/application.py`): bei `camera_status`
-Zeile 1 Kameraname + Zeile 2 Iris-F-Nummer (z. B. "F9.8"/"CLOSE", live gegen
-eine reale AW-UE160 kalibriert, siehe Spec §14 Punkt 10); bei Gain/Pedestal zeigt Zeile 1
-stattdessen den Funktionsnamen (GAIN/PEDESTAL) und Zeile 2 den unitlosen
-Rohwert (z. B. Pedestal `-45`, kein Prozentwert, kein zusätzliches
-Funktions-Präfix — das übernimmt jetzt Zeile 1). Nicht verbundene Kanäle
-zeigen `NC`/`----`. Solo/Mute/Select-Buttons sind Rx-seitig
-verifiziert, aber noch nicht an Kamera-Aktionen/Companion-SELECT angebunden
-(siehe CLAUDE.md, Offene Punkte).
-
-## Stack
-
+- **Windows** (the app uses Windows-specific APIs for the system tray icon
+  and single-instance check)
 - Python 3.11+
-- mido + python-rtmidi (MIDI-Layer — Fader/Touch/Scribble-Strips sowie
-  Rec+Encoder (Gain/Pedestal) verdrahtet, siehe `midi/fader.py`; Solo/Mute/
-  Select noch nicht)
-- httpx (Kamera-HTTP)
-- FastAPI + Jinja2 + WebSocket (Web-UI)
-- pydantic v2 + YAML (Config)
+- A supported Panasonic PTZ camera (see below), reachable over the network
+- Optional: a Behringer X-Touch Extender, connected via USB
+- Optional: a Bitfocus Companion instance for the SELECT button
+- A modern browser — we recommend the latest Google Chrome, that's what
+  this project is developed and tested with
+
+## Supported cameras
+
+Only the Panasonic AW-series CGI protocol is currently supported. 17 models
+are recognized automatically via their `QID` response:
+
+AK-UB300, AW-HE40, AW-HE42, AW-HE50, AW-HE60, AW-HE120, AW-HE130, AW-HE145
+(alias AW-UE145), AW-HR140, AW-UE30, AW-UE40, AW-UE50, AW-UE70, AW-UE80,
+AW-UE100, AW-UE150A (alias AW-UE150), AW-UE160.
+
+Feature support varies per model — gain/pedestal ranges and the available
+toggle features (DRS, Knee, White Clip, ...) are looked up from the
+detected model, checked against Panasonic's interface specification PDFs
+where one was available. Iris control (fader → f-number display) is only
+verified against a real AW-UE160; other models are expected to behave the
+same but haven't been confirmed on real hardware.
+
+An unrecognized camera model still connects, just without any of the
+model-specific features.
 
 ## Quick start
 
-1. Virtualenv anlegen und aktivieren.
-2. Dependencies installieren: `pip install -r requirements.txt`
-   (für `tools/panasonic_emulator.py`s Control-UI zusätzlich `python-multipart`,
-   siehe `pyproject.toml`-Extra `dev`)
-3. Starten: `python main.py` → Web-UI unter `http://127.0.0.1:8600/`
-   (`config.yaml` startet leer, `cameras: []` ist gültig).
-4. Kameras über die Setup-Seite registrieren (Name/IP/Port pro Kanal,
-   "Connect Camera") — nicht mehr von Hand in `config.yaml` eintragen.
-5. Für den X-Touch Extender: `midi.input_port`/`midi.output_port` in
-   `config.yaml` auf einen Substring des tatsächlichen Portnamens setzen
-   (z. B. `X-Touch-Ext`, siehe `mido.get_input_names()`/`get_output_names()`)
-   — ohne gesetzten Port bleibt MIDI unverbunden (Spec §5.5), kein Fehler.
+1. If you're using the physical X-Touch Extender, connect it via USB
+   **before** starting the app — it's detected once at startup, not while
+   the app is already running.
+2. Install dependencies: `pip install -r requirements.txt`
+3. Copy `config.example.yaml` to `config.yaml` (optional — a missing
+   `config.yaml` is treated the same as the example, and the app creates
+   one as soon as you save anything).
+4. Start the app: `python main.py` — the web UI opens automatically at
+   `http://127.0.0.1:8600/`. It also adds an icon to the system tray
+   (right-click it to quit).
+5. Open **Setup** and register a camera per channel (name, IP, port), then
+   click **Connect Camera**.
+6. The X-Touch Extender is picked up automatically if it's connected;
+   without one, the on-screen controls in the web UI work the same way.
 
-Ohne reale Kamera zum Testen: `python tools/panasonic_emulator.py` startet
-einen lokalen Panasonic-CGI-Emulator (Control-UI unter `--ui-port`, Default
-8080) — das simulierte Kameramodell ist im Start-Formular aus allen in
-`drivers/panasonic_models/` registrierten Modellen wählbar (Default
-AW-UE160). Ohne echten X-Touch Extender zum Prüfen der rohen MIDI-Belegung:
-`python tools/midi_monitor.py` loggt alle eingehenden Rx-Nachrichten roh
-(Dev-Werkzeug, siehe Spec §5.2 "Debug-Modus").
+See the in-app **Help** page for a walkthrough of the Control, Setup and
+Logs pages.
 
-## Architektur
+## Configuration
 
-Schichtenaufbau, damit ein späterer MIDI/X-Touch-Anschluss keine bestehende
-Logik anfassen muss (Spec §3):
+`config.yaml` holds MIDI port overrides (only needed if auto-detection
+doesn't find your controller), the optional Companion host, and global
+settings (rate limit, log level, web port). It's read and written by the
+app itself — day-to-day configuration (cameras, button assignments,
+Companion targets) happens through the Setup page, not by hand editing.
+See `config.example.yaml` for the full schema with comments.
 
-```
-Interface        web/app.py            FastAPI-Routen, WebSocket, Templates
-                  midi/fader.py         X-Touch-Extender-Fader (Rx: Pitchbend/Touch->Iris,
-                                         Tx: Iris->Motorfader + Scribble Strips)
-                  midi/mackie.py        Mackie-Control-Protokoll-Konstanten/-Helfer
-                  midi/surface.py       Scaffold, nicht an AppState angebunden (siehe Text)
+`config.yaml` is not committed to this repository (it holds your camera
+IPs and other local details) — start from `config.example.yaml` instead.
 
-Anwendung         core/application.py   AppState, Use-Cases (connect_camera,
-                                         apply_iris, channel_snapshot, ...)
+## How it works
 
-Domain/Core       core/config.py        Typisiertes Config-Schema (pydantic v2)
-                  core/bus.py           EventBus (Pub/Sub-Rückgrat)
-                  core/mapping.py       Kanal->Kamera-Zuordnung
-                  core/ratelimit.py     Token-Bucket + Delta-Filter
-                  core/state.py         StateStore (Kamera-/Kanal-Zustand)
-                  core/companion.py     Bitfocus-Companion-HTTP-Trigger
+For anyone curious what actually happens between moving a fader and the
+camera's iris changing — or debugging a controller/camera at the protocol
+level.
 
-Treiber           drivers/base.py       CameraDriver-Interface (ABC)
-                  drivers/panasonic_aw.py  AW-UE160-Referenzimplementierung
-                  drivers/panasonic_models/  Button-Feature-Katalog je Modell
-                                         (17 Panasonic-Modelle) + Registry
-```
+### Controller → software (MIDI)
 
-- **Config**: `config.yaml` wird strikt über `core/config.py`s pydantic-Modelle
-  validiert (`load_config()` wirft `ConfigError` mit Pfad ins YAML bei
-  Fehlern, Spec §4).
-- **EventBus**: Domain-Events (`iris_changed`, `connection_changed`, `error`,
-  `feature_changed`, `config_changed`, `gain_changed`, `pedestal_changed`)
-  laufen über `core/bus.py`. Web-UI und MIDI sind gleichwertige Consumer
-  desselben Bus — der WebSocket-Broadcast und `midi/fader.py`s
-  Motorfader-/Scribble-Strip-Feedback abonnieren dieselben Topics
-  unabhängig voneinander.
-- **Anwendungsschicht**: `core/application.py` kennt FastAPI nur an der
-  einen Stelle, an der WebSocket-Clients benachrichtigt werden — Routing und
-  Templates gehören nicht hierher. Dadurch ist die eigentliche
-  Steuerungslogik (Mapping → Rate-Limiter → Driver → StateStore → EventBus)
-  unabhängig vom HTTP/WebSocket-Interface testbar (siehe
-  `tests/test_application.py`).
-- **Driver-Interface**: `drivers/base.py` definiert die Kamera-Schnittstelle
-  (Spec §6); `drivers/panasonic_aw.py` ist die einzige v1-Implementierung
-  (Spec §7). Weitere Kameratypen kämen als zusätzliche Module hinzu.
-- **MIDI-Fader** (`midi/fader.py`, Spec §5): `XTouchFader` pollt den
-  Eingangsport (kein rtmidi-Callback-Thread, siehe Moduldocstring) und ruft
-  bei Fader-/Touch-Nachrichten dieselbe `apply_iris()`-Funktion wie das
-  Web-UI. Umgekehrt sendet sie bei `iris_changed` die Motorfader-Position
-  (außer während aktivem Touch, Spec §5.4) und aktualisiert die
-  Scribble-Strip-Displays (SysEx, Spec §5.3, Device-ID `0x15` verifiziert).
-  Solo/Mute (Note 8–23) rufen dieselbe `apply_button_action()` wie der
-  Web-UI-Klick auf Button 2/3 auf; Select (Note 24–31) löst
-  `trigger_companion_select()` aus. LED-Feedback für Solo/Mute ist rein
-  binär (OFF=aus/ON=an, kein Blinken) und läuft über denselben
-  Event-getriebenen Vollabzug wie die Scribble Strips — Select hat keine
-  LED-Ansteuerung (einmalige Aktion ohne Dauerzustand). LED-Farben sind laut
-  `github.com/Aldaviva/BehringerXTouchExtender` hardwarefest je Tastentyp
-  (Rec/Mute rot, Solo gelb, Select grün), nicht per MIDI wählbar — keine
-  offizielle Behringer-Doku, nicht gegen reale Hardware verifiziert (nur
-  Rx/Tastendruck ist bisher hardwareverifiziert, LED-Tx noch nicht). Port
-  kommt aus `config.yaml midi.input_port`/`output_port`
-  (Substring-Match, Spec §5.5); ohne gesetzten Port bleibt MIDI unverbunden,
-  kein Fehler. `midi/surface.py` ist ein früherer Scaffold-Versuch, der
-  nirgends mehr eingebunden ist.
-- **Lens-Info-Feedback** (`drivers/panasonic_aw.py::start_lens_feedback`,
-  Spec §7.3): registriert den Update-Notification-TCP-Kanal der Kamera und
-  aktiviert `#LPC1` (Zoom/Fokus/Iris alle 300ms) — die einzige Quelle, über
-  die Iris-Änderungen erkannt werden, die nicht von PTZ_Control selbst
-  ausgelöst wurden (z. B. Kamera-eigenes Web-UI), da `#AXI` laut Spec kein
-  Update-Notification-Flag hat. Frame-Layout und Device-Verhalten live gegen
-  eine reale AW-UE160 verifiziert. Kein Teil der `CameraDriver`-ABC (wie
-  `BUTTON_FEATURES`) — ein Treiber ohne Unterstützung liefert einfach keine
-  externen Iris-Updates.
-- **Generische Update-Notification-Auswertung** (`_handle_notification()`,
-  seit 2026-07-19, Beleg: Kap. 4 der `HDIntegratedCamera_
-  InterfaceSpecifications-E.pdf`): derselbe, oben beschriebene
-  Notification-Kanal meldet laut dieser PDF JEDE Kommandoänderung — im
-  selben `Command:Value`-Format wie die CGI-Antwort (z. B. `OGU:08`),
-  unabhängig davon, ob PTZ_Control selbst oder ein anderes Terminal (z. B.
-  Kamera-eigenes Web-UI) die Änderung ausgelöst hat. `_handle_notification()`
-  gleicht die Payload deshalb zusätzlich zu `lPI` gegen bekannte
-  Toggle-Feature-Kommandos (`BUTTON_FEATURES`), Gain (`OGU`) und Pedestal
-  (modellabhängiges Kommando) ab und feuert `feature_changed`/
-  `gain_changed`/`pedestal_changed`-Callbacks, die `core/application.py`
-  auf gleichnamige EventBus-Topics brückt. Nur gegen synthetische
-  Notification-Frames in Unit-Tests verifiziert, nicht live gegen eine
-  reale Kamera.
-- **Kamera-Feature-Buttons** (Spec §9a): Katalog (`BUTTON_FEATURES`/
-  `BUTTON_FEATURE_LABELS`) lebt nicht mehr fest auf `PanasonicAWDriver`,
-  sondern in `drivers/panasonic_models/` — eine Datei pro Kameramodell
-  (17 Panasonic-Modelle, portiert aus `C:\smart_reset_work`s
-  `camera_plugins/panasonic/*.py`), aufgelöst über eine kleine Registry
-  (`drivers/panasonic_models/registry.py`) anhand des per `QID` erkannten
-  Modells (`PanasonicAWDriver.connect()` → `_apply_model_catalog()`). Nicht
-  Teil der `CameraDriver`-ABC — ein nicht erkanntes Modell bietet einfach
-  keine Optionen an (leere Kataloge, kein erfundener Fallback). Zustand wird
-  bei bekannter Query (`feature["query"]`/`query_on_value`, nur gesetzt, wo
-  gegen die lokalen PDFs verifiziert) sofort bei Zuweisung abgefragt
-  (`PanasonicAWDriver.query_button_feature()`, siehe Spec §9a) — ohne
-  bekannte Query bleibt der Zustand wie zuvor nur lokal getrackt, erst nach
-  dem ersten Druck bekannt. Button 2/3 sind sowohl über die Web-UI
-  (Setup-Seite-Dropdown oder Zahnrad-Popover auf der Übersicht-Seite) als
-  auch über den physischen X-Touch Extender (Solo/Mute, `midi/fader.py`,
-  siehe unten) auslösbar — beide Wege rufen dieselbe
-  `apply_button_action()`. Gain-/Pedestal-Bereich und -Kommando werden über
-  dieselbe Registry mitaufgelöst (`GAIN_MIN_DB`/`GAIN_MAX_DB`/
-  `GAIN_STEP_DB`, `PEDESTAL_COMMAND` u. ä. je Modell-Datei, siehe Spec §7.2)
-  — `GAIN_STEP_DB` wird seit 2026-07-18 auch von der Encoder-Drehung selbst
-  respektiert (`core/application.py::apply_encoder_turn`), nicht nur bei der
-  Wertanzeige. Nur Iris bleibt weiterhin modellunabhängig nur für AW-UE160
-  verifiziert (siehe `drivers/panasonic_aw.py`-Klassendocstring).
-- **Kamera-Registrierung** (`core/application.py::register_camera`): einzige
-  Stelle, die `AppState.cameras/drivers/rate_limiters/mapping` zur Laufzeit
-  erweitert (alle anderen Use-Cases arbeiten nur mit dem beim Start
-  gebauten Zustand). Kamera-ID ist deterministisch `cam{Kanalnummer}`.
-- **Bitfocus Companion** (`core/companion.py`): eigenständige Funktion, kein
-  `drivers/`-Treiber (Companion ist keine Kamera). Eine globale Instanz
-  (Host/Port) für alle Kanäle, pro Kanal optional ein Page/Row/Column-Ziel.
-  Kein Dauerzustand -- SELECT ist eine einmalige Aktion, Fehler werden nur
-  als HTTP-Antwort zurückgegeben, nicht im Snapshot gespeichert.
+The X-Touch Extender runs in Mackie Control mode and talks plain MIDI over
+USB. The app doesn't use a MIDI callback thread — it polls the input port
+every 10&nbsp;ms (`midi/fader.py`) and reacts to a fixed set of messages,
+one instance of each per channel (channels are numbered 1–8, matching the
+8 physical strips):
 
-## Tests
+| Message | Meaning |
+| --- | --- |
+| Pitchbend on MIDI channel *N* | Fader *N* position (14-bit, 0–16383) |
+| Note On 104–111, velocity > 0 / 0 | Fader touch pressed / released, channel *N* = note − 103 |
+| Note On 0–7, velocity > 0 | REC pressed, channel *N* = note + 1 |
+| Note On 8–15, velocity > 0 | Solo pressed, channel *N* = note − 7 |
+| Note On 16–23, velocity > 0 | Mute pressed, channel *N* = note − 15 |
+| Note On 24–31, velocity > 0 | Select pressed, channel *N* = note − 23 |
+| Control Change 16–23 | Encoder turned, channel *N* = controller − 15; value 1–7 = clockwise steps, 65–71 = counter-clockwise |
+| Note On 32–39, velocity > 0 | Encoder pushed, channel *N* = note − 31 |
 
-```
-python -m pytest tests/
-```
+Touching a fader only marks it as "held" — the actual iris command is sent
+continuously while dragging (through the rate limiter below), with one
+final, unthrottled send on release. Turning the encoder sends a live
+command immediately (also rate-limited); pushing it doesn't send anything
+to the camera, it only flags the value as "saved" in the UI.
 
-`tests/test_web_app.py` prüft die Interface-Schicht (HTTP/WebSocket) über
-`TestClient`; `tests/test_application.py` prüft dieselbe Steuerungslogik
-direkt gegen `core/application.py`, ohne FastAPI. Beide nutzen
-`tests/fakes.py`s `FakeCameraDriver` statt echtem HTTP. `tests/test_panasonic.py`
-prüft das Wire-Format des AW-UE160-Treibers (inkl. Notification-Frame-Parsing
-gegen echte, live mitgeschnittene Bytes) und das Lens-Info-Feedback,
-`tests/test_companion.py` das von `core/companion.py`, beide gegen
-`httpx.MockTransport`. `tests/test_panasonic_models.py` prüft die
-Modell-Registry selbst (Auflösung per `QID`/Alias, Katalog-Korrektheit
-einzelner Modelle gegen die lokalen PDFs), `tests/test_panasonic_emulator.py`
-die CGI-Dispatch-Logik von `tools/panasonic_emulator.py`.
-`tests/test_fader.py` deckt die Solo/Mute/Select-Notenbereich→Kanal/Slot-
-Zuordnung und die LED-Velocity-Logik von `midi/fader.py` mit einem gefakten
-Output-Port ab (kein echter MIDI-Port nötig) — Fader/Touch/Encoder/Rec
-bleiben ohne dedizierte Unit-Tests, nur live gegen das reale Gerät
-verifiziert (siehe CLAUDE.md), da reine MIDI-I/O-Verdrahtung ohne eigene
-Entscheidungslogik jenseits dessen, was `core/ratelimit.py`/
-`core/application.py` bereits abdecken.
+Feedback goes back over the same USB connection: the motorized fader is
+driven by sending a Pitchbend message back (skipped while the fader is
+being physically touched, so the motor doesn't fight your hand), the two
+scribble-strip text lines per channel are set via SysEx (device ID `0x15`
+— the plain X-Touch uses `0x14`, the Extender needs `0x15` or the display
+stays blank), and REC/Solo/Mute/Select LEDs are driven by sending Note
+On back on the same note numbers (velocity 127 = on, 0 = off — no
+blinking, no color control; the Extender's LED colors are fixed per
+button type in hardware).
 
-## Dev-Werkzeug
+### Software → camera (Panasonic CGI over HTTP)
 
-- `tools/panasonic_emulator.py` bildet die Panasonic-CGI-Strecke lokal nach
-  (kein Produktionscode) — für manuelles Testen ohne reale Kamera. Modell im
-  Start-Formular wählbar (alle in `drivers/panasonic_models/` registrierten
-  Modelle); QID-Antwort, Gain-/Pedestal-Kommandoverhalten und der
-  akzeptierte Button-Feature-Katalog richten sich danach — ein Kommando, das
-  das gewählte Modell laut den lokalen Referenz-PDFs nicht hat (z. B. `OGU`
-  bei AK-UB300 oder `knee` bei AW-HE50), liefert `ER1`, wie bei einer echten
-  Kamera ohne dieses Kommando. Kennt weiterhin keine Update-Notifications/
-  `#LPC1` (Emulator liefert dafür `ER1`/`404`, PTZ_Control loggt das nur als
-  Warnung, siehe `connect_camera`).
-- `tools/midi_monitor.py` loggt alle rohen Rx-MIDI-Nachrichten eines
-  Eingangsports mit einer Interpretation gegen die in Spec §5.2 angenommene
-  Belegung — für manuelles Verifizieren gegen einen realen X-Touch Extender.
+Every camera command is a plain HTTP GET to the camera's CGI interface,
+e.g. `GET /cgi-bin/aw_ptz?cmd=%23AXI888&res=1` to set the iris to a given
+position (`#AXI` followed by a 3-hex-digit position between `555` and
+`FFF`, `#` URL-encoded as `%23`) or `GET /cgi-bin/aw_cam?cmd=OGU:0D&res=1`
+to set gain to a given value (`OGU:` followed by a 2-hex-digit value). Other commands follow the
+same shape — pedestal, ND filter, toggle features (Auto Focus, DRS, Knee,
+...) and preset recall each have their own command string, some of which
+differ by camera model (`drivers/panasonic_models/*.py` holds the
+per-model command/range tables). The camera answers with the same command
+echoed back on success, or an `ER1`/`ER2`/`ER3`/... error code, which the
+driver turns into an exception.
+
+Separately, while connected, the app keeps a second, long-lived TCP
+connection open to the camera's "update notification" feed. The camera
+pushes a line over this connection every time *any* setting changes —
+including changes made from somewhere else entirely, like the camera's
+own web interface or another controller on the network. The driver parses
+these pushes the same way it parses a normal command response, so an iris
+move made outside this app still updates the motorized fader, the web UI
+slider, and the scribble strip.
+
+### End to end
+
+Physical fader move → Pitchbend → `midi/fader.py` (Rx polling loop) →
+`core/application.py`'s `apply_iris()` → `core/mapping.py` resolves the
+channel to a camera → `core/ratelimit.py` throttles it (configurable, 15
+commands/second by default) → `drivers/panasonic_aw.py` translates it into
+the HTTP GET shown above.
+
+Every state change — from a physical control, the web UI, or an external
+change picked up via the notification feed — is published on one shared
+event bus (`core/bus.py`). The WebSocket connection to the web UI and the
+MIDI output path (motorized fader, scribble strips, LEDs) both subscribe
+to the same events, so whichever source changed something, every other
+display updates to match.
+
+## Contributing
+
+This project grew out of one specific shading setup, so its scope so far
+reflects that. Contributions are very welcome, especially:
+
+- **New camera drivers.** Only Panasonic's AW-series CGI protocol is
+  supported today. `drivers/base.py`'s `CameraDriver` is the interface a
+  new driver needs to implement; `drivers/panasonic_aw.py` is the
+  reference implementation.
+- **New controller support.** The MIDI layer (`midi/fader.py`) is
+  currently written specifically for the Behringer X-Touch Extender
+  (Mackie Control protocol assumptions, its particular SysEx
+  scribble-strip layout). Supporting a different controller would mean
+  factoring out a more generic interface first — a good target for a
+  larger contribution.
+- **Code quality, tests, and bug fixes** in general — the test suite isn't
+  part of this repository, so bring or build your own test setup to verify
+  changes.
+- **Ideas for where this should go next** — open an issue if you have
+  thoughts on scope or direction.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).

@@ -138,8 +138,15 @@ class AppConfig(BaseModel):
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
-    with open(path, "r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except FileNotFoundError:
+        # Neuinstallation ohne vorhandene config.yaml (Nutzerauftrag
+        # 2026-07-24, siehe config.example.yaml/README) -- verhaelt sich wie
+        # eine vorhandene, leere Datei: jedes Feld hat einen Default
+        # (AppConfig.model_validate({}) ist gueltig), kein Startabbruch.
+        raw = {}
     try:
         return AppConfig.model_validate(raw)
     except ValidationError as exc:

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}X-Touch PTZ Control Help{% endblock %}
+{% block badge %}Help{% endblock %}
+
+{% block content %}
+<section class="panel help-content">
+    <h2>Overview</h2>
+    <p>
+        X-Touch PTZ Control connects a Behringer X-Touch Extender to Panasonic PTZ
+        cameras for live iris/shading control, plus gain, pedestal and ND filter
+        adjustment — from the web UI or the physical surface. Which features are
+        available depends on the connected camera model.
+    </p>
+    <p>
+        We recommend using the latest version of Google Chrome — that's what this
+        project is developed and tested with.
+    </p>
+</section>
+
+<section class="panel help-content">
+    <h2>Getting Started</h2>
+    <ol>
+        <li>
+            Connect the X-Touch Extender via USB <strong>before</strong> starting the
+            software — it is only detected at startup, not while the app is already
+            running.
+        </li>
+        <li>Start X-Touch PTZ Control — the web UI opens automatically in your browser.</li>
+        <li>
+            Open <strong>Setup</strong> and register a camera per channel: name, IP,
+            port, then click <strong>Connect Camera</strong>.
+        </li>
+        <li>
+            The X-Touch Extender is detected automatically at startup. Without a
+            connected surface, the web UI keeps working on its own.
+        </li>
+        <li>
+            Optionally set a Bitfocus Companion host/port on the Setup page to enable
+            the SELECT button.
+        </li>
+    </ol>
+</section>
+
+<section class="panel help-content">
+    <h2>Control page</h2>
+    <p>Each of the 8 channels has a fader, an encoder, two assignable buttons (Solo/Mute), and a SELECT button.</p>
+    <ul>
+        <li><strong>Fader</strong> — drag to move the iris live. The physical motor fader also follows iris changes made elsewhere (e.g. the camera's own web UI).</li>
+        <li><strong>REC button</strong> — cycles the encoder's function: Gain → Pedestal → ND → Camera Info.</li>
+        <li><strong>Encoder</strong> — turning it adjusts the active function live.</li>
+        <li><strong>Solo / Mute buttons</strong> — click the gear icon (⚙) to assign a camera feature (e.g. Auto Focus, Knee, DRS — depends on the model), then click the button to toggle it.</li>
+        <li><strong>SELECT</strong> — triggers a Bitfocus Companion button, if a Page/Row/Column target is assigned for that channel on the Setup page.</li>
+    </ul>
+</section>
+
+<section class="panel help-content">
+    <h2>Setup page</h2>
+    <ul>
+        <li><strong>Companion Config</strong> — host/port for the optional Companion integration.</li>
+        <li><strong>Camera &amp; Button Assignment</strong> — one row per channel: connect/disconnect a camera, rename it, assign Solo/Mute button features, assign a Companion target. Disconnecting a camera also removes it from <code>config.yaml</code>.</li>
+    </ul>
+</section>
+
+<section class="panel help-content">
+    <h2>Logs page</h2>
+    <p>Shows the last 200 log entries, filterable by level (ALL/DEBUG/INFO/WARNING/ERROR).</p>
+</section>
+{% endblock %}

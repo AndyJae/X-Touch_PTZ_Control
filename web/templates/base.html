@@ -30,13 +30,16 @@
     <main class="app-shell" data-app-shell>
         <header class="topbar">
             <div class="topbar-heading">
-                <img src="/static/images/logot.png" alt="" class="topbar-logo" />
+                <a href="https://www.medien-support.com" target="_blank" rel="noopener">
+                    <img src="/static/images/logot.png" alt="medien-support.com" class="topbar-logo" />
+                </a>
                 <h1>X-Touch PTZ Control</h1>
                 <span class="badge">{% block badge %}{% endblock %}</span>
             </div>
             <nav class="topnav">
                 <a href="/" class="{{ 'active' if active_page == 'surface' else '' }}">Control</a>
                 <a href="/setup" class="{{ 'active' if active_page == 'setup' else '' }}">Setup</a>
+                <a href="/help" class="{{ 'active' if active_page == 'help' else '' }}">Help</a>
                 <a href="/logs" class="{{ 'active' if active_page == 'logs' else '' }}">Logs</a>
             </nav>
         </header>

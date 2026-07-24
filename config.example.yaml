@@ -1,0 +1,35 @@
+# X-Touch PTZ Control -- example configuration.
+#
+# Copy this file to config.yaml to get started. A missing config.yaml is
+# also fine -- the app falls back to these same defaults on first run and
+# creates config.yaml itself as soon as you save something (e.g. register a
+# camera on the Setup page).
+#
+# Cameras are normally registered through the Setup page in the web UI, not
+# by hand here -- most users will never need to touch "cameras"/"banks".
+
+midi:
+  # The Behringer X-Touch Extender is detected automatically at startup if
+  # it's connected via USB. Only set these if auto-detection doesn't find it
+  # (e.g. an unusual port name) -- substring match against the available
+  # MIDI port names (see mido.get_input_names()/get_output_names()).
+  input_port: ""
+  output_port: ""
+
+cameras: []
+
+banks: []
+
+channel_defaults:
+  fader: iris
+
+companion:
+  # Optional: Bitfocus Companion instance for the SELECT button.
+  host: ""
+  port: 8000
+
+global:
+  rate_limit_hz: 15.0
+  send_final_on_release: true
+  log_level: INFO
+  web_port: 8600
