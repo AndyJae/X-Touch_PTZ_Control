@@ -21,15 +21,12 @@
                 <div class="encoder-cap"></div>
             </div>
 
-            {# EINE Kanal-Anzeige (Nutzerentscheid), verdrahtet mit demselben
-               Text wie das physische Scribble-Strip (channel_line1_text()/
-               channel_display_text() in core/application.py): Zeile 1
-               Kameraname bei camera_status, sonst der Funktionsname
-               (GAIN/PEDESTAL/ND); Zeile 2 Iris-% bei camera_status, sonst der
-               aktive Encoder-Wert (bei ND ein Label wie "1/64" statt einer
-               Zahl). Rot ("is-saved"), solange der per
-               Encoder-Push gespeicherte Wert seit dem letzten Dreh-Tick
-               unveraendert ist. #}
+            {# Same text as the physical scribble strip (channel_line1_text()/
+               channel_display_text()): line 1 is the camera name for
+               camera_status, otherwise the function name (GAIN/PEDESTAL/ND);
+               line 2 is the iris F-number for camera_status, otherwise the
+               active encoder value. Red ("is-saved") while the
+               encoder-push-saved value is unchanged since the last turn. #}
             <div class="scribble-strip {{ 'is-saved' if enc.saved }}">
                 <span class="scribble-line" data-display-line1>
                     {{ ch.display_line1 if ch.connected else (ch.name or ('CAM ' ~ ch.index)) }}
@@ -43,12 +40,12 @@
                 <button type="button" class="surf-btn" data-encoder-fn-select data-channel-index="{{ ch.index }}">{{ 'CAMERA INFO' if enc.function == 'camera_status' else (enc.function | replace('_', ' ') | upper) }}</button>
                 {% for slot in ["button2", "button3"] %}
                 {% set assigned = ch.buttons[slot] %}
-                {# Zahnrad oeffnet ein Popover zur Funktionsauswahl direkt hier auf der
-                   Surface-Seite (Nutzerauftrag 2026-07-18), statt auf die Setup-Seite
-                   wechseln zu muessen -- Katalog wird beim Oeffnen per
-                   GET /api/channels/{i}/available-buttons dynamisch geladen (siehe
-                   app.js initFeatureGearMenu()), Auswahl ruft denselben
-                   POST /api/channels/{i}/buttons/{slot} wie die Setup-Seite auf. #}
+                {# Gear icon opens a popover for function selection right here on
+                   the surface page instead of switching to Setup -- the catalog
+                   loads dynamically on open via
+                   GET /api/channels/{i}/available-buttons (see app.js
+                   initFeatureGearMenu()), selecting fires the same
+                   POST /api/channels/{i}/buttons/{slot} as the Setup page. #}
                 <div class="feature-btn-row">
                     <button type="button" class="surf-btn {{ 'is-on' if assigned and assigned.state }}"
                             data-feature-btn data-channel-index="{{ ch.index }}" data-button-slot="{{ slot }}"

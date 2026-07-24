@@ -7,17 +7,10 @@ Subscriber = Callable[[Any], Awaitable[None]]
 
 
 class EventBus:
-    """Pub/Sub-Rückgrat, Spec §3 Core-Baustein "EventBus".
-
-    Domain-Events (z. B. `iris_changed`, `connection_changed`) werden hier
-    publiziert, statt dass Aufrufer Konsumenten (WebSocket-Broadcast heute,
-    Motorfader-Feedback für X-Touch später) direkt kennen und aufrufen.
-    Web-UI und MIDI werden dadurch zu zwei gleichwertigen Publishern/
-    Subscribern auf demselben Bus, statt dass MIDI später als Sonderfall
-    nachgezogen werden muss.
-
-    Async, weil alle heutigen Konsumenten (WebSocket-Versand) async sind.
-    """
+    """Async pub/sub bus for domain events (e.g. `iris_changed`,
+    `connection_changed`). Publishers don't need to know their consumers
+    directly; the web UI and MIDI layer both publish and subscribe on the
+    same bus."""
 
     def __init__(self) -> None:
         self._subscribers: dict[str, list[Subscriber]] = defaultdict(list)
@@ -28,6 +21,3 @@ class EventBus:
     async def publish(self, topic: str, payload: Any) -> None:
         for callback in self._subscribers.get(topic, []):
             await callback(payload)
-
-    def clear(self) -> None:
-        self._subscribers.clear()

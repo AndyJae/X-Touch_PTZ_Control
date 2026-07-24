@@ -27,7 +27,10 @@ filter control, all from one 8-channel surface.
   and single-instance check)
 - Python 3.11+
 - A supported Panasonic PTZ camera (see below), reachable over the network
-- Optional: a Behringer X-Touch Extender, connected via USB
+- Optional: a Behringer X-Touch Extender, connected via USB, **set to MC
+  (Mackie Control) mode** — hold Select 1 while powering the unit on to
+  switch modes (see the X-Touch Extender manual). Other modes are not
+  recognized by this software.
 - Optional: a Bitfocus Companion instance for the SELECT button
 - A modern browser — we recommend the latest Google Chrome, that's what
   this project is developed and tested with
@@ -53,9 +56,11 @@ model-specific features.
 
 ## Quick start
 
-1. If you're using the physical X-Touch Extender, connect it via USB
-   **before** starting the app — it's detected once at startup, not while
-   the app is already running.
+1. If you're using the physical X-Touch Extender, set it to **MC (Mackie
+   Control) mode** (hold Select 1 while powering it on) and connect it via
+   USB **before** starting the app — it's detected once at startup, not
+   while the app is already running. Other controller modes are not
+   supported.
 2. Install dependencies: `pip install -r requirements.txt`
 3. Copy `config.example.yaml` to `config.yaml` (optional — a missing
    `config.yaml` is treated the same as the example, and the app creates

@@ -1,12 +1,9 @@
-// Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
-// 2026-07-23) -- auf JEDER Seite geprueft (GET /api/startup/status), nicht
-// nur auf der Control-Seite, falls der Nutzer eine andere Seite zuerst
-// oeffnet/eine alte Tab neu laedt, bevor die Frage beantwortet wurde.
-// Grauwert-Overlay statt eines nativen Dialogs (Nutzerauftrag: Web-UI bleibt
-// sichtbar, aber gedimmt/nicht bedienbar dahinter), siehe app.css
-// .startup-overlay/.app-shell.is-dimmed. "Start new config" trennt alle
-// Kameras UND setzt config.yaml zurueck (reset_to_new_config(), disconnect-
-// after-the-fact statt deferred startup) -- deshalb vorher ein confirm().
+// Startup dialog ("Load previous config"/"Start new config"), checked on
+// every page (GET /api/startup/status), not just the control page, in case
+// another page or an old tab loads first. A grayed-out overlay keeps the
+// web UI visible but non-interactive behind it (see app.css
+// .startup-overlay/.app-shell.is-dimmed). "Start new config" disconnects
+// every camera and resets config.yaml, so it's confirmed first.
 function initStartupChoiceDialog() {
     const overlay = document.querySelector("[data-startup-overlay]");
     const shell = document.querySelector("[data-app-shell]");
@@ -43,11 +40,10 @@ function initStartupChoiceDialog() {
     });
 }
 
-// Surface-Ansicht: Button 1 waehlt die Encoder-Funktion des Kanals (Spec §9,
-// physisches Aequivalent: Rec-Taste). Loest nur die Auswahl serverseitig aus
-// (POST /api/channels/{i}/encoder/select, Aequivalent zu cycle_encoder_function())
-// -- die eigentliche Anzeige (Funktion/Wert) kommt ueber den WebSocket-Snapshot
-// zurueck, siehe applySurfaceSnapshot().
+// Surface view: button 1 selects the channel's encoder function (physical
+// equivalent: the Rec key). Only triggers the selection server-side (POST
+// /api/channels/{i}/encoder/select); the display update comes back via the
+// WebSocket snapshot, see applySurfaceSnapshot().
 function initEncoderFunctionSelect() {
     document.querySelectorAll("[data-encoder-fn-select]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -62,14 +58,12 @@ function initEncoderFunctionSelect() {
     });
 }
 
-// Surface-Ansicht: Drehregler (Spec §9) -- Drehen (Ziehen mit der Maus oder
-// Scrollen) sendet bei gain/pedestal SOFORT einen Kamerabefehl (live, ueber
-// den Rate-Limiter in apply_encoder_turn()); ein Klick ohne Ziehen loest nur
-// noch rein visuelles "gespeichert"-Feedback aus (commit_encoder_value()),
-// ohne weiteren Kamerabefehl. Nutzerentscheid, analog zum physischen
-// Drehrad-Druck am X-Touch Extender.
+// Surface view: encoder knob -- turning (mouse drag or scroll) sends a
+// camera command live for gain/pedestal, through the rate limiter in
+// apply_encoder_turn(); a click without dragging only triggers the visual
+// "saved" feedback (commit_encoder_value()), no further camera command.
 function initEncoderKnob(ws) {
-    const PX_PER_TICK = 6; // reine UI-Feinabstimmung, keine Spec-Vorgabe
+    const PX_PER_TICK = 6; // UI feel tuning only
 
     document.querySelectorAll("[data-encoder]").forEach((knob) => {
         const channelIndex = Number(knob.dataset.channelIndex);
@@ -117,22 +111,19 @@ function initEncoderKnob(ws) {
             if (!dragging) return;
             dragging = false;
             knob.classList.remove("is-dragging");
-            if (!dragged) sendCommit(); // Klick ohne Ziehen = uebernehmen
+            if (!dragged) sendCommit(); // click without dragging = commit
         };
         knob.addEventListener("pointerup", endDrag);
         knob.addEventListener("pointercancel", endDrag);
     });
 }
 
-// Setup-Seite: Connect-Camera-Button pro Zeile in "Kamera- & Tastenbelegung".
-// Verbunden -> erneuter Klick: entkoppelt (POST .../camera/disconnect).
-// Nicht verbunden -> Klick: registriert/aktualisiert die Kamera für diesen
-// Kanal (Name/IP/Port aus den Sibling-Inputs) über POST
-// /api/channels/{index}/camera -- ersetzt externes Eintragen in config.yaml
-// (Nutzerentscheid, Abkehr von Spec §10.3 für Kamera-Stammdaten). Bei Erfolg
-// wird die Seite neu geladen, damit Modell-Anzeige und Button-2/3-Katalog
-// (die vom erkannten Kameramodell abhängen) konsistent aus dem
-// Server-Render kommen, statt mehrere DOM-Stellen einzeln nachzuziehen.
+// Setup page: Connect Camera button per row. Connected -> click disconnects
+// (POST .../camera/disconnect). Not connected -> click registers/updates
+// the camera for this channel (name/IP/port from the sibling inputs) via
+// POST /api/channels/{index}/camera. Reloads the page on success so the
+// model display and button 2/3 catalog (which depend on the detected
+// camera model) come consistently from the server render.
 function initCameraConnectButtons() {
     document.querySelectorAll("[data-camera-row]").forEach((row) => {
         const button = row.querySelector("[data-connect-btn]");
@@ -164,9 +155,6 @@ function initCameraConnectButtons() {
                     return;
                 }
                 const data = await res.json();
-                // Nutzerauftrag 2026-07-20 (z. B. doppelt eingetragene IP,
-                // siehe register_camera()): Fehler als echtes Popup zeigen,
-                // nicht nur stumm im Button-Text verstecken.
                 alert(data.error || "Error");
                 button.textContent = originalText;
             } catch (err) {
@@ -179,11 +167,10 @@ function initCameraConnectButtons() {
     });
 }
 
-// Setup-Seite: Kameraname pro Kanal -- ganz einfaches Eingabefeld ohne
-// weitere Funktion, absichtlich unabhängig vom Connect/Disconnect-Toggle
-// des "Connect Camera"-Buttons (Umbenennen soll keine Verbindung trennen).
-// Speichert bei Verlassen des Felds (change-Event, nicht bei jedem
-// Tastendruck) über POST /api/channels/{index}/camera/name.
+// Setup page: camera name per channel, independent of the Connect Camera
+// button's connect/disconnect toggle (renaming shouldn't drop a
+// connection). Saves on blur (change event) via
+// POST /api/channels/{index}/camera/name.
 function initCameraNameInputs() {
     document.querySelectorAll("[data-name-input]").forEach((input) => {
         const row = input.closest("[data-camera-row]");
@@ -200,9 +187,8 @@ function initCameraNameInputs() {
     });
 }
 
-// Setup-Seite: globale Bitfocus-Companion-Instanz (Host/Port), Panel an der
-// Stelle des ehemaligen "Camera Status"-Blocks. Bewusste Erweiterung über
-// v1 hinaus (Spec §9) -- eine Instanz für alle Kanäle (Nutzerentscheid).
+// Setup page: the single global Bitfocus Companion instance (host/port),
+// shared across all channels.
 function initCompanionConfigForm() {
     const button = document.querySelector("[data-companion-save]");
     const disconnectButton = document.querySelector("[data-companion-disconnect]");
@@ -259,9 +245,9 @@ function initCompanionConfigForm() {
     }
 }
 
-// Setup-Seite: SELECT-Ziel (Companion Page/Row/Column) pro Kanal. Alle drei
-// Felder einer Zeile werden zusammen gespeichert -- fehlt eines, wertet der
-// Server das als "keine Zuordnung" (siehe assign_channel_companion_target).
+// Setup page: SELECT target (Companion page/row/column) per channel. All
+// three fields of a row are saved together -- if one is missing, the server
+// treats it as "no assignment" (see assign_channel_companion_target).
 function initCompanionTargetInputs() {
     document.querySelectorAll("[data-companion-page], [data-companion-row], [data-companion-column]").forEach((input) => {
         input.addEventListener("change", () => {
@@ -284,8 +270,8 @@ function initCompanionTargetInputs() {
     });
 }
 
-// Setup-Seite: Button-2/3-Zuordnung pro Kanal (Spec §9a) -- persistiert
-// echt über POST /api/channels/{index}/buttons/{slot}.
+// Setup page: button 2/3 assignment per channel, persisted via
+// POST /api/channels/{index}/buttons/{slot}.
 function initButtonAssignmentSelects() {
     document.querySelectorAll("[data-button-assign-select]").forEach((select) => {
         select.addEventListener("change", async () => {
@@ -305,9 +291,9 @@ function initButtonAssignmentSelects() {
     });
 }
 
-// Übersicht-Seite: Button 2/3 lösen die auf der Setup-Seite zugewiesene
-// Kamera-Feature-Aktion aus (Spec §9a). Der neue Zustand (an/aus) kommt über
-// den WebSocket-Snapshot zurück, siehe applySurfaceSnapshot().
+// Overview page: button 2/3 fire the camera feature action assigned on the
+// Setup page. The new state (on/off) comes back via the WebSocket snapshot,
+// see applySurfaceSnapshot().
 function initFeatureButtons() {
     document.querySelectorAll("[data-feature-btn]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -325,18 +311,11 @@ function initFeatureButtons() {
     });
 }
 
-// Übersicht-Seite: Zahnrad neben Button 2/3 oeffnet ein Popover mit dem
-// echten, dynamischen Funktionskatalog des am Kanal verbundenen
-// Kameramodells (Nutzerauftrag 2026-07-18) -- keine zweite Seite (Setup)
-// mehr noetig, um eine Funktion zuzuweisen. Katalog kommt bei jedem Oeffnen
-// frisch von GET /api/channels/{i}/available-buttons (nicht beim Seitenladen
-// gecacht, falls sich das Kameramodell durch Reconnect aendert). Auswahl
-// ruft denselben POST /api/channels/{i}/buttons/{slot} wie die Setup-Seite
-// auf -- Persistenz in config.yaml UND (dort serverseitig, siehe
-// assign_channel_button()) eine sofortige Zustandsabfrage, deren Ergebnis
-// ueber den naechsten WebSocket-Snapshot zurueckkommt und applySurfaceSnapshot()
-// den Button korrekt beleuchtet/unbeleuchtet zeigen laesst -- kein manuelles
-// Text-/Zustands-Setzen hier noetig.
+// Overview page: the gear icon next to button 2/3 opens a popover with the
+// connected camera model's dynamic function catalog, fetched fresh on every
+// open from GET /api/channels/{i}/available-buttons. Selecting an option
+// calls the same POST /api/channels/{i}/buttons/{slot} as the Setup page;
+// the resulting state comes back via the next WebSocket snapshot.
 function initFeatureGearMenu() {
     document.querySelectorAll("[data-gear-btn]").forEach((gear) => {
         const row = gear.closest(".feature-btn-row");
@@ -396,11 +375,10 @@ function initFeatureGearMenu() {
     });
 }
 
-// Übersicht-Seite: SELECT löst das auf der Setup-Seite zugewiesene
-// Companion-Ziel fern aus (Spec §9, bewusste Erweiterung über v1 hinaus).
-// Anders als die Feature-Buttons hat SELECT keinen Dauerzustand -- bei
-// Fehlschlag zeigt der Button kurz die Fehlermeldung statt eines
-// persistenten Fehler-Icons.
+// Overview page: SELECT remotely fires the Companion target assigned on the
+// Setup page. Unlike the feature buttons, SELECT has no persistent state --
+// on failure the button briefly shows the error message instead of a
+// persistent error icon.
 function initSelectButtons() {
     document.querySelectorAll("[data-select-btn]").forEach((button) => {
         const originalLabel = button.textContent;
@@ -424,8 +402,8 @@ function initSelectButtons() {
     });
 }
 
-// Übersicht-Seite (surface.html): Live-Zustand per WebSocket + Iris-Fader
-// per Zeigen/Ziehen steuerbar. Datenfluss Fader -> Kamera folgt Spec §3.
+// Overview page (surface.html): live state via WebSocket, iris controllable
+// by dragging the fader.
 function connectSurfaceSocket() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -452,10 +430,9 @@ function applySurfaceSnapshot(channels) {
         const article = document.querySelector(`.surface-channel[data-channel="${ch.index}"]`);
         if (!article) return;
 
-        // Nur eine tatsaechlich verbundene Kamera macht den Kanalzug aktiv --
-        // eine registrierte, aber getrennte Kamera (Setup-Seite "Connect
-        // Camera" erneut geklickt) soll wie ein unbelegter Kanal wirken,
-        // nicht wie ein aktiver mit veralteten Werten.
+        // Only an actually connected camera makes the channel strip
+        // active -- a registered but disconnected camera should act like
+        // an unassigned channel, not an active one with stale values.
         article.classList.toggle("is-unassigned", !ch.connected);
         article.dataset.hasCamera = ch.connected ? "true" : "false";
 
@@ -465,10 +442,9 @@ function applySurfaceSnapshot(channels) {
         if (fill) fill.style.height = pct + "%";
         if (handle) handle.style.bottom = pct + "%";
 
-        // EINE Kanal-Anzeige (Nutzerentscheid): Text kommt direkt aus dem
-        // Server-Snapshot (channel_line1_text()/channel_display_text() in
-        // core/application.py), damit Web-UI und physisches Scribble-Strip
-        // nie auseinanderlaufen.
+        // Text comes directly from the server snapshot
+        // (channel_line1_text()/channel_display_text()), so the web UI and
+        // physical scribble strip never diverge.
         const displayLine1 = article.querySelector("[data-display-line1]");
         if (displayLine1) displayLine1.textContent = ch.connected ? ch.display_line1 : (ch.name || `CAM ${ch.index}`);
         const displayText = article.querySelector("[data-display-text]");
@@ -479,8 +455,7 @@ function applySurfaceSnapshot(channels) {
         const fnButton = article.querySelector("[data-encoder-fn-select]");
         const encKnob = article.querySelector("[data-encoder]");
         if (fnButton) fnButton.textContent = enc.function === "camera_status" ? "CAMERA INFO" : enc.function.replace(/_/g, " ").toUpperCase();
-        // Rot bis zum naechsten Dreh-Tick (Nutzerentscheid, siehe
-        // commit_encoder_value()/apply_encoder_turn()).
+        // Red until the next turn tick, see commit_encoder_value()/apply_encoder_turn().
         if (scribbleStrip) scribbleStrip.classList.toggle("is-saved", !!enc.saved);
         if (encKnob && enc.value != null && enc.min != null && enc.max != null) {
             const pos = Math.round(((enc.value - enc.min) / (enc.max - enc.min)) * 100);
@@ -509,11 +484,9 @@ function applySurfaceSnapshot(channels) {
 }
 
 function initFaderDrag(ws) {
-    // Auf allen Kanalzuegen anhaengen (nicht nur den beim Laden verbundenen)
-    // -- ob ein Zug reagiert, wird bei jedem Event live anhand von
-    // data-has-camera geprueft, das applySurfaceSnapshot() aktuell haelt.
-    // Sonst wuerde ein Fader nach dem Trennen der Kamera weiter reagieren,
-    // weil die Listener schon beim Laden fest gebunden wurden.
+    // Attached to every channel strip, not just the ones connected on load
+    // -- whether a strip reacts is checked live on every event via
+    // data-has-camera, which applySurfaceSnapshot() keeps current.
     document.querySelectorAll(".surface-channel").forEach((article) => {
         const channelIndex = Number(article.dataset.channel);
         const track = article.querySelector("[data-fader-track]");
@@ -569,15 +542,10 @@ function initFaderDrag(ws) {
             send(value, true);
         });
 
-        // Bugreport 2026-07-20: der Fader sprang manchmal hart auf 100%,
-        // ohne dass die Maus tatsaechlich dort war. Ursache: pointercancel
-        // (feuert bei abgebrochenen Interaktionen, z.B. Fokuswechsel/OS-
-        // Unterbrechung) liefert laut Pointer-Events-Spec KEINE verlaessliche
-        // Position -- wurde hier bisher genauso wie pointerup behandelt und
-        // dessen (unzuverlaessige) Koordinaten als finaler Wert interpretiert.
-        // Bei einem Abbruch stattdessen beim letzten tatsaechlich bekannten
-        // Wert (aus pointerdown/-move) bleiben, statt der Cancel-Position zu
-        // vertrauen.
+        // pointercancel (fires on aborted interactions, e.g. focus
+        // change/OS interruption) carries no reliable position per the
+        // Pointer Events spec, so it falls back to the last known value
+        // from pointerdown/-move instead of trusting the cancel position.
         track.addEventListener("pointercancel", () => {
             if (!dragging) return;
             dragging = false;
@@ -587,8 +555,8 @@ function initFaderDrag(ws) {
     });
 }
 
-// Logs-Ansicht (Spec §10 Punkt 4): Level-Auswahl laedt die Seite mit dem
-// gewaehlten Level als Query-Parameter neu, Server filtert serverseitig.
+// Logs view: level selection reloads the page with the chosen level as a
+// query parameter, the server filters server-side.
 function initLogLevelFilter() {
     const select = document.querySelector("[data-log-level-filter]");
     if (!select) {

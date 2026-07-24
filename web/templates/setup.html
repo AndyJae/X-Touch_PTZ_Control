@@ -6,9 +6,8 @@
 {% block content %}
 <section class="panel">
     <h2>Companion Config</h2>
-    {# Bewusste Erweiterung über v1 hinaus (Spec §9): SELECT-Button löst
-       einen Bitfocus-Companion-Button fern aus. Eine Instanz global für
-       alle Kanäle (Nutzerentscheid). #}
+    {# SELECT button remotely fires a Bitfocus Companion button. A single
+       instance shared across all channels. #}
     <label for="companion-host">Host IP</label>
     <input type="text" id="companion-host" data-companion-host value="{{ companion.host }}" placeholder="192.168.0.50" />
     <label for="companion-port">Port</label>

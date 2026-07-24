@@ -1,40 +1,12 @@
 """drivers/panasonic_models/aw_he130.py -- Panasonic AW-HE130.
 
-Portiert aus `C:\\smart_reset_work\\camera_plugins\\panasonic\\aw_he130.py`s
-UI_BUTTONS/UI_BUTTON_LABELS (identisch zu AW-HE120, aber als eigenes
-Modell/eigene Datei gefuehrt, analog zur Quelle).
-
-Gain/Pedestal (`HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/
-§3.2.14): Gain kontinuierlich 0-36dB (OGU 08h=0dB .. 2Ch=36dB, 1dB-Schritte);
-Pedestal ueber `OTP`/`QTP`, Bereich -150..+150, Data = 0x96 + Wert -- gleiche
-Pedestal-Familie wie AW-HE120/AW-HR140.
-
-DRS/Knee-Korrektur (2026-07-18, dieselbe PDF, §3.2.30 "Knee settings" +
-DRS-Tabelle): `drs` hat 4 gueltige Werte (0=Off/1=Low/2=Mid/3=High); `knee`
-(`OSA:2D`) ist laut §3.2.30 explizit "Only supported by the AW-HE130/
-AW-HR140/AW-UE150/AK-UB300" -- fuer AW-HE130 also korrekt vorhanden, mit
-3 gueltigen Werten (0=OFF/1=MANUAL/2=AUTO). Beide als je ein Toggle pro
-Zielzustand (`drs_low`/`drs_mid`/`drs_high`, `knee_manual`/`knee_auto`)
-statt eigener "cycle"-Features (Nutzerentscheid 2026-07-18, siehe
-drivers/panasonic_aw.py-Klassendocstring) -- vorher beide faelschlich als
-Toggle bzw. Cycle mit falscher Semantik fuer Button 2/3 gefuehrt.
-
-Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
-(`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `knee_manual`/
-`knee_auto` (`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle
-direkt in der o. g. PDF als Request/Response-Paar verifiziert.
-
-Bewusst KEIN SUPPORTS_IRIS_F_NUMBER (2026-07-23, PDF-Pruefung, siehe
-drivers/panasonic_aw.py::_F_NUMBER_DATA_MIN): dieselbe PDF nennt "Iris F
-value" (`QIF`/`OIF`) explizit "Only supported by the AK-UB300/AW-UE150" --
-trotz sonst gleicher Knee-/White-Clip-Gruppe wird AW-HE130 dort NICHT
-genannt, `query_f_number()` fragt fuer dieses Modell deshalb gar nicht
-erst an.
+Pedestal uses `OTP`/`QTP` (range -150..+150, same family as AW-HE120/
+AW-HR140). `knee` has 3 valid values (Off/Manual/Auto), modeled as one
+toggle per target state. No iris-F-number support.
 """
 
 CAMERA_ID = "AW-HE130"
 CAMERA_ID_ALIASES = ["AW-HE135", "AW-HE130W", "AW-HE130K"]
-DISPLAY_NAME = "Panasonic AW-HE130"
 
 GAIN_MIN_DB = 0
 GAIN_MAX_DB = 36
@@ -48,10 +20,8 @@ PEDESTAL_CENTER_DATA = 0x96
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
-# ND-Filter (OFT/QFT), `HDIntegratedCamera_InterfaceSpecifications-E.pdf`
-# §3.2.1.4, Gruppe "AW-HE130/AW-HR140": NUR drei gueltige Werte (0/3/4),
-# Data 1/2 existieren fuer diese Gruppe nicht -- Reihenfolge der Liste
-# entspricht der Durchdreh-Reihenfolge (kein einfacher 0..3-Bereich).
+# ND filter (OFT/QFT): only three valid values (0/3/4) for this group,
+# data 1/2 don't exist.
 ND_FILTER_OPTIONS: list[tuple[int, str]] = [
     (0, "THROUGH"),
     (3, "1/64"),

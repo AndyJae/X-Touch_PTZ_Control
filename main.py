@@ -17,21 +17,16 @@ from web.app import app
 
 LOGGER = logging.getLogger("ptz_control")
 
-# System-Tray-Verhalten (Nutzerentscheid 2026-07-19): 1:1 nach dem bereits
-# umgesetzten Vorbild in C:\smart_reset_work\web_main.py portiert (Mutex,
-# Tray-Icon-Aufbau, Windows-11-Patch, Force-Exit-Reihenfolge), an PTZ_Control
-# angepasst (Icon-Pfad, Mutex-Name, dynamischer Port statt fest 8765).
 _MUTEX_NAME = "Global\\PTZControlApp_SingleInstance"
 _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Images", "Icon.ico")
-# Sicherheitsnetz fuer den Browser-Oeffnen-Poll (siehe _open_browser() in
-# main()) -- deutlich ueber der worst-case Lifespan-Startzeit bei mehreren
-# nicht erreichbaren Kameras (je bis zu ~1,5s Timeout + 1 Retry pro Query).
+# Safety net for the browser-open poll below -- well above the worst-case
+# lifespan startup time with several unreachable cameras.
 _BROWSER_OPEN_TIMEOUT = 30.0
 
 
 def _ensure_single_instance() -> None:
-    """Windows-Mutex -- verhindert einen zweiten Prozess, der denselben
-    Web-/MIDI-Port beanspruchen würde. Siehe smart_reset_work/web_main.py."""
+    """Windows mutex -- prevents a second process from claiming the same
+    web/MIDI port."""
     ctypes.windll.kernel32.CreateMutexW(None, True, _MUTEX_NAME)
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         ctypes.windll.user32.MessageBoxW(
@@ -44,10 +39,9 @@ def _ensure_single_instance() -> None:
 
 
 def _patch_pystray_win11() -> None:
-    """pystray ruft vor TrackPopupMenuEx SetForegroundWindow auf, was unter
-    Windows 11 ohne kürzliche Nutzereingabe des Threads stillschweigend
-    fehlschlägt -- das Kontextmenü erscheint dann, reagiert aber nicht auf
-    Klicks. Siehe smart_reset_work/web_main.py."""
+    """pystray calls SetForegroundWindow before TrackPopupMenuEx, which
+    silently fails on Windows 11 without recent user input on the thread --
+    the context menu then appears but doesn't respond to clicks."""
     try:
         import pystray._win32 as _backend
 
@@ -77,12 +71,6 @@ def main() -> None:
     log_level_name = config.global_.log_level.upper()
     logging.basicConfig(level=getattr(logging, log_level_name, logging.INFO))
 
-    # Bind-Adresse: Spec §10 "Bind auf 0.0.0.0 per Config abschaltbar
-    # (127.0.0.1 Default)" -- ein Config-Feld dafuer ist im Schema (§4) nicht
-    # definiert, daher hier fest der dokumentierte Default. Web-UI startet
-    # laut Spec §11 Schritt 2 immer, auch ohne MIDI/Kameras -- die eigentliche
-    # Komponenten-Verdrahtung (Treiber, Mapping, Rate-Limiter) passiert im
-    # FastAPI-Lifespan von `web.app`, siehe dort.
     port = config.global_.web_port
     url = f"http://127.0.0.1:{port}"
     LOGGER.info("X-Touch PTZ Control startet Web-UI auf 127.0.0.1:%d", port)
@@ -90,26 +78,17 @@ def main() -> None:
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
 
     def _open_browser() -> None:
-        # Bugreport 2026-07-22: die vorherige feste `time.sleep(1.2)` ging
-        # von einer kurzen, konstanten Startzeit aus -- der FastAPI-Lifespan
-        # (web/app.py) verbindet aber sequenziell JEDE konfigurierte Kamera
-        # (je bis zu ~1,5s Timeout + 1 Retry pro Query, §7.4), was bei
-        # mehreren nicht erreichbaren Kameras die Startzeit weit über 1,2s
-        # treiben kann -- der Browser oeffnete sich dann, bevor der Server
-        # ueberhaupt auf dem Port lauschte. `server.started` wird von uvicorn
-        # erst NACH dem vollstaendigen Lifespan-Startup auf `True` gesetzt --
-        # kurzes Polling darauf statt einer geratenen festen Wartezeit.
-        # `_BROWSER_OPEN_TIMEOUT` ist nur ein Sicherheitsnetz, falls der
-        # Server nie startet (z. B. Port belegt) -- der Browser oeffnet sich
-        # dann trotzdem, wie schon vorher.
+        # Polls server.started (set by uvicorn only after the full lifespan
+        # startup completes) rather than guessing a fixed delay.
+        # _BROWSER_OPEN_TIMEOUT is just a safety net if the server never
+        # starts (e.g. port already in use) -- the browser opens anyway.
         deadline = time.monotonic() + _BROWSER_OPEN_TIMEOUT
         while not server.started and time.monotonic() < deadline:
             time.sleep(0.05)
         webbrowser.open(url)
 
-    # uvicorn und Browser-Öffnen laufen im Hintergrund-Thread, der Hauptthread
-    # ist für das Tray-Icon reserviert (Windows-Anforderung, siehe
-    # smart_reset_work/web_main.py).
+    # uvicorn and browser-open run on background threads; the main thread is
+    # reserved for the tray icon (Windows requirement).
     threading.Thread(target=server.run, daemon=True).start()
     threading.Thread(target=_open_browser, daemon=True).start()
 
@@ -133,7 +112,7 @@ def main() -> None:
                 pystray.MenuItem("Quit", on_quit),
             ),
         )
-        tray.run()  # blockiert, bis on_quit icon.stop() aufruft
+        tray.run()  # blocks until on_quit calls icon.stop()
     except Exception as exc:
         ctypes.windll.user32.MessageBoxW(
             None,
@@ -143,11 +122,10 @@ def main() -> None:
             0x10 | 0x1000,  # MB_ICONERROR | MB_SYSTEMMODAL
         )
     finally:
-        # Force-Exit, damit der Prozess sofort terminiert und den
-        # Single-Instance-Mutex freigibt -- ohne das können pystrays
-        # Windows-Backend oder uvicorns Graceful-Shutdown-Thread den Prozess
-        # nach Tray-Ende am Leben halten (naechster Start meldet dann
-        # faelschlich "läuft bereits").
+        # Force-exit so the process terminates immediately and releases the
+        # single-instance mutex -- without this, pystray's Windows backend
+        # or uvicorn's graceful-shutdown thread can keep the process alive
+        # after the tray closes.
         os._exit(0)
 
 

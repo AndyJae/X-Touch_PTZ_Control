@@ -7,13 +7,7 @@ from core.state import CameraState
 
 
 class CameraCommandError(Exception):
-    """Kamera antwortet mit ER1/ER2/ER3 (bzw. eR1/2/3 bei ptz-Befehlen, §7.4)
-    oder ist nach Timeout+1 Retry nicht erreichbar."""
-
-    def __init__(self, message: str, *, command: str, response: str | None = None) -> None:
-        super().__init__(message)
-        self.command = command
-        self.response = response
+    """Camera responded with an error code, or is unreachable after retry."""
 
 
 class CameraDriver(ABC):
@@ -44,9 +38,8 @@ class CameraDriver(ABC):
 
     @abstractmethod
     async def step_gain(self, delta_db: int) -> tuple[int | None, bool]:
-        """Rueckgabe (neuer dB-Wert oder `None` bei Auto, ist_auto) --
-        Auto/AGC (Nutzerauftrag 2026-07-20) ist ein regulaerer dritter
-        Gain-Zustand, kein Fehler."""
+        """Returns (new dB value or `None` if Auto, is_auto). Auto/AGC is a
+        regular third gain state, not an error."""
         ...
 
     @abstractmethod
@@ -87,21 +80,17 @@ class CameraDriver(ABC):
 
     @abstractmethod
     async def query_f_number(self) -> str | None:
-        """Aktuelle Iris-F-Nummer (z. B. "F9.8", "CLOSE") -- separat von
-        `get_state()` aufrufbar, damit ein Fader-Zug sie live nachfuehren
-        kann, ohne bei jedem Tick den kompletten Kamerastatus (Gain/Pedestal/
-        ND/Fehler) mitabzufragen (core/application.py::apply_iris())."""
+        """Current iris F-number (e.g. "F9.8", "CLOSE") -- callable
+        separately from `get_state()` so a fader drag can refresh it live
+        without querying the full camera status on every tick."""
         ...
 
     @abstractmethod
     async def query_iris(self) -> tuple[float | None, bool | None]:
-        """Aktuelle Iris-Position (0.0-1.0) + Auto-Iris-Modus, in einer
-        Abfrage -- separat von `get_state()` aufrufbar. Bugfix 2026-07-23:
-        `set_iris()` wird von der Kamera stillschweigend ignoriert, solange
-        Auto-Iris aktiv ist (kein Fehler, aber keine Wirkung, siehe
-        CLAUDE.md) -- `apply_iris()` ruft dies danach erneut auf, um die
-        tatsaechliche (unveraenderte) Position statt des wirkungslosen
-        Zielwerts anzuzeigen."""
+        """Current iris position (0.0-1.0) + auto-iris mode, in one query --
+        callable separately from `get_state()`. The camera silently ignores
+        iris-set commands while auto-iris is active, so callers re-query
+        the real position afterward instead of trusting the target value."""
         ...
 
     @abstractmethod

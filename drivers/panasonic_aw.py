@@ -10,93 +10,54 @@ from core.state import CameraState
 from drivers.base import CameraCommandError, CameraDriver
 from drivers.panasonic_models.registry import resolve_model
 
-# --- Iris (#AXI / #GI, §7.2): normalisiert 0.0-1.0 <-> 555h-FFFh, linear (Spec-Formel) ---
+# --- Iris (#AXI / #GI): normalized 0.0-1.0 <-> 555h-FFFh, linear ---
 _IRIS_DATA_MIN = 0x555
 _IRIS_DATA_MAX = 0xFFF
 
-# --- Iris F-Nummer (QIF/OIF, §7.2): live gegen eine reale AW-UE160 verifiziert
-# (2026-07-23, manuelle Kalibrierung -- Nutzer stufte die Iris am Kamera-OSD
-# Klick fuer Klick durch, F-Nummer jeweils vom Kamera-eigenen Display abgelesen,
-# Data-Wert per QIF direkt mitgeschnitten): Data/10 = F-Nummer, exakt bei allen
-# 10 live gemessenen Punkten (Data 40/93/94/96/98/100/103/105/110 -> F4.0..F11.0)
-# UND deckungsgleich mit den beiden in der Spec dokumentierten Ankerpunkten
-# (0Eh=F1.4, A0h=F16, §7.2) -- deshalb hier als linearer Bereich 0Eh-A0h
-# angewendet, obwohl live nur der Teilbereich 28h-6Eh durchlaufen wurde (die
-# aktuelle Zoomposition/Optik liess die Iris nicht weiter als F4.0-F11.0 zu).
-# FFh=CLOSE ist ein separater Sentinel, kein Teil der linearen Formel.
-# Der Bereich A1h-FEh (zwischen dem F16-Anker und CLOSE) bleibt UNBESTAETIGT --
-# zwei Live-Versuche (in beide Richtungen) sprangen jeweils in einem einzigen
-# Kamera-Klick direkt von FFh (CLOSE) zu 6Eh (F11.0) bzw. zurueck, ohne einen
-# Zwischenwert zu zeigen; bei der aktuellen Zoomposition scheint dieser Bereich
-# ueber die normale Iris-Steuerung nicht einzeln anwaehlbar zu sein. Wird
-# deshalb bewusst NICHT dekodiert (kein erfundener Wert), `query_f_number()`
-# faellt dafuer auf den rohen Hex-Wert zurueck.
-#
-# Modelluebergreifende Bestaetigung (2026-07-23, PDF-Pruefung statt Live-Test,
-# Nutzerauftrag "check pdfs first"): dieselben Ankerpunkte (0Eh=F1.4, 1Ch=F2.8,
-# 38h=F5.6, A0h=F16, FFh=CLOSE) stehen wortgleich in den eigenen PDFs von
-# AW-UE150A, AW-UE100 und AW-UE150/AW-HE145 sowie in der allgemeinen
-# `HDIntegratedCamera_InterfaceSpecifications-E.pdf`. AW-UE80/UE50/UE40/UE30
-# dokumentiert nur die ersten beiden Ankerpunkte (0Eh/1Ch), aber keinen
-# Widerspruch. Die Formel gilt hier deshalb als modelluebergreifend
-# bestaetigt -- WELCHE Modelle den Befehl `QIF` ueberhaupt unterstuetzen, ist
-# aber eine eigene Frage (siehe `supports_iris_f_number`/`SUPPORTS_IRIS_
-# F_NUMBER` unten): dieselbe allgemeine PDF nennt "Iris F value" explizit
-# **"Only supported by the AK-UB300/AW-UE150"** unter den dort gefuehrten
-# Modellen (AW-HE40/50/60/120/130, AW-HR140, AW-UE70, AW-HE42, AK-UB300) --
-# fuer diese Gruppe (ausser AK-UB300) wird `QIF` deshalb bewusst gar nicht
-# erst angefragt.
-_F_NUMBER_DATA_MIN = 0x0E  # F1.4 (Spec-Anker)
-_F_NUMBER_DATA_MAX = 0xA0  # F16.0 (Spec-Anker)
+# --- Iris F-number (QIF/OIF): Data/10 = F-number over the linear range
+# 0Eh(F1.4)-A0h(F16.0); FFh=CLOSE is a separate sentinel, not part of the
+# linear formula. The range A1h-FEh (between the F16 anchor and CLOSE) is
+# not decoded -- query_f_number() falls back to the raw hex value there.
+# Only supported by camera models flagged via SUPPORTS_IRIS_F_NUMBER.
+_F_NUMBER_DATA_MIN = 0x0E
+_F_NUMBER_DATA_MAX = 0xA0
 _F_NUMBER_CLOSE_DATA = 0xFF
 
-# --- Gain (OGU/QGU): Data = 0x08 + db, 0x80 = AGC/Auto -- diese Anker sind laut
-# AW-UE160_InterfaceSpecification_E.pdf UND HDIntegratedCamera_InterfaceSpecifications-E.pdf
-# (§3.2.6) fuer JEDES dort dokumentierte Modell identisch, nur Bereich/Schrittweite
-# unterscheiden sich -- deshalb hier als geteilte Konstante, waehrend
-# GAIN_MIN_DB/GAIN_MAX_DB/GAIN_STEP_DB (die tatsaechlich camera-spezifischen Werte)
-# aus dem per Modell-Registry aufgeloesten Modul kommen (siehe _apply_model_catalog()).
+# --- Gain (OGU/QGU): Data = 0x08 + db, 0x80 = AGC/Auto. These anchors are
+# identical across every documented model; the actual per-camera range/step
+# (GAIN_MIN_DB/GAIN_MAX_DB/GAIN_STEP_DB) comes from the resolved model
+# module, see _apply_model_catalog().
 _GAIN_ZERO_DB_DATA = 0x08
 _GAIN_AGC_DATA = 0x80
 
-# --- R/B Gain Preset (OSL:36/38, §7.2): 418h(-1000)-800h(0)-BE8h(+1000) -> Data = 0x800 + value ---
+# --- R/B gain preset (OSL:36/38): 418h(-1000)-800h(0)-BE8h(+1000) -> Data = 0x800 + value ---
 _RB_GAIN_CENTER_DATA = 0x800
 
 _ERROR_PREFIXES_CAM = ("ER1:", "ER2:", "ER3:")
 _ERROR_PREFIXES_PTZ = ("eR1", "eR2", "eR3")
-_ERROR_STATE_PREFIXES = ("rER", "OER")  # laut CameraState-Docstring in Spec §6
+_ERROR_STATE_PREFIXES = ("rER", "OER")
 
-_REQUEST_TIMEOUT = 1.5  # §7.4: Default 1,5s Timeout, 1 Retry
+_REQUEST_TIMEOUT = 1.5  # default timeout, 1 retry
 
-# --- Update-Notification-Kanal (§7.3.1) + Lens-Info (§7.3.2) ---
-# Frame-Layout (22B Reserve, 2B Size big-endian [=Payload-Laenge+8], 4B Reserve,
-# Payload, 24B Reserve) live gegen die reale AW-UE160 verifiziert (Raw-TCP-
-# Capture nach #LPC1-Registrierung) -- ebenso verifiziert: jede Notification
-# kommt als eigene, kurzlebige TCP-Verbindung mit genau einem Frame, kein
-# Dauer-Stream.
+# --- Update notification channel + lens info ---
+# Frame layout: 22B reserve, 2B size (big-endian, payload length + 8), 4B
+# reserve, payload, 24B reserve. Each notification arrives as its own
+# short-lived TCP connection with exactly one frame, not a persistent stream.
 _NOTIFY_HEADER_RESERVE = 22
 _NOTIFY_SIZE_FIELD_LEN = 2
 _NOTIFY_MID_RESERVE = 4
 _NOTIFY_HEADER_LEN = _NOTIFY_HEADER_RESERVE + _NOTIFY_SIZE_FIELD_LEN + _NOTIFY_MID_RESERVE
-# §7.3.1: QSV-Notifications alle 60s als Heartbeat, >90s ohne Notification ->
-# Verbindung als gestoert werten und neu registrieren. Hier wird JEDE
-# empfangene Notification als Heartbeat gewertet (nicht nur QSV) -- waehrend
-# aktivem #LPC1 kommt ohnehin alle 300ms ein lPI-Frame, das QSV-Intervall ist
-# dann nur der Ruhezustand-Fallback.
+# QSV notifications arrive every 60s as a heartbeat; >90s without one means
+# the connection is treated as stale and re-registered. Any notification
+# counts as a heartbeat here, not just QSV.
 _NOTIFY_HEARTBEAT_TIMEOUT = 90.0
 
 
 def _parse_notification_payload(frame: bytes) -> str | None:
-    """Payload-Rahmen ist `\\r\\n<Kommando>\\r\\n`, aufgefuellt mit Null-Bytes
-    bis zur in `size` deklarierten Laenge (live gegen eine echte AW-UE160
-    bestaetigt, 2026-07-20, Nutzerauftrag: `OGU`/`OSJ:0F`-Notifications kamen
-    z. B. als `b'\\r\\nOGU:0D\\r\\n\\x00\\x00'` -- Null-Bytes sind KEIN
-    Whitespace fuer `str.strip()`, blieben also bisher am Ende stehen und
-    liessen `int(value, 16)` in `_handle_notification()` fehlschlagen,
-    wodurch `gain_changed`/`pedestal_changed` fuer eine externe Aenderung
-    stillschweigend nie feuerten -- Bugreport "Kamera-UI-Aenderung an Gain/
-    Pedestal wird nicht erkannt"). `strip("\\x00\\r\\n \\t")` entfernt Null-
-    Bytes und Whitespace von beiden Seiten in einem Durchgang."""
+    """Payload frame is `\\r\\n<command>\\r\\n`, padded with null bytes up to
+    the length declared in `size`. Null bytes aren't whitespace for
+    `str.strip()`, so `strip("\\x00\\r\\n \\t")` is needed to remove both in
+    one pass."""
     if len(frame) < _NOTIFY_HEADER_LEN:
         return None
     size = int.from_bytes(
@@ -110,8 +71,8 @@ def _parse_notification_payload(frame: bytes) -> str | None:
 
 
 def _parse_lens_info_iris(body: str) -> float | None:
-    """`lPI[ZZZ][FFF][III]` (Spec §7.3.2, Zoom/Fokus/Iris je 3 Hex-Digits) --
-    nur Iris (die letzten 3 Digits) wird ausgewertet, Zoom/Fokus ungenutzt."""
+    """`lPI[ZZZ][FFF][III]` (zoom/focus/iris, 3 hex digits each) -- only
+    iris (the last 3 digits) is used, zoom/focus are ignored."""
     if not body.startswith("lPI") or len(body) != 12:
         return None
     try:
@@ -130,10 +91,8 @@ def _data_to_iris(data: int) -> float:
 
 
 def _decode_f_number(data: int) -> str | None:
-    """QIF-Data -> F-Nummer-Label (siehe _F_NUMBER_DATA_MIN/-MAX/-CLOSE_DATA
-    oben fuer die Herleitung). `None`, wenn `data` außerhalb des live/Spec-
-    bestaetigten Bereichs liegt -- Aufrufer faellt dann auf den rohen Hex-Wert
-    zurueck statt einen ungeprueften Wert zu erfinden."""
+    """QIF data -> F-number label. `None` if `data` is outside the confirmed
+    range -- callers fall back to the raw hex value instead."""
     if data == _F_NUMBER_CLOSE_DATA:
         return "CLOSE"
     if _F_NUMBER_DATA_MIN <= data <= _F_NUMBER_DATA_MAX:
@@ -142,8 +101,8 @@ def _decode_f_number(data: int) -> str | None:
 
 
 def _extract_value(body: str) -> str | None:
-    """Wert nach dem letzten ':' — durchgängiges Antwortmuster der Befehlstabelle
-    (z. B. 'OGU:08' -> '08', 'OID:AW-UE160' -> 'AW-UE160')."""
+    """Value after the last ':' -- the consistent response pattern for
+    every command (e.g. 'OGU:08' -> '08', 'OID:AW-UE160' -> 'AW-UE160')."""
     if not body or ":" not in body:
         return None
     value = body.rsplit(":", 1)[-1].strip()
@@ -151,26 +110,19 @@ def _extract_value(body: str) -> str | None:
 
 
 def _decode_gain_data(data: int) -> tuple[int | None, bool]:
-    """Gain-Kodierung (Data = 0x08 + db, 0x80 = Auto/AGC), geteilt zwischen
-    `_query_gain_state()` und der Update-Notification-Auswertung
-    (`_handle_notification()`), da beide dieselbe Antwort-/Notification-
-    Kodierung `OGU:[Data]` dekodieren (§4.2/§7.2). Auto ist seit
-    Nutzerauftrag 2026-07-20 ein regulaerer dritter Gain-Zustand (live gegen
-    AW-UE160 UND AW-UE100 bestaetigt, siehe CLAUDE.md), kein Fehler-/
-    Unbekannt-Zustand mehr -- Rueckgabe (dB-Wert oder `None` bei Auto,
-    ist_auto)."""
+    """Gain encoding (Data = 0x08 + db, 0x80 = Auto/AGC), shared between
+    `_query_gain_state()` and the update-notification handling since both
+    decode the same `OGU:[Data]` encoding. Returns (dB value or `None` if
+    Auto, is_auto)."""
     if data == _GAIN_AGC_DATA:
         return None, True
     return data - _GAIN_ZERO_DB_DATA, False
 
 
 def _match_toggle_feature(body: str, features: dict[str, dict]) -> tuple[str, bool] | None:
-    """Ordnet eine Update-Notification-Payload (§4.2, exakt derselbe
-    Kommando-String wie beim Senden, siehe HDIntegratedCamera_
-    InterfaceSpecifications-E.pdf Fig. 4-4/4-5) einem Toggle-Feature aus
-    `BUTTON_FEATURES` zu, indem `body` gegen jedes bekannte `on`/`off`-
-    Kommando verglichen wird. Kein Treffer (z. B. Kommando ausserhalb des
-    Katalogs) -> `None`, kein erfundener Zustand."""
+    """Matches an update-notification payload (the same command string as
+    sent) against a toggle feature in `BUTTON_FEATURES` by comparing `body`
+    to each known `on`/`off` command. No match -> `None`."""
     for key, feature in features.items():
         if feature.get("kind") != "toggle":
             continue
@@ -184,84 +136,48 @@ def _match_toggle_feature(body: str, features: dict[str, dict]) -> tuple[str, bo
 
 
 class PanasonicAWDriver(CameraDriver):
-    """AW-Serie (Referenz AW-UE160) über CGI/HTTP, §7 der Spec.
+    """AW-series cameras (reference: AW-UE160) over CGI/HTTP.
 
-    Notification-Feedback-Kanal (§7.3): Lens-Info (#LPC1, nur Iris) ist über
-    `start_lens_feedback()`/`stop_lens_feedback()` implementiert, siehe dort.
-    Update-Notifications für andere Ereignisse (`OAW`, `OWS` etc., §7.3.1)
-    laufen technisch über denselben Kanal und werden seit 2026-07-19 auch
-    ausgewertet (Beleg: Kap. 4 der HDIntegratedCamera_
-    InterfaceSpecifications-E.pdf, referenziert aus
-    RemoteControllerInterfaceSpecifications-E.pdf §4.1.1) -- `_handle_
-    notification()` gleicht die Payload neben `lPI` zusaetzlich gegen
-    bekannte Toggle-Feature-/Gain-/Pedestal-Kommandos ab, siehe dortiger
-    Docstring.
+    The notification feedback channel carries lens info (#LPC1, iris
+    position only, via `start_lens_feedback()`/`stop_lens_feedback()`) and
+    also update notifications for other events (`OAW`, `OWS`, etc.) --
+    `_handle_notification()` matches the payload against known toggle
+    feature/gain/pedestal commands in addition to `lPI`.
 
-    **Scope-Grenze nach dem Modell-Registry-Umbau (§9a):** `BUTTON_FEATURES`/
-    `BUTTON_FEATURE_LABELS` sowie Gain/Pedestal-Bereich/-Kommando (siehe
-    `_apply_model_catalog()`) sind modellabhaengig und werden aus dem per
-    `QID` erkannten Modell (`drivers/panasonic_models`) aufgeloest. Iris-
-    POSITION (`_IRIS_DATA_MIN/MAX`, #AXI/#GI) bleibt weiterhin NUR fuer
-    AW-UE160 verifiziert -- fuer andere Modelle ist diese Formel in der Spec
-    nicht bestaetigt, das ist ein separater, noch offener Punkt (siehe
-    CLAUDE.md). Die Iris-F-NUMMER (`_F_NUMBER_DATA_MIN/MAX`, QIF/OIF) ist
-    davon unabhaengig und seit 2026-07-23 per PDF-Pruefung modelluebergreifend
-    bestaetigt (siehe Kommentar dort) -- ob ein Modell `QIF` ueberhaupt
-    unterstuetzt, steuert `supports_iris_f_number`/`SUPPORTS_IRIS_F_NUMBER`
-    je Modell-Modul.
+    `BUTTON_FEATURES`/`BUTTON_FEATURE_LABELS` and the gain/pedestal
+    range/command (`_apply_model_catalog()`) are model-dependent, resolved
+    from the model detected via `QID`. Iris position (`_IRIS_DATA_MIN/MAX`,
+    #AXI/#GI) is only confirmed for AW-UE160; other models are unverified
+    for this formula. Iris F-number (`_F_NUMBER_DATA_MIN/MAX`, QIF/OIF) is
+    confirmed across models, gated per model by
+    `supports_iris_f_number`/`SUPPORTS_IRIS_F_NUMBER`.
 
-    Gain-Encoding (Data = 0x08 + db, 0x80 = AGC) ist laut beiden lokalen
-    Referenz-PDFs modellUNabhaengig identisch -- nur Bereich/Schrittweite
-    (`gain_min_db`/`gain_max_db`/`gain_step_db`) variieren und kommen aus dem
-    Modell-Modul. Pedestal hat dagegen laut
-    `HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.14 DREI
-    unterschiedliche Kommandofamilien je nach Modell (`OSJ:0F` Master
-    Pedestal bei AW-UE150/AW-UE160/AW-UE100, `OTP`/`QTP` bei AW-HE50/60/120/
-    130/HR140/HE40/UE70/HE42, `OSG:4A` bei AK-UB300) -- deshalb kommen
-    Kommando, Zentraldatenwert, Skalierung und Hex-Breite hier vollstaendig
-    aus dem Modell-Modul (`pedestal_command` u. ae., siehe
-    `_apply_model_catalog()`). Modelle ohne Eintrag in einer der lokalen
-    Referenz-PDFs (z. B. AW-UE80/UE30/40/50/UE145) haben bewusst KEINE
-    Gain-/Pedestal-Werte -- Encoder zeigt fuer diese dann keinen
-    Wertebereich (kein erfundener Fallback).
+    Gain encoding (Data = 0x08 + db, 0x80 = AGC) is identical across models;
+    only range/step (`gain_min_db`/`gain_max_db`/`gain_step_db`) vary and
+    come from the model module. Pedestal has three different command
+    families depending on model (`OSJ:0F` on AW-UE150/AW-UE160/AW-UE100,
+    `OTP`/`QTP` on AW-HE50/60/120/130/HR140/HE40/UE70/HE42, `OSG:4A` on
+    AK-UB300) -- command, center data value, scale, and hex width all come
+    from the model module. Models without gain/pedestal data in the
+    reference specs simply have no range (no invented fallback).
     """
 
-    # Kamera-Feature-Buttons (Spec §9a: Button-2/3-Aktionen kommen aus der
-    # pro Kameramodell verifizierten BUTTON_FEATURES/BUTTON_FEATURE_LABELS-
-    # Definition, portiert aus dem externen Referenzprojekt
-    # C:\smart_reset_work\camera_plugins\panasonic\*.py (dort UI_BUTTONS/
-    # UI_BUTTON_LABELS, laut deren CLAUDE.md gegen reale Panasonic-Interface-
-    # Specs verifiziert). Ursprünglich NICHT unabhängig gegen die lokalen
-    # PDF-Referenzen (docs/specs/) nachverifiziert (PDF-Rendering war zu
-    # Beginn nicht verfügbar) -- seit 2026-07-18 (`pdftotext`, siehe
-    # CLAUDE.md Offene Punkte) sind `drs`/`knee` für alle Modelle mit
-    # vorhandener PDF gegengeprüft (und korrigiert, wo falsch); der Rest des
-    # Katalogs (auto_focus/auto_iris/awb/aww/osd/white_clip/matrix/...) ist
-    # weiterhin nur gegen smart_reset_work verifiziert, nicht gegen die PDFs.
+    # Button 2/3 actions come from the per-camera-model BUTTON_FEATURES/
+    # BUTTON_FEATURE_LABELS definition. These are instance attributes, not
+    # class attributes: `connect()` resolves them from the model detected
+    # via `QID` (see `_apply_model_catalog()`) -- an unknown model leaves
+    # them empty rather than falling back to a guessed catalog.
     #
-    # Seit dem Modell-Registry-Umbau (§9a, Nutzerentscheid) sind das keine
-    # festen Klassenattribute mehr, sondern Instanzattribute, die `connect()`
-    # anhand des per `QID` erkannten Modells aus `drivers/panasonic_models`
-    # auflöst (siehe `_apply_model_catalog()`) -- ein Treiber kann so je nach
-    # verbundenem Modell einen anderen Katalog zeigen, statt fest auf
-    # AW-UE160 zu stehen. Unbekanntes Modell -> leere Kataloge (kein
-    # erfundener Fallback).
-    #
-    # "toggle": on/off-Kommando (einzelner String oder Liste, siehe
-    #   trigger_button_feature()), kein Query verfügbar (auch in der
-    #   Referenzquelle nicht — Zustand wird dort wie hier nur lokal
-    #   getrackt, nicht kamera-verifiziert, siehe core/state.py).
-    # "trigger": ein einmaliges Kommando, kein Ein/Aus-Zustand.
-    # Mehrwertige Kamera-Parameter (Knee, DRS) sind seit Nutzerentscheid
-    # 2026-07-18 KEIN eigener "cycle"-Feature-Typ mehr, sondern je ein
-    # "toggle" pro sinnvollem Zielzustand (z. B. "knee_manual"/"knee_auto"
-    # statt einem einzelnen "knee") -- Grund: Button 2/3 sind physische
-    # Zwei-Zustand-Tasten mit einer einzigen (nicht mehrfarbigen) LED, ein
-    # rundenweises Durchschalten mehrerer Zustaende laesst sich darauf nicht
-    # sinnvoll anzeigen. Das Cycle-Konzept existiert weiterhin, aber nur bei
-    # Button 1 (physisch Rec, Encoder-Funktionsauswahl Gain/Pedestal/Camera
-    # Status, siehe core/application.py._ENCODER_FUNCTIONS) -- ein komplett
-    # anderer, eigenstaendiger Mechanismus ohne Bezug zu BUTTON_FEATURES.
+    # "toggle": on/off command (single string or list, see
+    #   trigger_button_feature()); no query available, state is tracked
+    #   locally only (see core/state.py).
+    # "trigger": a one-shot command, no on/off state.
+    # Multi-value camera parameters (knee, DRS) are modeled as one "toggle"
+    # per target state (e.g. "knee_manual"/"knee_auto") rather than a
+    # "cycle" type, since button 2/3 are physical two-state buttons with a
+    # single, non-multicolor LED. The cycle concept still exists for button
+    # 1 (Rec, encoder function selection) -- a separate mechanism unrelated
+    # to BUTTON_FEATURES.
     BUTTON_FEATURES: dict[str, dict] = {}
     BUTTON_FEATURE_LABELS: dict[str, str] = {}
 
@@ -276,13 +192,11 @@ class PanasonicAWDriver(CameraDriver):
         self._notify_port: int | None = None
         self._notify_heartbeat_task: asyncio.Task[None] | None = None
         self._last_notification_at: float = 0.0
-        # Instanzattribute (siehe Kommentar oben) -- ueberschreiben die leeren
-        # Klassenattribute nach connect() anhand des erkannten Modells.
+        # Overwritten after connect() based on the detected model.
         self.BUTTON_FEATURES: dict[str, dict] = {}
         self.BUTTON_FEATURE_LABELS: dict[str, str] = {}
-        # Gain/Pedestal-Modelldaten (siehe _apply_model_catalog()) -- `None`
-        # heisst "kein Modell erkannt" oder "in keiner der beiden Referenz-
-        # PDFs dokumentiert", kein erfundener Fallback.
+        # Gain/pedestal model data (see _apply_model_catalog()) -- `None`
+        # means no model detected or not documented for this model.
         self.gain_min_db: int | None = None
         self.gain_max_db: int | None = None
         self.gain_step_db: int | None = None
@@ -293,29 +207,21 @@ class PanasonicAWDriver(CameraDriver):
         self.pedestal_center_data: int | None = None
         self.pedestal_scale: int | None = None
         self.pedestal_data_width: int | None = None
-        # Super-Gain-Kopplung (Nutzerauftrag 2026-07-20, live gegen AW-UE100
-        # verifiziert: Werte >36dB werden per ER3 abgelehnt, wenn Super Gain
-        # aus ist) -- nur bei Modellen mit `GAIN_MAX_DB_SUPER_GAIN_OFF`
-        # gesetzt (siehe _apply_model_catalog()), sonst bleibt beides `None`
-        # und `effective_gain_max_db` liefert unveraendert `gain_max_db`.
+        # Super-gain coupling: only set for models with
+        # GAIN_MAX_DB_SUPER_GAIN_OFF, otherwise both stay `None` and
+        # `effective_gain_max_db` returns `gain_max_db` unchanged.
         self.gain_max_db_super_gain_off: int | None = None
         self.super_gain_query_command: str | None = None
-        # Zwischengespeicherter Super-Gain-Zustand, aufgefrischt bei jedem
-        # get_state()-Aufruf (Connect UND Encoder-Funktionswechsel auf
-        # "gain", siehe core/application.py::cycle_encoder_function()) --
-        # `None` heisst "noch nicht abgefragt/nicht lesbar", wird dann
-        # konservativ wie "aus" behandelt (schmalere Obergrenze).
+        # Cached super-gain state, refreshed on every get_state() call.
+        # `None` means "not queried yet", treated conservatively as off.
         self.gain_super_gain_on: bool | None = None
-        # ND-Filter-Katalog (siehe _apply_model_catalog()) -- geordnete
-        # Liste (Data-Wert, Label), leer/`None` heisst "Modell hat laut den
-        # lokalen Referenz-PDFs keinen physischen ND-Filter" (z. B.
-        # AW-HE40/AW-HE50/AW-HE60), kein erfundener Fallback.
+        # ND filter catalog (see _apply_model_catalog()) -- ordered
+        # (data value, label) list; empty/`None` means this model has no
+        # physical ND filter.
         self.nd_options: list[tuple[int, str]] | None = None
-        # Iris-F-Nummer-Unterstuetzung (siehe _apply_model_catalog() und
-        # `query_f_number()`) -- `False` heisst "Modell laut lokalen
-        # Referenz-PDFs (HDIntegratedCamera_InterfaceSpecifications-E.pdf:
-        # 'Iris F value ... Only supported by the AK-UB300/AW-UE150') ohne
-        # QIF-Unterstuetzung, oder unbekanntes Modell", kein Query-Versuch.
+        # Iris F-number support (see _apply_model_catalog() and
+        # query_f_number()) -- `False` means either an unknown model or one
+        # without confirmed QIF support, no query is attempted.
         self.supports_iris_f_number: bool = False
 
     # --- Lifecycle -----------------------------------------------------
@@ -329,12 +235,9 @@ class PanasonicAWDriver(CameraDriver):
         self._apply_model_catalog()
 
     def _apply_model_catalog(self) -> None:
-        """Setzt BUTTON_FEATURES/BUTTON_FEATURE_LABELS sowie Gain-/Pedestal-
-        Modelldaten anhand des per `QID` erkannten Modells (siehe
-        Klassen-Docstring/§9a). Unbekanntes oder (noch) nicht verbundenes
-        Modell -> leere Kataloge/`None`-Werte, kein erfundener Fallback --
-        `available_button_features()` sowie `step_gain()`/`step_pedestal()`
-        behandeln das bereits korrekt als "keine Optionen verfuegbar"."""
+        """Sets BUTTON_FEATURES/BUTTON_FEATURE_LABELS and gain/pedestal
+        model data from the model detected via `QID`. Unknown or
+        not-yet-connected model -> empty catalogs/`None` values."""
         module = resolve_model(self.model)
         self.BUTTON_FEATURES = dict(getattr(module, "BUTTON_FEATURES", {})) if module else {}
         self.BUTTON_FEATURE_LABELS = dict(getattr(module, "BUTTON_FEATURE_LABELS", {})) if module else {}
@@ -363,17 +266,17 @@ class PanasonicAWDriver(CameraDriver):
             self._client = None
         self._connected = False
 
-    # --- Lens-Info-Feedback (§7.3, Iris-Aenderungen durch andere Quellen) --
-    # Nicht Teil der CameraDriver-ABC (wie BUTTON_FEATURES, §9a) -- die
-    # Anwendungsschicht prueft per hasattr(), ob ein Treiber das anbietet.
+    # --- Lens-info feedback (iris changes from other sources) --
+    # Not part of the CameraDriver ABC -- the application layer checks via
+    # hasattr() whether a driver offers this.
 
     async def start_lens_feedback(self) -> None:
-        """Registriert den Update-Notification-Kanal und aktiviert Lens-Info
-        (#LPC1). Primaere Quelle fuer Iris-Feedback bei extern (z. B.
-        Kamera-eigenes Web-UI) ausgeloesten Aenderungen, da `#AXI` laut Spec
-        kein Update-Notification-Flag hat (§7.3.2)."""
+        """Registers the update-notification channel and enables lens info
+        (#LPC1). The primary source for iris feedback on externally
+        triggered changes (e.g. the camera's own web UI), since the
+        iris-set command itself carries no update-notification flag."""
         if self._client is None:
-            raise CameraCommandError("not connected", command="event?connect=start")
+            raise CameraCommandError("not connected")
         server = await asyncio.start_server(self._handle_notification, "0.0.0.0", 0)
         self._notify_server = server
         self._notify_port = server.sockets[0].getsockname()[1]
@@ -410,40 +313,21 @@ class PanasonicAWDriver(CameraDriver):
         await self._client.get(url)
 
     async def _handle_notification(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Jede Notification kommt als eigene, kurzlebige TCP-Verbindung mit
-        genau einem Frame (live gegen die reale Kamera verifiziert).
+        """Each notification arrives as its own short-lived TCP connection
+        with exactly one frame.
 
-        Ueber denselben, bereits fuer Lens-Info (`lPI`) registrierten
-        Update-Notification-Kanal (§7.3.1) meldet die Kamera laut
-        HDIntegratedCamera_InterfaceSpecifications-E.pdf Kap. 4 JEDE
-        Aenderung eines Steuerkommandos -- unabhaengig davon, ob sie von
-        PTZ_Control selbst oder einem anderen Terminal (z. B. der
-        Kamera-eigenen Web-UI) ausgeloest wurde (Fig. 4-5). Die Payload ist
-        dabei exakt derselbe Kommando-String wie beim Senden (z. B.
-        'OGU:08'), deshalb reicht ein Abgleich gegen die bereits bekannten
-        Kommandos aus BUTTON_FEATURES/Gain/Pedestal -- kein neues Parsing
-        noetig. Laut Kap. 4.3.1 (Remarks) loesen einige Kommandos (OSD-Menue-
-        Navigation, Pan/Tilt/Zoom/Focus/Iris, One-Touch-Focus, Contrast,
-        Iris volume) KEINE Notification aus.
-
-        **Live widerlegt (2026-07-20, echte AW-UE160):** frueher stand hier
-        die Annahme, das beträfe keinen der geprueften Katalog-Eintraege --
-        das ist falsch. `auto_focus` (`OAF`) und `auto_iris` (`ORS`) wurden
-        direkt per CGI umgeschaltet (Kamera-UI bestaetigte den neuen Wert),
-        aber weder die Solo- noch die Mute-LED (beide auf diese Features
-        gemappt) reagierten -- die Kamera sendet fuer diese beiden Kommandos
-        also tatsaechlich KEINE Notification, passend zur "Focus/Iris"-
-        Ausnahme in Kap. 4.3.1. Betroffene Katalog-Eintraege bekommen dadurch
-        nur beim naechsten expliziten Query (Zuweisung/App-Neustart) einen
-        aktuellen Wert, nie push-basiert bei externer Aenderung -- siehe
-        CLAUDE.md Offene Punkte.
-
-        **Bugfix 2026-07-22 (Nutzerreport, echte AW-UE160):** `OFT` (ND-
-        Filter) fehlte hier komplett -- eine am Kamera-eigenen Bedienfeld
-        vorgenommene ND-Aenderung wurde deshalb nie erkannt, obwohl `OFT`
-        (anders als `OAF`/`ORS`) NICHT in der Ausnahmeliste aus Kap. 4.3.1
-        steht (nur OSD-Menue-Navigation, Pan/Tilt/Zoom/Focus/Iris, One-
-        Touch-Focus, Contrast, Iris Volume sind dort ausgenommen)."""
+        Over the same update-notification channel already registered for
+        lens info (`lPI`), the camera reports every change to a control
+        command, regardless of whether it was triggered by this app or
+        another terminal (e.g. the camera's own web UI). The payload is the
+        exact same command string as when sending (e.g. 'OGU:08'), so
+        matching against the known commands from BUTTON_FEATURES/gain/
+        pedestal is enough -- no new parsing needed. Some commands (OSD menu
+        navigation, pan/tilt/zoom/focus/iris, one-touch focus, contrast,
+        iris volume) trigger no notification at all -- this includes
+        `auto_focus` (`OAF`) and `auto_iris` (`ORS`): those two catalog
+        entries only get an updated value on the next explicit query
+        (assignment, app restart), never push-based on an external change."""
         try:
             frame = await reader.read(65536)
         finally:
@@ -486,11 +370,8 @@ class PanasonicAWDriver(CameraDriver):
                         callback({"type": "pedestal_changed", "value": pedestal})
             return
         if body.startswith("OFT:"):
-            # ND-Filter (Nutzerauftrag 2026-07-22, Bugreport: externe
-            # Aenderung -- z. B. am Kamera-eigenen Bedienfeld/Web-UI --
-            # wurde bisher nicht erkannt, da dieser Zweig fehlte). Anders
-            # als OGU/Pedestal ist das Data-Feld hier ein einfacher
-            # Dezimalwert (siehe set_nd()/_query_nd()), kein Hex-String.
+            # ND filter. Unlike OGU/pedestal, the data field here is a plain
+            # decimal value (see set_nd()/_query_nd()), not a hex string.
             value = _extract_value(body)
             if value is not None:
                 try:
@@ -526,17 +407,11 @@ class PanasonicAWDriver(CameraDriver):
 
     @property
     def effective_gain_max_db(self) -> int | None:
-        """Tatsaechlich nutzbare Gain-Obergrenze -- bei Modellen mit
-        dokumentierter Super-Gain-Kopplung (`gain_max_db_super_gain_off`,
-        siehe `_apply_model_catalog()`: aw_ue100.py/aw_ue80.py (+UE30/40/50)/
-        aw_ue150.py/aw_he145.py) 36dB statt `gain_max_db` (42dB), solange
-        Super Gain nicht positiv als "an" bestaetigt ist (Nutzerauftrag
-        2026-07-20, live gegen eine echte AW-UE100 verifiziert: Werte >36dB
-        werden von der Kamera per `ER3` abgelehnt, wenn Super Gain aus ist).
-        Unbekannter Zustand (`gain_super_gain_on` ist `None`, noch nicht
-        abgefragt) wird konservativ wie "aus" behandelt, um ER3-Ablehnungen
-        zu vermeiden. Modelle ohne diese Kopplung (`gain_max_db_super_gain_off`
-        ist `None`) liefern unveraendert `gain_max_db`."""
+        """Actually usable gain upper bound -- on models with super-gain
+        coupling, lower than `gain_max_db` until super gain is positively
+        confirmed on (values above that are rejected by the camera).
+        Unknown state is treated conservatively as off. Models without this
+        coupling return `gain_max_db` unchanged."""
         if self.gain_max_db_super_gain_off is not None and self.gain_super_gain_on is not True:
             return self.gain_max_db_super_gain_off
         return self.gain_max_db
@@ -570,35 +445,26 @@ class PanasonicAWDriver(CameraDriver):
         await self._request("aw_cam", f"OGU:{data:02X}")
 
     async def set_gain_auto(self) -> None:
-        """Gain "Auto"/AGC (Data=0x80) -- Nutzerauftrag 2026-07-20, live
-        gegen AW-UE160 UND AW-UE100 bestaetigt (siehe CLAUDE.md): regulaerer
-        dritter Gain-Zustand, kein Fehler."""
+        """Gain "Auto"/AGC (Data=0x80) -- a regular third gain state, not
+        an error."""
         await self._request("aw_cam", f"OGU:{_GAIN_AGC_DATA:02X}")
 
     async def step_gain(self, delta_db: int) -> tuple[int | None, bool]:
-        """Rueckgabe (neuer dB-Wert oder `None` bei Auto, ist_auto). Auto
-        (Data=0x80) ist seit Nutzerauftrag 2026-07-20 ein regulaerer dritter
-        Gain-Zustand am unteren Ende (live gegen AW-UE160 UND AW-UE100
-        bestaetigt, siehe CLAUDE.md): Herunterdrehen unter `gain_min_db`
-        wechselt in Auto, Hochdrehen aus Auto verlaesst Auto wieder.
+        """Returns (new dB value or `None` if Auto, is_auto). Auto
+        (Data=0x80) is a regular third gain state at the lower end: turning
+        down below `gain_min_db` switches to Auto, turning up from Auto
+        leaves it again.
 
-        Der Ausstieg selbst ist proportional zum Dreh-Delta -- Auto wird
-        dafuer als virtuelle Position "eine Stufe unter `gain_min_db`"
-        behandelt (Nutzerentscheid 2026-07-20, revidiert: eine erste Version
-        liess dabei jede Drehbewegung nach dem Ausstieg bewusst verwerfen
-        und immer exakt bei `gain_min_db` landen, das fuehlte sich aber
-        anders an als normales Drehen bei anderen Werten -- jetzt landet ein
-        kraeftiges/schnelles Hochdrehen genauso proportional weiter oben wie
-        bei jedem anderen Wert, nur weiterhin auf `effective_gain_max_db`
-        geclampt). Weiteres Herunterdrehen waehrend Auto ist ein No-Op (kein
-        tieferer Zustand als Auto)."""
+        Exiting is proportional to the turn delta -- Auto is treated as a
+        virtual position one step below `gain_min_db`, so a fast/strong
+        turn-up lands proportionally further up like any other value, still
+        clamped to `effective_gain_max_db`. Turning down further while in
+        Auto is a no-op (no lower state than Auto)."""
         current_db, current_auto = await self._query_gain_state()
         if current_db is None and not current_auto:
-            raise CameraCommandError("gain step ignored: gain unreadable", command="OGU")
+            raise CameraCommandError("gain step ignored: gain unreadable")
         if self.gain_min_db is None or self.gain_max_db is None:
-            raise CameraCommandError(
-                "gain step ignored: no gain range known for this model", command="OGU"
-            )
+            raise CameraCommandError("gain step ignored: no gain range known for this model")
         if current_auto:
             if delta_db <= 0:
                 return None, True
@@ -620,24 +486,16 @@ class PanasonicAWDriver(CameraDriver):
             or self.pedestal_scale is None
             or self.pedestal_data_width is None
         ):
-            raise CameraCommandError(
-                "pedestal not supported for this model", command="pedestal"
-            )
+            raise CameraCommandError("pedestal not supported for this model")
         data = self.pedestal_center_data + value * self.pedestal_scale
         await self._request("aw_cam", f"{self.pedestal_command}:{data:0{self.pedestal_data_width}X}")
 
     async def step_pedestal(self, delta: int) -> int:
         current = await self._query_pedestal()
         if current is None:
-            raise CameraCommandError(
-                "pedestal step ignored: pedestal unreadable",
-                command=self.pedestal_command or "pedestal",
-            )
+            raise CameraCommandError("pedestal step ignored: pedestal unreadable")
         if self.pedestal_min is None or self.pedestal_max is None:
-            raise CameraCommandError(
-                "pedestal step ignored: no pedestal range known for this model",
-                command=self.pedestal_command or "pedestal",
-            )
+            raise CameraCommandError("pedestal step ignored: no pedestal range known for this model")
         new_value = max(self.pedestal_min, min(self.pedestal_max, current + delta))
         await self.set_pedestal(new_value)
         return new_value
@@ -651,27 +509,22 @@ class PanasonicAWDriver(CameraDriver):
             await self._request("aw_cam", f"OSL:38:{data:03X}")
 
     async def set_nd(self, index: int) -> None:
-        """`index` ist der Roh-Data-Wert (nicht die Listenposition) --
-        modellabhaengig gueltig laut `self.nd_options` (siehe
-        `_apply_model_catalog()`); manche Modelle haben eine lueckenhafte
-        Werteliste (z. B. AW-HE130/AW-HR140: nur 0/3/4, siehe
-        drivers/panasonic_models/aw_he130.py)."""
+        """`index` is the raw data value (not the list position) -- valid
+        values are model-dependent per `self.nd_options`; some models have
+        a sparse value list (e.g. only 0/3/4)."""
         if not self.nd_options:
-            raise CameraCommandError("ND filter not supported for this model", command="OFT")
+            raise CameraCommandError("ND filter not supported for this model")
         valid_indices = {opt_index for opt_index, _ in self.nd_options}
         if index not in valid_indices:
             raise ValueError(f"ND index out of range: {index}")
         await self._request("aw_cam", f"OFT:{index}")
 
     async def cycle_nd(self) -> int:
-        """Schaltet rundenweise (mit Wraparound) durch `self.nd_options` --
-        anders als die Encoder-Funktion (`core/application.py::
-        apply_encoder_turn`, Nutzerentscheid: Anschlag statt Wrap), da
-        `cycle_nd()` fuer den urspruenglich vorgesehenen Mute-Button-Anwen-
-        dungsfall (`channel_defaults.buttons.mute.action: nd_cycle`,
-        weiterhin nicht verdrahtet) ein einzelner Druck ohne Richtung ist."""
+        """Wraps around through `self.nd_options` -- unlike the encoder
+        function (which clamps instead of wrapping), since this serves a
+        single, directionless button press."""
         if not self.nd_options:
-            raise CameraCommandError("ND filter not supported for this model", command="OFT")
+            raise CameraCommandError("ND filter not supported for this model")
         positions = [opt_index for opt_index, _ in self.nd_options]
         current = await self._query_nd()
         current_position = positions.index(current) if current in positions else -1
@@ -690,23 +543,21 @@ class PanasonicAWDriver(CameraDriver):
             raise ValueError(f"preset number out of range: {number}")
         await self._request("aw_ptz", f"#R{number:02d}")
 
-    # --- Kamera-Feature-Buttons (§9a, Katalog: BUTTON_FEATURES) -----------
-    # Kein Teil der CameraDriver-ABC (Spec §6 bleibt unveraendert) -- die
-    # Anwendungsschicht greift nur ueber getattr(driver, "BUTTON_FEATURES", {})
-    # zu, ein Treiber ohne Katalog bietet dann einfach keine Optionen an.
+    # --- Camera feature buttons (BUTTON_FEATURES catalog) -----------------
+    # Not part of the CameraDriver ABC -- the application layer only
+    # accesses this via getattr(driver, "BUTTON_FEATURES", {}); a driver
+    # without a catalog simply offers no options.
 
     async def trigger_button_feature(self, key: str, *, enabled: bool | None = None) -> None:
-        """Toggle (braucht `enabled`) oder Trigger (ignoriert `enabled`).
-        `auto_iris` delegiert an die vorhandene typisierte Methode, um
-        Kommando-Logik nicht doppelt zu halten.
+        """Toggle (needs `enabled`) or trigger (ignores `enabled`).
+        `auto_iris` delegates to the existing typed method to avoid
+        duplicating command logic.
 
-        `feature["on"]`/`feature["off"]` sind normalerweise ein einzelner
-        Kommando-String, koennen aber auch eine Liste sein (Nutzerentscheid
-        2026-07-18: mehrwertige Kamera-Parameter wie Knee/DRS werden nicht
-        mehr als eigenes Cycle-Feature gefuehrt, sondern als je ein Toggle
-        pro Zielzustand, siehe drivers/panasonic_models/*.py -- AW-UE160s
-        "Knee: Auto" braucht z. B. zwei Kommandos, `OSL:45:1` UND
-        `OSA:2D:2`, in dieser Reihenfolge)."""
+        `feature["on"]`/`feature["off"]` are usually a single command
+        string, but can also be a list: multi-value camera parameters like
+        knee/DRS are modeled as one toggle per target state (e.g. AW-UE160's
+        "Knee: Auto" needs two commands, `OSL:45:1` and `OSA:2D:2`, in that
+        order)."""
         if key == "auto_iris":
             if enabled is None:
                 raise ValueError("'auto_iris' ist ein Toggle, 'enabled' erforderlich")
@@ -729,20 +580,13 @@ class PanasonicAWDriver(CameraDriver):
             raise ValueError(f"{key!r}: unbekannte Feature-Art {feature['kind']!r}")
 
     async def query_button_feature(self, key: str) -> bool | None:
-        """Fragt den Ist-Zustand eines Toggle-Button-Features ab (Nutzer-
-        entscheid 2026-07-18: beim Zuweisen ueber die Web-UI sofort pruefen,
-        ob an oder aus, statt den Zustand erst nach dem ersten Druck lokal
-        zu kennen).
+        """Queries the current state of a toggle button feature.
 
-        `auto_iris` ist wie in `trigger_button_feature()` ein Sonderfall --
-        nutzt die bereits vorhandene Iris-Abfrage (`#GI`-Mode-Bit) statt
-        eines eigenen Query-Kommandos. Fuer alle anderen Toggle-Features
-        liest diese Methode `feature["query"]`/`feature["query_on_value"]`
-        (nur gesetzt, wo ein Query-Kommando direkt in den lokalen PDFs
-        verifiziert wurde, siehe drivers/panasonic_models/*.py) -- fehlt
-        eines von beiden, liefert diese Methode `None` (kein erfundener
-        Fallback), Aufrufer behalten dann das bisherige Verhalten (Zustand
-        erst nach dem ersten Druck lokal bekannt)."""
+        `auto_iris` is a special case, like in `trigger_button_feature()` --
+        uses the existing iris query (`#GI` mode bit) rather than its own
+        query command. For all other toggle features this reads
+        `feature["query"]`/`feature["query_on_value"]` (only set where a
+        query command is confirmed) -- missing either returns `None`."""
         if key == "auto_iris":
             _, auto_iris = await self.query_iris()
             return auto_iris
@@ -770,12 +614,10 @@ class PanasonicAWDriver(CameraDriver):
     async def get_state(self) -> CameraState:
         iris, auto_iris = await self.query_iris()
         gain_db, gain_auto = await self._query_gain_state()
-        # Aktualisiert den zwischengespeicherten Super-Gain-Zustand (siehe
-        # `effective_gain_max_db`) -- get_state() wird sowohl bei connect()
-        # als auch bei jedem Wechsel der Encoder-Funktion auf "gain"
-        # aufgerufen (core/application.py::cycle_encoder_function()), damit
-        # bleibt dieser Cache ohne zusaetzliche Wiring-Stelle einigermassen
-        # frisch, ohne bei jedem einzelnen Encoder-Tick erneut abzufragen.
+        # Refreshes the cached super-gain state (see effective_gain_max_db)
+        # -- get_state() runs on connect() and on every switch of the
+        # encoder function to "gain", so this stays reasonably fresh without
+        # querying on every single encoder tick.
         if self.super_gain_query_command is not None:
             self.gain_super_gain_on = await self._query_super_gain()
         return CameraState(
@@ -786,14 +628,13 @@ class PanasonicAWDriver(CameraDriver):
             gain_auto=gain_auto,
             pedestal=await self._query_pedestal(),
             nd_index=await self._query_nd(),
-            bars=None,  # QBR-Response-Format nicht in Spec definiert (nur Query-Name, §11)
             error=await self._query_error(),
         )
 
     def subscribe(self, callback: Callable[[dict], None]) -> None:
         self._callbacks.append(callback)
 
-    # --- interne Query-Helfer (§11: #GI, QIF, QGU, QFT, QRS, QBR) ---------
+    # --- internal query helpers ---------------------------------------
 
     async def _query_model(self) -> str | None:
         try:
@@ -803,16 +644,14 @@ class PanasonicAWDriver(CameraDriver):
         return _extract_value(body)
 
     async def query_iris(self) -> tuple[float | None, bool | None]:
-        # Oeffentlich (kein Underscore-Praefix, Bugfix 2026-07-23, gleiches
-        # Muster wie query_f_number()): apply_iris() ruft dies erneut auf,
-        # wenn Auto-Iris aktiv ist, um die wirkliche (durch #AXI unveraendert
-        # gebliebene) Position + Modus zu erhalten, statt den wirkungslosen
-        # Zielwert des Fader-Zugs als gueltig anzunehmen.
+        # apply_iris() re-queries this while auto-iris is active, to get the
+        # real (unchanged by the iris-set command) position + mode instead
+        # of trusting the fader's target value.
         try:
             body = await self._request("aw_ptz", "#GI")
         except CameraCommandError:
             return None, None
-        # Antwortformat gi[Pos][Mode]: "gi" + 3 Hex-Digits Pos + 1 Hex-Digit Mode (§7.2)
+        # Response format gi[Pos][Mode]: "gi" + 3 hex digits pos + 1 hex digit mode
         if len(body) < 6 or not body.lower().startswith("gi"):
             return None, None
         try:
@@ -823,23 +662,14 @@ class PanasonicAWDriver(CameraDriver):
         return _data_to_iris(pos), (mode == 1)
 
     async def query_f_number(self) -> str | None:
-        # OIF-Data->F-Nummer-Dekodierung siehe _decode_f_number() oben (live
-        # gegen eine reale AW-UE160 kalibriert, 2026-07-23). Faellt auf den
-        # rohen Hex-Wert zurueck, wenn `data` außerhalb des bestaetigten
-        # Bereichs liegt (kein erfundener Wert) oder nicht als Hex parsbar ist.
-        # Oeffentlich (kein Underscore-Praefix mehr, Nutzerauftrag
-        # 2026-07-23): core/application.py::apply_iris() ruft dies bei JEDEM
-        # Fader-Tick separat auf (statt nur bei final=True + vollem
-        # get_state()), damit die F-Nummer live waehrend des Ziehens
-        # mitlaeuft -- eine einzelne QIF-Abfrage ist klein genug, um das
-        # nicht spuerbar zusaetzlich zu belasten.
+        # Falls back to the raw hex value if `data` is outside the confirmed
+        # range or not parsable as hex. core/application.py::apply_iris()
+        # calls this on every fader tick so the F-number stays live during a
+        # drag; a single QIF query is cheap enough for that.
         #
-        # Modell-Gating (2026-07-23, PDF-Pruefung, siehe Kommentar bei
-        # _F_NUMBER_DATA_MIN oben): fuer Modelle ohne PDF-bestaetigte QIF-
-        # Unterstuetzung (`supports_iris_f_number` aus `_apply_model_catalog()`)
-        # wird gar nicht erst angefragt -- vermeidet unnoetige Requests bei
-        # jedem Fader-Tick fuer Kameras, die laut Referenz-PDF ohnehin nur mit
-        # einem Fehler antworten wuerden.
+        # Skipped entirely for models without confirmed QIF support
+        # (`supports_iris_f_number`), avoiding pointless requests on cameras
+        # that would just answer with an error.
         if not self.supports_iris_f_number:
             return None
         try:
@@ -856,9 +686,8 @@ class PanasonicAWDriver(CameraDriver):
         return _decode_f_number(data) or value
 
     async def _query_gain_state(self) -> tuple[int | None, bool | None]:
-        # QGU als Query-Kommando live gegen AW-UE160 verifiziert (Spec §14
-        # Punkt 2, siehe CLAUDE.md). Rueckgabe (dB-Wert oder None bei Auto,
-        # ist_auto -- None heisst hier "nicht lesbar", nicht Auto).
+        # Returns (dB value or None if Auto, is_auto) -- None here means
+        # "unreadable", not Auto.
         try:
             body = await self._request("aw_cam", "QGU")
         except CameraCommandError:
@@ -869,22 +698,17 @@ class PanasonicAWDriver(CameraDriver):
         return _decode_gain_data(int(value, 16))
 
     def _decode_pedestal_data(self, data: int) -> int | None:
-        """Pedestal-Kodierung des verbundenen Modells (`pedestal_center_data`/
-        `pedestal_scale`, siehe `_apply_model_catalog()`), geteilt zwischen
-        `_query_pedestal()` und der Update-Notification-Auswertung
-        (`_handle_notification()`) -- beide dekodieren dieselbe `[Data]` aus
-        Query-Antwort bzw. Notification-Payload (§4.2)."""
+        """Pedestal encoding of the connected model (`pedestal_center_data`/
+        `pedestal_scale`), shared between `_query_pedestal()` and the
+        update-notification handling -- both decode the same `[Data]` from
+        a query response or notification payload."""
         if self.pedestal_center_data is None or self.pedestal_scale is None:
             return None
         return (data - self.pedestal_center_data) // self.pedestal_scale
 
     async def _query_pedestal(self) -> int | None:
-        # Abfrage-Kommando kommt aus dem per Modell-Registry aufgeloesten
-        # Modul (siehe _apply_model_catalog()) -- QSJ:0F fuer AW-UE150/
-        # AW-UE160, QTP fuer AW-HE50/60/120/130/HR140/HE40/UE70/HE42, QSG:4A
-        # fuer AK-UB300 (Dokumentenbeleg aus den beiden lokalen Referenz-PDFs,
-        # nicht live am Geraet verifiziert, analog zu QGU, siehe CLAUDE.md
-        # Offene Punkte). Unbekanntes/undokumentiertes Modell -> kein Query.
+        # Query command comes from the resolved model module -- unknown/
+        # undocumented model -> no query.
         if (
             self.pedestal_query_command is None
             or self.pedestal_center_data is None
@@ -926,11 +750,11 @@ class PanasonicAWDriver(CameraDriver):
             return body
         return None
 
-    # --- HTTP-Transport (§7.1, §7.4) --------------------------------------
+    # --- HTTP transport ----------------------------------------------------
 
     async def _request(self, endpoint: str, cmd: str) -> str:
         if self._client is None:
-            raise CameraCommandError("not connected", command=cmd)
+            raise CameraCommandError("not connected")
 
         encoded_cmd = cmd.replace("#", "%23")
         url = f"/cgi-bin/{endpoint}?cmd={encoded_cmd}&res=1"
@@ -939,24 +763,18 @@ class PanasonicAWDriver(CameraDriver):
             response = await self._client.get(url)
         except httpx.TimeoutException:
             try:
-                response = await self._client.get(url)  # §7.4: 1 Retry
+                response = await self._client.get(url)  # one retry
             except httpx.HTTPError as exc:
                 self._connected = False
-                raise CameraCommandError(
-                    f"timeout: {cmd}", command=cmd
-                ) from exc
+                raise CameraCommandError(f"timeout: {cmd}") from exc
         except httpx.HTTPError as exc:
             self._connected = False
-            raise CameraCommandError(
-                f"connection error: {cmd}: {exc}", command=cmd
-            ) from exc
+            raise CameraCommandError(f"connection error: {cmd}: {exc}") from exc
 
         body = response.text.strip()
         error_prefixes = (
             _ERROR_PREFIXES_PTZ if endpoint == "aw_ptz" else _ERROR_PREFIXES_CAM
         )
         if body.startswith(error_prefixes):
-            raise CameraCommandError(
-                f"camera error for '{cmd}': {body}", command=cmd, response=body
-            )
+            raise CameraCommandError(f"camera error for '{cmd}': {body}")
         return body

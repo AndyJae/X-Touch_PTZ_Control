@@ -1,66 +1,20 @@
 """drivers/panasonic_models/aw_ue150.py -- Panasonic AW-UE150A.
 
-Portiert aus `C:\\smart_reset_work\\camera_plugins\\panasonic\\aw_ue150.py`s
-UI_BUTTONS/UI_BUTTON_LABELS. CAMERA_ID ist "AW-UE150A" (nicht "AW-UE150") --
-so in der Quelle gefuehrt, "AW-UE150" ist dort ein Alias, keine
-Tippabweichung. Einziges hier portiertes Modell mit "adaptive_matrix".
-
-Gain/Pedestal: urspruenglich aus `HDIntegratedCamera_InterfaceSpecifications-
-E.pdf` §3.2.6/§3.2.14 (2020, Multi-Modell-PDF, "applicable models":
-AW-UE150/AW-UE155/AW-UN145 -- deckt also genau CAMERA_ID + CAMERA_ID_ALIASES
-hier ab) verifiziert mit Gain 0-42dB (OGU 08h=0dB .. 32h=42dB). **Korrektur
-2026-07-18 (Nutzerentscheid):** zwei neuere, dedizierte PDFs widersprechen
-dem: `docs/specs/AW-UE150HE145_InterfaceSpecification_E.pdf` (2022,
-"AW-UE150/AW-HE145", siehe auch `aw_he145.py`) UND
-`docs/specs/AW-UE150A_InterfaceSpecification_E.pdf` (2025, explizit nur fuer
-"AW-UE150A", Model Number-Tabelle bestaetigt `OID:AW-UE150A`) zeigen
-uebereinstimmend einen WEITEREN Bereich -3..+42dB (Anker 05h=-3dB ..
-08h=0dB .. 2Ch=36dB .. 32h=42dB) -- 2 von 3 Quellen stimmen ueberein, nur
-die aelteste/generischste (2020) weicht ab. Die neueren, modellspezifischen
-Quellen wurden als massgeblich gewaehlt, GAIN_MIN_DB ist daher jetzt -3
-(nicht mehr 0). ACHTUNG, das ist trotzdem NICHT dieselbe Gain-Formel wie
-AW-UE160 (dort -6..+12dB, eigene PDF-Quelle mit anderem Maximum). Pedestal
-ueber `OSJ:0F`/`QSJ:0F` Master Pedestal, Bereich -200..+200, Data = 0x800 +
-Wert -- in ALLEN DREI PDF-Quellen identisch, kein
-Widerspruch, gleiches Kommando/Format wie bei AW-UE160/AW-HE145.
-
-DRS/Knee-Korrektur (2026-07-18): `drs` hat 4 gueltige Werte (0=Off/1=Low/
-2=Mid/3=High, alle drei o. g. PDFs uebereinstimmend); `knee` (`OSA:2D`) hat
-3 gueltige Werte (0=OFF/1=MANUAL/2=AUTO). Beide als je ein Toggle pro
-Zielzustand (`drs_low`/`drs_mid`/`drs_high`, `knee_manual`/`knee_auto`)
-statt eigener "cycle"-Features (Nutzerentscheid 2026-07-18, siehe
-drivers/panasonic_aw.py-Klassendocstring) -- vorher `drs` faelschlich als
-einfacher Toggle, `knee` als "cycle"-Feature gefuehrt.
-
-Query-Ergaenzung (2026-07-18, Quelle: `AW-UE150A_InterfaceSpecification_
-E.pdf`/`AW-UE150HE145_InterfaceSpecification_E.pdf`): `query`/
-`query_on_value` bei `adaptive_matrix` (`QSJ:4F`), `auto_focus` (`QAF`),
-`drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `knee_manual`/`knee_auto`
-(`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle direkt in
-diesen PDFs als Request/Response-Paar verifiziert.
-
-Iris F-Nummer (2026-07-23, `QIF`/`OIF`, siehe drivers/panasonic_aw.py::
-_F_NUMBER_DATA_MIN): eigene PDF (AW-UE150A_InterfaceSpecification_E.pdf)
-bestaetigt dieselben Ankerpunkte wie AW-UE160 (0Eh=F1.4/1Ch=F2.8/38h=F5.6/
-A0h=F16/FFh=CLOSE); die allgemeine HDIntegratedCamera-PDF nennt "Iris F
-value" zudem explizit "Only supported by the AK-UB300/AW-UE150" -- deckt
-sich mit CAMERA_ID_ALIASES hier.
+CAMERA_ID is "AW-UE150A" ("AW-UE150" is an alias, not a typo). The only
+model here with "adaptive_matrix". `drs` has 4 valid values (Off/Low/Mid/
+High), `knee` (`OSA:2D`) has 3 (Off/Manual/Auto) -- both modeled as one
+toggle per target state rather than a cycling feature.
 """
 
 CAMERA_ID = "AW-UE150A"
 CAMERA_ID_ALIASES = ["AW-UE150", "AW-UE155", "AW-UN145"]
-DISPLAY_NAME = "Panasonic AW-UE150A"
 
 SUPPORTS_IRIS_F_NUMBER = True
 
 GAIN_MIN_DB = -3
 GAIN_MAX_DB = 42
 GAIN_STEP_DB = 1
-# Super-Gain-Kopplung (Nutzerauftrag 2026-07-20, Quelle: AW-UE150HE145_
-# InterfaceSpecification_E.pdf, "Auto, -3dB~36dB" wenn Super Gain aus,
-# "Auto, -3dB~42dB" wenn an -- nur die Obergrenze aendert sich, nicht die
-# Untergrenze; live nur gegen AW-UE100 verifiziert, nicht gegen eine echte
-# AW-UE150A/HE145): 36dB statt 42dB, solange Super Gain (`OSI:28`) aus ist.
+# Super-gain coupling: 36dB instead of 42dB while super gain (OSI:28) is off.
 GAIN_MAX_DB_SUPER_GAIN_OFF = 36
 SUPER_GAIN_QUERY_COMMAND = "QSI:28"
 
@@ -72,10 +26,7 @@ PEDESTAL_CENTER_DATA = 0x800
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
-# ND-Filter (OFT/QFT): `AW-UE150HE145_InterfaceSpecification_E.pdf` (gilt
-# fuer "AW-UE150/AW-HE145") zeigt "Through/1/4 ND/1/16 ND/1/64 ND" fuer
-# Data 0-3 -- deckungsgleich mit der Gruppe "AW-HE120/AW-UE150" aus der
-# aelteren `HDIntegratedCamera...pdf` (dort ohne " ND"-Suffix).
+# ND filter (OFT/QFT): data 0-3 -> Through/1/4 ND/1/16 ND/1/64 ND.
 ND_FILTER_OPTIONS: list[tuple[int, str]] = [
     (0, "THROUGH"),
     (1, "1/4 ND"),

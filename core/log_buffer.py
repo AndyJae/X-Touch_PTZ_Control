@@ -1,12 +1,8 @@
-"""In-Memory-Ringpuffer fuer die Web-UI-Log-Ansicht (Spec §10 Punkt 4:
-"Log-Ansicht: letzte 200 Zeilen, Filter nach Level").
+"""In-memory ring buffer backing the web UI's log view.
 
-Haengt sich als `logging.Handler` an den `ptz_control`-Logger (Elternlogger
-aller `ptz_control.*`-Logger im Projekt, siehe `main.py`/`core/application.py`/
-`midi/fader.py`/`web/app.py`) und haelt dessen letzte 200 Eintraege im
-Speicher vor -- unabhaengig davon, ob die App ueber `main.py` (mit
-`logging.basicConfig`) oder direkt als `web.app.app` (z. B. in Tests) laeuft.
-"""
+Attaches as a `logging.Handler` to the `ptz_control` logger (the parent of
+every `ptz_control.*` logger in the project) and keeps its last 200 entries
+in memory."""
 
 from __future__ import annotations
 

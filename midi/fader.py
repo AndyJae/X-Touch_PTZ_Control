@@ -1,82 +1,47 @@
-"""midi/fader.py -- Bidirektionale X-Touch-Extender-Faderanbindung (Spec §5,
-aktueller Umfang: Fader/Touch <-> Iris (§5.2/§5.4), Scribble Strips (§5.3),
-Encoder (§9: feste Funktionsliste gain/pedestal/nd/camera_status ueber
-Button 1, Drehen, Push) sowie Solo/Mute/Select (§9a/§9: Button 2/3 ->
-dynamischer Feature-Katalog des erkannten Kameramodells, Select ->
-Companion-SELECT-Trigger). Encoder-Drehen sendet bei gain/pedestal/nd seit
-Nutzerentscheid SOFORT live einen Kamerabefehl (ueber `core.application.apply_encoder_turn`s eigenen
-Rate-Limiter je Kamera, analog zum Iris-Fader) -- der Encoder-Push (Note
-32-39) sendet dagegen nichts mehr, sondern markiert den Kanal nur visuell als
-"gespeichert" (Spec §9 nannte die Push-Verwendung urspruenglich "noch offen").
-Encoder-LED-Ring (CC 48-55) ist weiterhin nicht Teil dieser Verdrahtung --
-Encoding dafuer laut Spec §14 unverifiziert. Resync-bei-Hotplug (§5.5) folgt
-in einem weiteren Schritt.
+"""midi/fader.py -- Bidirectional Behringer X-Touch Extender fader link.
 
-Note-/CC-Belegung gegen den realen X-Touch Extender verifiziert (Kanal 1:
-Pitchbend Kanal 1 = Fader 1, Note 104 = Fader-Touch 1, Note 0/8/16/24 =
-Rec/Solo/Mute/Select 1); ebenso die Scribble-Strip-Device-ID (0x15, siehe
-unten), siehe Offene Punkte in CLAUDE.md. Solo/Mute/Select-LED-Tx (Note
-On/Off zurueck ans Geraet) ist dagegen NEU und noch nicht gegen die reale
-Hardware getestet -- nur Rx (Tastendruck empfangen) ist bisher verifiziert.
-LED-Farben (Rec/Mute rot, Solo gelb, Select gruen, je Tastentyp fix, nicht
-waehlbar) laut github.com/Aldaviva/BehringerXTouchExtender, keine offizielle
-Behringer-Doku und nicht gegen reale Hardware verifiziert -- reine Velocity-
-0/127-Ansteuerung (aus/an) aendert daran nichts, die Farbe ist Hardware-fix.
+Covers fader/touch <-> iris, scribble strips, the encoder (fixed function
+list gain/pedestal/nd/camera_status via button 1, turn, push), and
+Solo/Mute/Select (button 2/3 -> dynamic feature catalog of the detected
+camera model, Select -> Companion SELECT trigger). Encoder turns send
+gain/pedestal/nd commands live to the camera through their own per-camera
+rate limiter (`core.application.apply_encoder_turn`); the encoder push
+sends nothing, it only marks the channel as visually "saved". The encoder
+LED ring (CC 48-55) is not wired up.
 
-Rx: Polling statt mido-Callback-Thread -- `tools/midi_monitor.py` nutzt
-denselben Ansatz und wurde bereits live gegen das Geraet verifiziert; ein
-rtmidi-Callback laeuft aus einem eigenen C-Thread und muesste erst
-umstaendlich an den asyncio-Loop zurueckgereicht werden.
+Note/CC layout confirmed against real hardware for all 8 channels: fader
+pitchbend, note 104-111 fader touch, note 0-7/8-15/16-23/24-31
+Rec/Solo/Mute/Select, CC 16-23 encoder turn, note 32-39 encoder push.
+Scribble-strip SysEx device ID is 0x15 (see below). LED colors (Rec/Mute
+red, Solo yellow, Select green, fixed per button type, not selectable via
+MIDI) are sourced from a community reference (github.com/Aldaviva/
+BehringerXTouchExtender), not official Behringer documentation.
 
-Tx Fader: reagiert auf `iris_changed` auf demselben EventBus, den auch der
-WebSocket-Broadcast abonniert (siehe core/bus.py-Docstring: MIDI und Web-UI
-sind gleichwertige Publisher/Subscriber). Ohne dieses Tx bleibt der
-Motorfader auf der zuletzt bekannten Position stehen und federt dorthin
-zurueck, sobald man loslaesst -- deshalb Teil dieser ersten Verdrahtung und
-nicht erst der spaeteren Resync/Hotplug-Stufe. Zusaetzlich (Bugreport
-2026-07-20): `connection_changed` faehrt den Motorfader auf 0, wenn eine
-Kamera ueber die Setup-Seite getrennt wird (`disconnect_camera()` setzt
-`cam_state.iris` dafuer auf 0.0 zurueck) bzw. beim (Re-)Connect auf den
-echten Kamerawert -- sonst blieb der Fader beim Trennen auf der zuletzt
-gefahrenen Position stehen, obwohl `apply_iris()` Kamerabefehle fuer einen
-getrennten Kanal ohnehin schon verwirft.
+Rx uses polling rather than a mido callback thread, since an rtmidi
+callback runs on its own C thread and would need to be handed back to the
+asyncio loop.
 
-Tx Scribble Strips: Vollabzug aller 8 Strips bei `connection_changed`/
+Tx fader: reacts to `iris_changed` on the same event bus the WebSocket
+broadcast subscribes to, so the motor fader doesn't spring back to a stale
+position. `connection_changed` also drives the motor fader to the current
+`cam_state.iris` (0 on disconnect, the real value on reconnect).
+
+Tx scribble strips: a full refresh of all 8 strips on `connection_changed`/
 `feature_changed`/`config_changed`/`gain_changed`/`pedestal_changed`/
-`nd_changed`. `iris_changed` aktualisiert dagegen gezielt nur die eine
-betroffene Zeile 2 (kein Vollabzug bei jedem Iris-Tick, sonst unnoetiger
-SysEx-Traffic waehrend des Fader-Ziehens). Zeile 2 zeigt laut Spec §5.3
-eigentlich die F-Nummer -- die Hex->F-Nummer-Tabelle ist laut Spec aber
-nicht vollstaendig dokumentiert (siehe Kommentar an
-PanasonicAWDriver._query_f_number), daher als Platzhalter die Iris-% bis
-diese Umrechnung nachgeruestet wird.
-`gain_changed`/`pedestal_changed`/`nd_changed` kommen wie `feature_changed`
-sowohl von eigenen Aktionen als auch von extern (z. B. Kamera-eigenes
-Web-UI) ausgeloesten Aenderungen -- siehe
-`PanasonicAWDriver._handle_notification()` und die generische
-Update-Notification-Auswertung dort (§4.2 der HD Integrated Camera
-Interface Specifications). **Nutzerreport 2026-07-22 (reale AW-UE160):**
-`nd_changed` fehlte bisher komplett -- eine ND-Aenderung am Encoder
-funktionierte zwar (Rx/Tx zur Kamera), eine externe ND-Aenderung (z. B. am
-Kamera-eigenen Bedienfeld) wurde aber nicht erkannt, da
-`_handle_notification()` `OFT`-Frames schlicht ignorierte.
+`nd_changed`. `iris_changed` only updates the one affected channel's line 2,
+to avoid SysEx traffic on every fader tick. `gain_changed`/
+`pedestal_changed`/`nd_changed` fire both for actions taken here and for
+externally triggered changes (e.g. the camera's own web UI), via
+`PanasonicAWDriver._handle_notification()`.
 
-Tx Rec/Solo/Mute/Select-LED: dieselben Events wie die Scribble Strips loesen
-einen Vollabzug aller vier LED-Typen aus (`_refresh_button_leds()`) -- kein
-eigenes Event noetig, `apply_button_action()`/`assign_channel_button()`
-publizieren bereits `feature_changed`/`config_changed`. Solo/Mute:
-Nutzerentscheid, Zustand rein binaer (OFF=Licht aus, ON=Licht an), kein
-Blinken. Rec (Nutzerentscheid 2026-07-20): leuchtet dauerhaft auf allen 8
-Kanaelen -- Rec hat keine On/Off-Logik, sondern waehlt nur die ueber den
-Encoder einstellbare Funktion, die LED zeigt lediglich "hier ist eine
-Encoder-Funktion waehlbar" an. Select (Nutzerentscheid 2026-07-20): leuchtet
-nur, wenn Companion verbunden ist (`AppState.companion_connected`), und dann
-immer nur auf dem zuletzt gedrueckten Kanal (`_last_select_channel`,
-Instanzzustand dieser Klasse, kein Teil von AppState) -- Select selbst bleibt
-weiterhin eine einmalige Companion-Aktion ohne Dauerzustand (siehe
-`trigger_companion_select()`-Docstring in core/application.py), die LED
-zeigt hier rein die zuletzt gedrueckte Taste, nicht einen Erfolgs-/
-Fehlerzustand des Companion-Triggers."""
+Tx Rec/Solo/Mute/Select LEDs: the same events that refresh the scribble
+strips also trigger a full LED refresh (`_refresh_button_leds()`). Solo/Mute
+state is purely binary (no blinking). Rec lights up on any channel with a
+connected camera, regardless of feature state -- it only selects the
+encoder function, it has no on/off logic itself. Select lights only the
+last-pressed channel, and only while Companion is connected and that
+channel has a connected camera -- it stays a one-shot action with no
+persistent success/failure state of its own."""
 
 from __future__ import annotations
 
@@ -103,33 +68,26 @@ from midi.mackie import MackieControlProtocol
 
 LOGGER = logging.getLogger("ptz_control.midi")
 
-_FADER_TOUCH_NOTE_BASE = 104  # 0x68, Note 104-111 -> Fader-Touch 1-8 (Spec §5.2)
-_REC_NOTE_BASE = 0  # Note 0-7 -> Rec/Button 1 je Kanal (Encoder-Funktionsauswahl, Spec §9)
-_SOLO_NOTE_BASE = 8  # Note 8-15 -> Solo/Button 2 je Kanal (Spec §5.2/§9a)
-_MUTE_NOTE_BASE = 16  # Note 16-23 -> Mute/Button 3 je Kanal (Spec §5.2/§9a)
-_SELECT_NOTE_BASE = 24  # Note 24-31 -> Select je Kanal (Spec §9, Companion-SELECT-Trigger)
-_ENCODER_CC_BASE = 16  # CC 16-23 (0x10-0x17) -> Encoder 1-8 drehen, relativ (Spec §5.2/§9)
-_ENCODER_PUSH_NOTE_BASE = 32  # Note 32-39 -> Encoder-Push 1-8: committet den Pending-Wert (Spec §9/§5.2)
+_FADER_TOUCH_NOTE_BASE = 104  # note 104-111 -> fader touch 1-8
+_REC_NOTE_BASE = 0  # note 0-7 -> Rec/button 1 per channel (encoder function selection)
+_SOLO_NOTE_BASE = 8  # note 8-15 -> Solo/button 2 per channel
+_MUTE_NOTE_BASE = 16  # note 16-23 -> Mute/button 3 per channel
+_SELECT_NOTE_BASE = 24  # note 24-31 -> Select per channel (Companion SELECT trigger)
+_ENCODER_CC_BASE = 16  # CC 16-23 -> encoder 1-8 turn, relative mode
+_ENCODER_PUSH_NOTE_BASE = 32  # note 32-39 -> encoder push 1-8
 _POLL_INTERVAL = 0.01
-# LED-Farben laut github.com/Aldaviva/BehringerXTouchExtender (Extender-spezifische
-# Referenz, siehe CLAUDE.md-Offene-Punkte): Rec/Mute fix rot, Solo fix gelb, Select
-# fix gruen -- je Tastentyp EINE feste Farbe, nicht per MIDI waehlbar. Steuerung
-# bleibt binaer ueber Velocity (0=aus/127=an, Spec §5.2); Blinken (Velocity 1) wird
-# lt. Nutzerentscheid nicht gebraucht.
 
-# --- Scribble Strips (Spec §5.3) ---
+# --- Scribble strips ---
 _SCRIBBLE_STRIP_CHARS = 7
-_SCRIBBLE_UPPER_BASE = 0x00  # obere Zeile: 0x00-0x37, 7 Zeichen x 8 Strips
-_SCRIBBLE_LOWER_BASE = 0x38  # untere Zeile: 0x38-0x6F
+_SCRIBBLE_UPPER_BASE = 0x00  # upper line: 0x00-0x37, 7 chars x 8 strips
+_SCRIBBLE_LOWER_BASE = 0x38  # lower line: 0x38-0x6F
 
 
 def _scribble_text(text: str) -> str:
     return (text or "")[:_SCRIBBLE_STRIP_CHARS].ljust(_SCRIBBLE_STRIP_CHARS)
 
 
-_SCRIBBLE_DEVICE_ID = 0x15  # X-Touch Extender -- 0x14 waere der reguläre X-Touch (live verifiziert:
-# 0x14 blieb auf dem Extender-Display leer, 0x15 zeigt Text an). Bestaetigt den in
-# CLAUDE.md offen markierten Punkt "Device-ID des Extenders verifizieren".
+_SCRIBBLE_DEVICE_ID = 0x15  # X-Touch Extender (0x14 is the regular X-Touch)
 
 
 def _scribble_message(offset: int, text: str) -> mido.Message:
@@ -139,9 +97,8 @@ def _scribble_message(offset: int, text: str) -> mido.Message:
 
 
 class XTouchFader:
-    """Rx: Pitchbend/Touch -> `core.application.apply_iris` (Spec §3
-    Datenfluss Fader -> Mapping -> Rate-Limiter -> Driver). Tx: `iris_changed`
-    -> Motorfader-Position, ausser waehrend aktivem Touch (Spec §5.4)."""
+    """Rx: pitchbend/touch -> `core.application.apply_iris`. Tx:
+    `iris_changed` -> motor fader position, except while actively touched."""
 
     def __init__(self, state: AppState, input_port_name: str, output_port_name: str | None) -> None:
         self._state = state
@@ -201,25 +158,13 @@ class XTouchFader:
             await asyncio.sleep(_POLL_INTERVAL)
 
     async def _poll_once(self) -> None:
-        """Ein Polling-Takt: Nachrichten lesen + verarbeiten. Bugreport
-        2026-07-23 (Fortsetzung): die vorherige Fassung fing Ausnahmen nur
-        in `_handle()` ab (siehe `_handle_safely()`) -- `self._in_port.
-        iter_pending()` selbst (das eigentliche Port-Lesen) war weiterhin
-        UNGESCHUETZT. Nutzer meldete danach "gar keine Reaktion mehr auf dem
-        Controller" (Fader/Rec/Solo/Mute/Select gleichermassen betroffen,
-        nicht nur ein Feature) -- passt zu einer Ausnahme beim Lesen selbst
-        (z. B. einem transienten `rtmidi`-Fehler), die weiterhin den
-        gesamten `_poll_loop()` mitgerissen haette. War als "Rx-Seite hat
-        keine eigene Fehlerbehandlung beim Lesen" bereits als offener,
-        unbestaetigter Risikopfad dokumentiert (CLAUDE.md) -- jetzt ebenfalls
-        abgefangen, analog zum bereits behobenen `_send()`-Tx-Fehler."""
-        # Innerhalb eines Polling-Takts nur die jeweils juengste
-        # Pitchbend-Nachricht pro Kanal verarbeiten (Rate-Limiter-Vertrag
-        # "Latest-wins", siehe core/ratelimit.py) -- sonst arbeitet der
-        # Loop bei einer schnellen Fader-Bewegung eine Warteschlange aus
-        # laengst ueberholten Zwischenwerten ab, waehrend der reale
-        # Kamera-Request auf ein langsames Netzwerk wartet (beobachteter
-        # Nachlauf/"hackt" beim Live-Test).
+        """One polling tick: read + process pending messages. Reading and
+        handling each have their own exception guard, so a transient MIDI
+        error on either side can't permanently kill the poll loop."""
+        # Only the latest pitchbend message per channel is processed per
+        # tick (rate-limiter "latest-wins" contract) -- otherwise a fast
+        # fader move queues up a backlog of stale intermediate values while
+        # the real camera request is still waiting on the network.
         latest_pitch: dict[int, mido.Message] = {}
         other_messages: list[mido.Message] = []
         try:
@@ -237,19 +182,8 @@ class XTouchFader:
             await self._handle_safely(msg)
 
     async def _handle_safely(self, msg: mido.Message) -> None:
-        """Bugreport 2026-07-23: ein Fader-Zug bei aktivem Auto-Iris loeste
-        (ueber `apply_iris()`s neue `driver.query_iris()`-Abfrage, siehe
-        core/application.py) auf dem echten Geraet offenbar eine Ausnahme
-        aus, die `_handle()` unbehandelt durchliess -- ohne eigene
-        Fehlerbehandlung riss das `_poll_loop()` dauerhaft ab (kein
-        Supervisor/Neustart), wodurch DANACH auch Rec/Solo/Mute/Select/
-        Fader auf allen Kanaelen nicht mehr reagierten (nicht nur der Kanal,
-        an dem es passierte) -- exakt das beobachtete "Button 1 laesst sich
-        nicht mehr umschalten". War als Rx-seitiger Gegenpart zum bereits
-        behobenen Tx-Fehler (`_send()`, s. o.) schon als offener, bisher
-        unbestaetigter Risikopfad dokumentiert (CLAUDE.md) -- hiermit
-        bestaetigt. Ein fehlgeschlagener Handler wird jetzt geloggt und
-        uebersprungen, statt den gesamten Rx-Poll-Loop mitzureissen."""
+        """Logs and swallows any exception from a single message handler,
+        instead of letting it kill the whole Rx poll loop."""
         try:
             await self._handle(msg)
         except Exception:
@@ -260,9 +194,8 @@ class XTouchFader:
             channel_index = msg.channel + 1
             value = self._protocol.pitchbend_to_normalized(msg.pitch + 8192)
             self._last_value[channel_index] = value
-            # Laufende Bewegung geht immer durch den Rate-Limiter (Spec §8);
-            # nur der Touch-Release unten erzwingt einen finalen Sendevorgang
-            # (Spec §5.4).
+            # Ongoing movement always goes through the rate limiter; only
+            # touch release below forces a final send.
             await apply_iris(self._state, channel_index, value, final=False)
         elif msg.type == "note_on" and _FADER_TOUCH_NOTE_BASE <= msg.note < _FADER_TOUCH_NOTE_BASE + 8:
             channel_index = msg.note - _FADER_TOUCH_NOTE_BASE + 1
@@ -270,19 +203,17 @@ class XTouchFader:
             was_touched = self._touch_active.get(channel_index, False)
             self._touch_active[channel_index] = touched
             if was_touched and not touched and channel_index in self._last_value:
-                # Touch-Release: letzten Soll-Wert final senden (Spec §5.4)
+                # Touch release: send the last target value as final.
                 await apply_iris(self._state, channel_index, self._last_value[channel_index], final=True)
         elif (
             msg.type == "note_on"
             and _REC_NOTE_BASE <= msg.note < _REC_NOTE_BASE + 8
             and msg.velocity > 0
         ):
-            # Rec/Button 1: schaltet nur die lokale Encoder-Funktionsauswahl
-            # weiter, kein Kamerabefehl (Spec §9). Nur auf Press reagieren,
-            # nicht auf Release, sonst wuerde ein Tastendruck zweimal zaehlen.
-            # Zeile 1 wechselt dabei zwischen Kameraname und Funktionsname
-            # (Nutzerentscheid) -- deshalb Vollabzug beider Zeilen statt nur
-            # Zeile 2 wie bei Drehen/Push.
+            # Rec/button 1: only advances the local encoder function
+            # selection, no camera command. Press only, not release. Line 1
+            # switches between camera name and function name, so both lines
+            # are refreshed instead of just line 2.
             channel_index = msg.note - _REC_NOTE_BASE + 1
             await cycle_encoder_function(self._state, channel_index)
             self._refresh_channel_full(channel_index)
@@ -291,12 +222,9 @@ class XTouchFader:
             and _SOLO_NOTE_BASE <= msg.note < _SOLO_NOTE_BASE + 8
             and msg.velocity > 0
         ):
-            # Solo/Button 2: loest die zugewiesene Kamera-Feature-Aktion aus
-            # (Spec §9a, `apply_button_action`). LED-Update kommt ueber
-            # denselben "feature_changed"-Event wie beim Web-UI-Klick, siehe
-            # `_on_scribble_relevant_event` -- kein manueller Zusatzaufruf
-            # noetig (EventBus.publish() wartet auf alle Subscriber, bevor
-            # apply_button_action() zurueckkehrt).
+            # Solo/button 2: fires the assigned camera feature action. LED
+            # update comes via the same "feature_changed" event as a web UI
+            # click, no separate call needed.
             channel_index = msg.note - _SOLO_NOTE_BASE + 1
             await apply_button_action(self._state, channel_index, "button2")
         elif (
@@ -304,7 +232,7 @@ class XTouchFader:
             and _MUTE_NOTE_BASE <= msg.note < _MUTE_NOTE_BASE + 8
             and msg.velocity > 0
         ):
-            # Mute/Button 3: siehe Solo/Button 2 oben.
+            # Mute/button 3: see Solo/button 2 above.
             channel_index = msg.note - _MUTE_NOTE_BASE + 1
             await apply_button_action(self._state, channel_index, "button3")
         elif (
@@ -312,16 +240,11 @@ class XTouchFader:
             and _SELECT_NOTE_BASE <= msg.note < _SELECT_NOTE_BASE + 8
             and msg.velocity > 0
         ):
-            # Select: loest das hinterlegte Companion-SELECT-Ziel aus (Spec
-            # §9, bewusste Erweiterung). Einmalige Aktion ohne Dauerzustand
-            # (siehe trigger_companion_select()-Docstring). LED zeigt seit
-            # Nutzerentscheid 2026-07-20 den zuletzt gedrueckten Kanal (nur
-            # wenn Companion verbunden ist, siehe _refresh_button_leds()) --
-            # das Nachziehen des LED-Zustands passiert unabhaengig davon, ob
-            # der Trigger selbst erfolgreich war (reine Press-Anzeige, kein
-            # Erfolgs-/Fehlerzustand). CompanionError wird hier (anders als
-            # in der Web-Route) nur geloggt, damit ein Verbindungsfehler den
-            # Poll-Loop nicht abbricht.
+            # Select: fires the channel's Companion SELECT target, a
+            # one-shot action with no persistent state. The LED shows the
+            # last-pressed channel regardless of whether the trigger itself
+            # succeeded. CompanionError is only logged here (unlike the web
+            # route) so a connection error doesn't kill the poll loop.
             channel_index = msg.note - _SELECT_NOTE_BASE + 1
             self._last_select_channel = channel_index
             self._refresh_button_leds()
@@ -339,10 +262,8 @@ class XTouchFader:
             and _ENCODER_PUSH_NOTE_BASE <= msg.note < _ENCODER_PUSH_NOTE_BASE + 8
             and msg.velocity > 0
         ):
-            # Encoder-Push: sendet keinen Kamerabefehl mehr (gain/pedestal
-            # senden seit Nutzerentscheid schon live beim Drehen, siehe
-            # Modul-Docstring) -- markiert den Wert nur visuell als
-            # "gespeichert". Nur auf Press reagieren, nicht auf Release.
+            # Encoder push: sends no camera command (gain/pedestal already
+            # send live on turn), only marks the value as visually "saved".
             channel_index = msg.note - _ENCODER_PUSH_NOTE_BASE + 1
             await commit_encoder_value(self._state, channel_index)
             self._refresh_channel_line2(channel_index)
@@ -350,9 +271,9 @@ class XTouchFader:
     # --- Tx: Iris -> Motorfader ------------------------------------------
 
     async def _resync_from_state(self) -> None:
-        """Einmalig beim Verbinden: aktuell bekannte Iris-Position jedes
-        gemappten Kanals an den Motorfader senden, sonst haelt der Motor die
-        zuletzt gesendete Position (z. B. von einem frueheren Test)."""
+        """Once on connect: sends the currently known iris position of every
+        mapped channel to the motor fader, so it doesn't hold a stale
+        position from an earlier session."""
         for channel_index, mapping in self._state.mapping.channels_for_type("fader").items():
             cam_state = self._state.state_store.get_camera(mapping.camera_id)
             if cam_state.iris is not None:
@@ -363,22 +284,16 @@ class XTouchFader:
         if channel_index is None:
             return
         if not self._touch_active.get(channel_index, False):
-            # Spec §5.4: waehrend Touch nicht gegen den Finger schreiben --
-            # gilt nur fuer den Motor, nicht fuer die Strip-Anzeige unten.
+            # Don't fight the finger while the fader is being touched --
+            # only applies to the motor, not the strip display below.
             self._send_fader_position(channel_index, payload["value"])
         self._refresh_channel_line2(channel_index)
 
     async def _on_connection_changed(self, payload: dict) -> None:
-        """Faehrt den Motorfader auf die aktuelle `cam_state.iris`-Position
-        nach, wenn sich der Verbindungsstatus einer Kamera aendert (Bugreport
-        2026-07-20: der Fader blieb beim Trennen einer Kamera auf der zuletzt
-        bekannten Position stehen). `disconnect_camera()` setzt `iris` dafuer
-        bereits auf 0.0 zurueck, `connect_camera()` auf den echten
-        Kamerawert -- diese Methode muss den Unterschied selbst nicht kennen,
-        sie liest nur den bereits aktualisierten Wert und sendet ihn wie
-        `_resync_from_state()` an den Motor (kein Touch-Check noetig, da eine
-        Verbindungsaenderung nie waehrend eines aktiven physischen Fader-
-        Zugs ausgeloest wird)."""
+        """Drives the motor fader to the current `cam_state.iris` position
+        when a camera's connection status changes (0 on disconnect, the real
+        value on reconnect -- this method just reads the already-updated
+        value)."""
         channel_index = self._channel_for_camera(payload["camera_id"])
         if channel_index is None:
             return
@@ -393,21 +308,12 @@ class XTouchFader:
         return None
 
     def _send(self, msg: mido.Message) -> None:
-        """Zentraler Tx-Pfad fuer alle MIDI-Ausgangsnachrichten (Fader-Motor,
-        Scribble-Strips, Button-LEDs). Bugreport 2026-07-22: nach laengerer
-        Geraete-Inaktivitaet wirft `self._out_port.send()`
-        `_rtmidi.SystemError` (WinMM meldet einen fehlgeschlagenen Send,
-        vermutlich weil Windows das USB-Geraet zwischenzeitlich in einen
-        Energiesparzustand versetzt hat -- extern, nicht verifiziert). Ohne
-        Fehlerbehandlung riss das sowohl `_poll_loop()` ab (physisches Geraet
-        reagiert danach dauerhaft nicht mehr, kein Supervisor/Neustart) als
-        auch jeden Web-Request, der `event_bus.publish()` ausloest
-        (`EventBus.publish()` hat keine eigene Fehlerbehandlung, siehe
-        core/bus.py) -- exakt das beobachtete "nach einer Stunde reagiert
-        weder Web-UI noch physisches Geraet". Ein fehlgeschlagener Send
-        versucht deshalb einmalig eine Neuverbindung (`_reconnect_output()`)
-        und wiederholt den Send; schlaegt auch das fehl, wird der Send
-        verworfen und geloggt, nie an den Aufrufer weitergereicht."""
+        """Central Tx path for all MIDI output (fader motor, scribble
+        strips, button LEDs). A failed send attempts one reconnect
+        (`_reconnect_output()`) and retries; if that also fails, the send is
+        dropped and logged, never propagated to the caller -- an unhandled
+        send error would otherwise kill both the poll loop and any web
+        request that publishes an event."""
         if self._out_port is None:
             return
         try:
@@ -442,20 +348,17 @@ class XTouchFader:
         pitch = self._protocol.normalized_to_pitchbend(value) - 8192
         self._send(mido.Message("pitchwheel", channel=channel_index - 1, pitch=pitch))
 
-    # --- Tx: Scribble Strips (Spec §5.3) ---------------------------------
+    # --- Tx: scribble strips -----------------------------------------------
 
     async def _on_scribble_relevant_event(self, _payload: dict) -> None:
         self._refresh_scribble_strips()
         self._refresh_button_leds()
 
     def _refresh_scribble_strips(self) -> None:
-        """Vollabzug aller 8 Strips (wie channel_snapshot() selbst, kein
-        inkrementelles Diffing) -- ausgeloest durch die seltenen Events
-        (Connect/Disconnect, Feature-Toggle, Config-Aenderung). Zeile 1/2
-        kommen aus `channel_line1_text()`/`channel_display_text()`
-        (core/application.py) -- denselben Funktionen, die auch die Web-UI
-        fuer die EINE verbleibende Kanal-Anzeige verwendet (Nutzerentscheid:
-        physisches Geraet und Web-UI duerfen nicht auseinanderlaufen)."""
+        """Full refresh of all 8 strips, triggered by the infrequent events
+        (connect/disconnect, feature toggle, config change). Lines 1/2 come
+        from `channel_line1_text()`/`channel_display_text()`, the same
+        functions the web UI uses for its channel display."""
         for ch in channel_snapshot(self._state):
             if ch["camera_id"] is None:
                 upper, lower = "", "----"
@@ -466,10 +369,9 @@ class XTouchFader:
             self._send_scribble_strip(ch["index"], upper, lower)
 
     def _refresh_channel_full(self, channel_index: int) -> None:
-        """Aktualisiert BEIDE Zeilen nach einem Funktionswechsel (Rec/
-        Button 1) -- Zeile 1 wechselt zwischen Kameraname (camera_status) und
-        Funktionsname (gain/pedestal, Nutzerentscheid), Zeile 2 zeigt den
-        neuen Wert. Kein Vollabzug aller 8 Strips dafuer noetig."""
+        """Updates both lines after a function switch (Rec/button 1) --
+        line 1 switches between camera name and function name, line 2 shows
+        the new value. No need to refresh all 8 strips for this."""
         if self._out_port is None:
             return
         entry = self._state.mapping.get_channel("fader", channel_index)
@@ -481,13 +383,10 @@ class XTouchFader:
         self._send_scribble_strip(channel_index, upper, lower)
 
     def _refresh_channel_line2(self, channel_index: int) -> None:
-        """Aktualisiert Zeile 2 nur des einen betroffenen Kanals -- nach einem
-        Encoder-Ereignis (Drehen/Push, Zeile 1 aendert sich dabei nicht) oder
-        nach `iris_changed` (respektiert die aktive Encoder-Funktion ueber
-        `channel_display_text()` -- Bugfix: zeigte vorher immer die Iris-
-        Anzeige, auch wenn Zeile 2 gerade gain/pedestal anzeigte, und
-        ueberschrieb das kurzzeitig waehrend eines Fader-Zugs). Kein Vollabzug
-        aller 8 Strips noetig."""
+        """Updates only line 2 of the one affected channel -- after an
+        encoder event (turn/push, line 1 doesn't change) or after
+        `iris_changed` (respects the active encoder function via
+        `channel_display_text()`)."""
         if self._out_port is None:
             return
         entry = self._state.mapping.get_channel("fader", channel_index)
@@ -505,27 +404,17 @@ class XTouchFader:
         self._send(_scribble_message(_SCRIBBLE_UPPER_BASE + strip * _SCRIBBLE_STRIP_CHARS, upper))
         self._send(_scribble_message(_SCRIBBLE_LOWER_BASE + strip * _SCRIBBLE_STRIP_CHARS, lower))
 
-    # --- Tx: Rec/Solo/Mute/Select-LED (Spec §5.2/§9/§9a) -------------------
+    # --- Tx: Rec/Solo/Mute/Select LED --------------------------------------
 
     def _refresh_button_leds(self) -> None:
-        """Vollabzug aller vier LED-Typen ueber alle 8 Kanaele -- ausgeloest
-        durch dieselben Events wie die Scribble-Strips (siehe
-        `_on_scribble_relevant_event`) sowie direkt nach einem Select-Druck.
-        Solo/Mute-Zustand kommt aus derselben `_channel_button_snapshot()`-
-        Quelle, die auch die `is-on`-Klasse der Web-UI setzt (Nutzerentscheid:
-        physisches Geraet und Web-UI duerfen nicht auseinanderlaufen).
-        Unbekannter Zustand (`state: None`, noch nie abgefragt/gedrueckt)
-        zeigt wie in der Web-UI unbeleuchtet. Rec (Nutzerentscheid
-        2026-07-20): keine Zustandsabfrage, leuchtet ohne Rücksicht auf
-        Solo/Mute-Feature-Zustand, aber nur auf Kanaelen mit tatsaechlich
-        verbundener Kamera (`ch["connected"]`, Nutzerentscheid 2026-07-20 --
-        ein Kanal ohne oder mit nur getrennter Kamera hat keine Encoder-
-        Funktion, die Rec waehlen koennte). Select (Nutzerentscheid
-        2026-07-20): leuchtet nur auf `_last_select_channel`, nur wenn
-        `AppState.companion_connected` gesetzt ist, UND nur wenn dieser Kanal
-        ebenfalls eine verbundene Kamera hat -- alle anderen Kanaele aus,
-        auch wenn sie zuvor mal der zuletzt gedrueckte waren oder Companion
-        gerade nicht verbunden ist."""
+        """Full refresh of all four LED types across all 8 channels,
+        triggered by the same events as the scribble strips plus directly
+        after a Select press. Solo/Mute state comes from the same
+        `_channel_button_snapshot()` source the web UI uses for its `is-on`
+        class. Rec lights up on any channel with a connected camera,
+        regardless of Solo/Mute feature state. Select lights only
+        `_last_select_channel`, only while `AppState.companion_connected` is
+        set and that channel has a connected camera."""
         for ch in channel_snapshot(self._state):
             self._send_button_led(ch["index"], _REC_NOTE_BASE, ch["connected"])
             for slot, note_base in (("button2", _SOLO_NOTE_BASE), ("button3", _MUTE_NOTE_BASE)):

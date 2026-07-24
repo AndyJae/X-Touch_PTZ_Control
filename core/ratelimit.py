@@ -4,17 +4,15 @@ import time
 
 
 class RateLimiter:
-    """Rate-Limiter pro Kamera, Spec §8: Delta-Filter (Hysterese) + Token-Bucket
-    (max. `max_hz`), Touch-Release/`final` sendet immer priorisiert am Bucket
-    vorbei. Latest-wins ist implizit: verworfene Zwischenwerte gehen verloren,
-    der Aufrufer haelt selbst keine Queue.
-    """
+    """Per-camera rate limiter: hysteresis delta filter + a max-`max_hz`
+    token bucket. A `final=True` call always sends immediately, bypassing
+    the bucket. Latest-wins: values dropped between sends are simply lost,
+    there's no queue."""
 
     def __init__(self, max_hz: float = 15.0, *, hysteresis: float = 0.0) -> None:
-        self.max_hz = max_hz
         self._interval = 1.0 / max_hz
         self._hysteresis = hysteresis
-        self._last_sent = float("-inf")  # "noch nie gesendet", unabhaengig vom Clock-Epoch
+        self._last_sent = float("-inf")
         self._latest_value: float | None = None
 
     def should_send(self, value: float, *, final: bool = False) -> bool:

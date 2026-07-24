@@ -11,12 +11,10 @@
 </head>
 
 <body>
-    {# Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
-       2026-07-23) -- verstecktes Overlay per default (siehe app.css
-       .startup-overlay), von initStartupChoiceDialog() in app.js bei Bedarf
-       eingeblendet (GET /api/startup/status). Liegt bewusst außerhalb von
-       .app-shell, damit es dessen "is-dimmed"-Grauwert (siehe app.css)
-       überlagert statt selbst mitgedimmt zu werden. #}
+    {# Startup dialog ("Load previous config"/"Start new config") -- hidden
+       overlay by default, shown by initStartupChoiceDialog() in app.js when
+       needed. Sits outside .app-shell so it overlays its "is-dimmed" state
+       rather than being dimmed itself. #}
     <div class="startup-overlay" data-startup-overlay hidden>
         <div class="startup-dialog">
             <h2>X-Touch PTZ Control</h2>

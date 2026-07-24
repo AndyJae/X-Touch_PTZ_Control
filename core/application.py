@@ -1,13 +1,11 @@
-"""core/application.py -- Anwendungsschicht (Spec §3 Core-Bausteine).
+"""core/application.py -- Application layer.
 
-Verdrahtet Config/Treiber/Mapping-Engine/Rate-Limiter/EventBus zu einem
-laufenden Prozess-Zustand (`AppState`) und stellt die Use-Cases bereit, die
-ein Interface (Web-UI heute, X-Touch/MIDI später) aufruft: `connect_camera`,
-`apply_iris`, `channel_snapshot`, `register_camera`. Kennt FastAPI nur an
-der schmalen Stelle, an der tatsächlich WebSocket-Clients benachrichtigt
-werden (`AppState.broadcast`) -- Routing/Templates gehören nicht hierher,
-siehe `web/app.py`. Eine weitere Abstraktionsschicht für den einen
-Broadcast-Mechanismus, den es gibt, wäre an dieser Stelle spekulativ.
+Wires config/drivers/mapping engine/rate limiter/event bus into a running
+process state (`AppState`) and exposes the use cases an interface (web UI,
+X-Touch/MIDI) calls: `connect_camera`, `apply_iris`, `channel_snapshot`,
+`register_camera`. Only touches FastAPI at the narrow point where WebSocket
+clients are notified (`AppState.broadcast`) -- routing/templates live in
+`web/app.py`.
 """
 
 from __future__ import annotations
@@ -27,7 +25,6 @@ from core.config import (
     BankChannelConfig,
     BankConfig,
     CameraConfig,
-    ChannelDefaultsConfig,
     CompanionConfig,
     CompanionTarget,
     MidiConfig,
@@ -41,21 +38,19 @@ from drivers.panasonic_aw import PanasonicAWDriver
 
 LOGGER = logging.getLogger("ptz_control.application")
 
-# Iris-Hysterese: 1 Digit der Geraete-Zielrange (555h-FFFh -> 2730 Schritte),
-# Spec §8 "Nur bei Wertaenderung senden (Delta-Filter, Hysterese 1 Digit der
-# Zielrange)".
+# Iris hysteresis: 1 digit of the device's target range (555h-FFFh -> 2730 steps).
 _IRIS_HYSTERESIS = 1.0 / (0xFFF - 0x555)
 
 
 def build_driver(camera: CameraConfig) -> CameraDriver:
     if camera.driver != "panasonic_aw":
-        raise ValueError(f"unsupported driver: {camera.driver!r} (v1: nur panasonic_aw)")
+        raise ValueError(f"unsupported driver: {camera.driver!r}")
     return PanasonicAWDriver(host=camera.host, port=camera.port)
 
 
 @dataclass
 class AppState:
-    """Pro-Prozess-Zustand, an `app.state.ptz` gehaengt (Spec §3 Core-Bausteine)."""
+    """Per-process runtime state, attached to `app.state.ptz`."""
 
     config: AppConfig
     event_bus: EventBus
@@ -67,43 +62,28 @@ class AppState:
     config_path: str = "config.yaml"
     ws_clients: set[WebSocket] = field(default_factory=set)
     companion_client: httpx.AsyncClient = field(default_factory=build_client)
-    # Encoder-Funktionsauswahl je Kanal (Spec §9, Button 1/physisch Rec) --
-    # Index in `config.channel_defaults.encoder.functions`, rein lokaler
-    # Laufzeitzustand wie `feature_states` (siehe CameraState), nicht
-    # persistiert.
+    # Encoder function selection per channel (button 1/Rec) -- index into
+    # `_ENCODER_FUNCTIONS`, runtime-only like `feature_states`.
     encoder_function_index: dict[int, int] = field(default_factory=dict)
-    # Zeitstempel der letzten Encoder-Klicks je Kanal fuer die
-    # Beschleunigungsregel unten (`_encoder_multiplier`).
+    # Timestamps of recent encoder ticks per channel, for the acceleration
+    # rule in `_encoder_multiplier`.
     encoder_tick_history: dict[int, list[float]] = field(default_factory=dict)
-    # Delta, das ein Dreh-Tick zwar auf die aktive Funktion anwenden will,
-    # aber der Rate-Limiter unten noch zurueckhaelt -- wird beim naechsten
-    # erlaubten Tick nachgereicht (siehe `apply_encoder_turn`), damit bei
-    # schnellem Drehen kein Teil-Delta stillschweigend verloren geht.
+    # Delta a turn tick wants to apply but the rate limiter is currently
+    # holding back -- replayed on the next allowed tick.
     encoder_pending_delta: dict[int, int] = field(default_factory=dict)
-    # Visuelles "gespeichert"-Flag je Kanal (Encoder-Push, Nutzerentscheid):
-    # rot in der Web-UI, bis der naechste Dreh-Tick es wieder zuruecksetzt
-    # (siehe `apply_encoder_turn`/`commit_encoder_value`).
+    # Visual "saved" flag per channel (encoder push): shown in the web UI
+    # until the next turn tick clears it.
     encoder_saved: dict[int, bool] = field(default_factory=dict)
-    # Encoder-Drehung sendet Gain/Pedestal seit Nutzerentscheid live pro Tick
-    # (statt Preview/Commit) -- eigene Rate-Limiter-Instanz pro Kamera, damit
-    # nicht jeder MIDI-Tick einen eigenen HTTP-Request ausloest (analog zu
-    # `rate_limiters` fuer den Iris-Fader, aber getrennt: anderer
-    # Wertebereich, keine Hysterese noetig, siehe `build_app_state`).
+    # Encoder turns send gain/pedestal live per tick -- separate rate
+    # limiter instance per camera so not every MIDI tick triggers its own
+    # HTTP request.
     encoder_rate_limiters: dict[str, RateLimiter] = field(default_factory=dict)
-    # Ob die zuletzt gespeicherte Companion-Config tatsaechlich erreichbar
-    # war (echte Pruefung per is_reachable, siehe configure_companion und
-    # web/app.py lifespan) -- unabhaengig davon, ob ueberhaupt ein Host in
-    # der Config steht (Bugfix: `companion.host` truthy != Companion laeuft
-    # gerade). Startet konservativ bei False, bis eine echte Pruefung das
-    # Gegenteil belegt.
+    # Whether the saved Companion config was actually confirmed reachable
+    # (via is_reachable), independent of whether a host is configured at all.
     companion_connected: bool = False
-    # Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
-    # 2026-07-23) -- True bis eine der beiden Web-UI-Aktionen sie beantwortet
-    # hat, danach fuer den Rest des Prozesses False. Rein Laufzeitzustand,
-    # nicht Teil von config.yaml. Startet bewusst `True`: die App verbindet
-    # beim Boot bereits ganz normal mit der zuletzt gespeicherten
-    # config.yaml (kein deferred startup, Nutzerentscheid) -- "Start new
-    # config" raeumt das ueber `reset_to_new_config()` erst danach wieder auf.
+    # Startup dialog ("Load previous config"/"Start new config"): True until
+    # one of the two web UI actions answers it, then False for the rest of
+    # the process. Runtime-only, not persisted.
     startup_choice_pending: bool = True
 
     async def broadcast(self, payload: dict) -> None:
@@ -140,13 +120,10 @@ def build_app_state(config: AppConfig, config_path: str = "config.yaml") -> AppS
 
 
 def _subscribe_snapshot_broadcast(state: AppState) -> None:
-    """Web-UI ist nur ein Consumer des EventBus, kein Sonderfall: reagiert auf
-    Kamera-Domain-Events (`iris_changed`, `connection_changed`, `error`,
-    `feature_changed`, `config_changed`, `gain_changed`, `pedestal_changed`,
-    `nd_changed`) mit einem vollen State-Broadcast an alle WS-Clients. Ein
-    späterer MIDI-Consumer (Motorfader-/LED-Feedback, Spec §5.4) würde
-    dieselben Topics abonnieren, ohne dass dieser Code angefasst werden
-    müsste."""
+    """Broadcasts a full state snapshot to all WebSocket clients whenever a
+    camera domain event fires (`iris_changed`, `connection_changed`,
+    `error`, `feature_changed`, `config_changed`, `gain_changed`,
+    `pedestal_changed`, `nd_changed`)."""
 
     async def _on_camera_event(_payload: dict) -> None:
         await state.broadcast({"type": "snapshot", "channels": channel_snapshot(state)})
@@ -175,24 +152,18 @@ def _channel_config(state: AppState, channel_index: int) -> BankChannelConfig | 
 
 
 async def _refresh_f_number_from_notification(state: AppState, camera_id: str, driver: CameraDriver) -> None:
-    """Fragt die F-Nummer separat nach (`driver.query_f_number()`, nur dieses
-    eine Feld statt des vollen `get_state()`) und publiziert erneut
-    `iris_changed`, damit Web-UI-Snapshot und Scribble-Strip (beide bereits
-    auf dieses Topic abonniert) die aufgefrischte F-Nummer mitnehmen --
-    siehe Aufrufstelle in `_wire_camera_events()`."""
+    """Re-queries just the F-number (`driver.query_f_number()`, not the full
+    `get_state()`) and re-publishes `iris_changed` so the web UI snapshot
+    and scribble strip pick up the refreshed value."""
     cam_state = state.state_store.get_camera(camera_id)
     cam_state.iris_f_number = await driver.query_f_number()
     await state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": cam_state.iris})
 
 
 def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -> None:
-    """Bruecke Treiber-Events (`subscribe()`, sync per ABC §6) auf den
-    EventBus (async) -- damit reagieren Web-UI und MIDI-Motorfader auch auf
-    Aenderungen, die nicht von PTZ_Control selbst ausgeloest wurden (z. B.
-    Kamera-eigenes Web-UI), siehe `drivers/panasonic_aw.py`s
-    Lens-Info-Feedback (§7.3) sowie die generische Update-Notification-
-    Auswertung (§4.2 der HD Integrated Camera Interface Specifications) in
-    `_handle_notification()` fuer Toggle-Features/Gain/Pedestal/ND-Filter."""
+    """Bridges driver events (`subscribe()`, sync) onto the async event bus,
+    so the web UI and MIDI motor fader also react to changes triggered
+    outside this app (e.g. the camera's own web UI)."""
 
     def on_event(event: dict) -> None:
         event_type = event.get("type")
@@ -204,16 +175,9 @@ def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -
                 state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": event["value"]})
             )
             if position_changed:
-                # Bugreport 2026-07-23 (live gegen die reale AW-UE160,
-                # externe Auto-Iris-Bewegung): das lPI-Lens-Info-Frame (§7.3.2)
-                # traegt nur die rohe Iris-POSITION, keine F-Nummer -- ohne
-                # diesen Zweig blieb `iris_f_number` bei jeder extern (nicht
-                # ueber apply_iris()) ausgeloesten Positionsaenderung auf dem
-                # zuletzt bekannten Stand stehen (live bestaetigt: App zeigte
-                # "F11.0", Kamera-QIF/-OSD zeigten "F6.4"). Nur bei
-                # tatsaechlicher Positionsaenderung (nicht bei jedem
-                # ~300ms-Notification-Heartbeat) neu abfragen, analog zur
-                # Drosselung in apply_iris() ueber den Rate-Limiter.
+                # The lens-info notification frame only carries the raw iris
+                # position, not the F-number -- re-query it, but only on an
+                # actual position change, not on every notification heartbeat.
                 asyncio.create_task(_refresh_f_number_from_notification(state, camera_id, driver))
         elif event_type == "feature_changed":
             state.state_store.get_camera(camera_id).feature_states[event["key"]] = event["enabled"]
@@ -244,11 +208,10 @@ def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -
 
 
 async def connect_camera(state: AppState, camera_id: str) -> None:
-    """Spec §11 Schritt 4: `connect()` -> `QID` -> `get_state()` (Vollabzug),
-    danach Lens-Info-Feedback (§7.3) fuer Treiber, die das anbieten (wie
-    BUTTON_FEATURES, §9a, kein Teil der CameraDriver-ABC -- Zugriff per
-    hasattr(), ein Treiber ohne Unterstuetzung liefert dann einfach keine
-    externen Iris-Updates)."""
+    """`connect()` -> `QID` -> `get_state()`, then starts lens-info feedback
+    for drivers that offer it (accessed via `hasattr()`, not part of the
+    CameraDriver ABC -- a driver without support simply won't deliver
+    external iris updates)."""
     driver = state.drivers[camera_id]
     cam_state = state.state_store.get_camera(camera_id)
     _wire_camera_events(state, camera_id, driver)
@@ -276,22 +239,13 @@ async def connect_camera(state: AppState, camera_id: str) -> None:
 
 
 async def disconnect_camera(state: AppState, camera_id: str) -> None:
-    """Trennt eine Kamera manuell (Setup-Tabelle: "Connect Camera" im
-    verbundenen Zustand erneut geklickt -> Entkoppeln) UND entfernt die
-    Registrierung komplett aus `config.yaml` (Nutzerentscheid 2026-07-20,
-    Bugreport: `config.yaml` sammelte sonst dauerhaft jede je verbundene
-    Kamera an, auch nach dem Trennen -- ein erneutes "Connect Camera"
-    braucht danach wieder Name/IP/Port).
+    """Disconnects a camera and removes its registration entirely from
+    `config.yaml` -- a subsequent "Connect Camera" needs name/IP/port again.
 
-    Setzt zuerst `iris` auf 0.0 zurueck und published `connection_changed`
-    (Bugreport 2026-07-20: Motorfader blieb sonst auf der zuletzt bekannten
-    Position stehen) -- `midi/fader.py::_on_connection_changed()` fährt den
-    physischen Motorfader daraufhin auf 0, WAEHREND die Kanal-Zuordnung noch
-    existiert (sonst fände `_channel_for_camera()` den Kanal nicht mehr).
-    Erst DANACH werden Kamera-Config, Bank-Kanal-Zuordnung und Mapping
-    entfernt und `config_changed` published, damit Scribble-Strips/Web-UI
-    den Kanal als komplett unbelegt (kein Name, "----") zeigen, nicht nur
-    als "NC" (zugewiesen, aber getrennt)."""
+    Resets `iris` to 0.0 and publishes `connection_changed` first, while the
+    channel mapping still exists, so the physical motor fader can be driven
+    to 0 before the channel mapping, bank entry, and camera config are
+    removed and `config_changed` is published."""
     driver = state.drivers.get(camera_id)
     if driver is None:
         return
@@ -325,21 +279,13 @@ async def disconnect_camera(state: AppState, camera_id: str) -> None:
 
 
 async def reset_to_new_config(state: AppState) -> None:
-    """"Start new config" -- Startup-Dialog (Nutzerauftrag 2026-07-23):
-    trennt jede aktuell verbundene Kamera (`disconnect_camera()`, entfernt
-    dabei bereits deren Registrierung aus `config.yaml`, siehe dort) und
-    setzt Companion/MIDI/Bank-/Kanal-Defaults auf die Schema-Defaults
-    zurueck, sodass `config.yaml` danach dem Zustand einer frisch
-    angelegten Datei entspricht. "Disconnect-after-the-fact"
-    (Nutzerentscheid) statt deferred startup: die App verbindet beim Boot
-    wie gewohnt zuerst ganz normal mit der zuletzt gespeicherten
-    `config.yaml` -- dieser Use-Case raeumt das erst auf explizite
-    Nutzeranfrage (Startup-Dialog) danach wieder auf."""
+    """"Start new config" (startup dialog): disconnects every currently
+    connected camera and resets Companion/MIDI/bank/channel config to schema
+    defaults, so `config.yaml` ends up matching a freshly created file."""
     for camera_id in list(state.drivers):
         await disconnect_camera(state, camera_id)
     state.config.banks = []
     state.config.midi = MidiConfig()
-    state.config.channel_defaults = ChannelDefaultsConfig()
     state.config.companion = CompanionConfig()
     state.companion_connected = False
     state.mapping = MappingEngine()
@@ -354,19 +300,15 @@ async def reset_to_new_config(state: AppState) -> None:
 async def register_camera(
     state: AppState, channel_index: int, *, name: str, host: str, port: int
 ) -> None:
-    """Registriert/aktualisiert eine Kamera für einen Kanal über die
-    Setup-Tabelle ("Connect Camera"-Button). Bewusste Abkehr von der
-    ursprünglichen Spec-§10.3-Entscheidung "kein Formular-Editor" für
-    Kamera-Stammdaten (Nutzerentscheid) -- die freie YAML-Ansicht aus §10.3
-    ist davon nicht betroffen. Kamera-ID ist deterministisch `cam{channel}`,
-    da die Tabelle kein eigenes ID-Feld hat; erneuter Aufruf für denselben
-    Kanal aktualisiert damit dieselbe Kamera statt eine zweite anzulegen.
+    """Registers or updates a camera for a channel via the Setup page's
+    "Connect Camera" button. The camera ID is deterministic (`cam{channel}`);
+    calling this again for the same channel updates that camera instead of
+    creating a second one.
 
-    Lehnt eine IP ab, die bereits einem ANDEREN Kanal zugeordnet ist
-    (Bugreport 2026-07-20: zwei Kanäle auf derselben physischen Kamera
-    teilen sich unbemerkt Zustand wie Lens-Info-Push, Gain, Pedestal --
-    siehe CLAUDE.md Offene Punkte) -- derselbe Host für denselben Kanal
-    (erneutes Connect/Update) bleibt erlaubt."""
+    Rejects a host IP already assigned to a different channel -- two
+    channels pointing at the same physical camera would silently share
+    state (lens-info push, gain, pedestal). The same host on the same
+    channel (reconnect/update) remains allowed."""
     if not 1 <= channel_index <= 8:
         raise ValueError(f"Kanal außerhalb 1-8: {channel_index}")
     if not host:
@@ -404,18 +346,15 @@ async def register_camera(
         state.config.global_.rate_limit_hz, hysteresis=_IRIS_HYSTERESIS
     )
     state.encoder_rate_limiters[camera_id] = RateLimiter(state.config.global_.rate_limit_hz)
-    state.mapping.set_channel("fader", channel_index, camera_id, state.config.channel_defaults.fader)
+    state.mapping.set_channel("fader", channel_index, camera_id)
 
-    await connect_camera(state, camera_id)  # verbindet + published "connection_changed"
+    await connect_camera(state, camera_id)
 
 
 async def rename_camera(state: AppState, channel_index: int, name: str) -> None:
-    """Aktualisiert nur den Anzeigenamen einer bereits registrierten Kamera
-    (Setup-Tabelle: Namensfeld verlassen) -- absichtlich unabhängig vom
-    Connect/Disconnect-Toggle des "Connect Camera"-Buttons, damit Umbenennen
-    keine bestehende Verbindung trennt. Kein Effekt, wenn der Kanal noch
-    keine Kamera hat -- der Name wird dann erst beim nächsten "Connect
-    Camera" mitgeschickt (siehe register_camera)."""
+    """Updates only the display name of an already-registered camera,
+    independent of the connect/disconnect toggle so renaming never drops an
+    existing connection. No effect if the channel has no camera yet."""
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
         return
@@ -428,11 +367,10 @@ async def rename_camera(state: AppState, channel_index: int, name: str) -> None:
 
 
 async def configure_companion(state: AppState, host: str, port: int, connected: bool = False) -> None:
-    """Speichert die globale Bitfocus-Companion-Instanz (eine für alle
-    Kanäle, Nutzerentscheid) -- Setup-Seite, Panel an der Stelle des
-    ehemaligen "Camera Status"-Blocks. `connected` kommt vom Aufrufer, der
-    die tatsaechliche Erreichbarkeit (is_reachable) bereits geprueft hat --
-    hier bewusst kein eigener Check, um den Request nicht zu duplizieren."""
+    """Saves the single global Bitfocus Companion instance shared across all
+    channels. `connected` comes from the caller, which has already checked
+    reachability via `is_reachable` -- not re-checked here to avoid
+    duplicating the request."""
     state.config.companion.host = host.strip()
     state.config.companion.port = port
     state.companion_connected = connected
@@ -443,9 +381,8 @@ async def configure_companion(state: AppState, host: str, port: int, connected: 
 async def assign_channel_companion_target(
     state: AppState, channel_index: int, page: int | None, row: int | None, column: int | None
 ) -> None:
-    """Speichert das SELECT-Button-Ziel (Companion Page/Row/Column) eines
-    Kanals dauerhaft. `page/row/column=None` löscht die Zuordnung wieder
-    (Muster: assign_channel_button)."""
+    """Persists a channel's SELECT button target (Companion page/row/column).
+    `page/row/column=None` clears the assignment."""
     channel_cfg = _channel_config(state, channel_index)
     if channel_cfg is None:
         raise ValueError(f"Kanal {channel_index} hat keine Kamera zugewiesen")
@@ -458,12 +395,10 @@ async def assign_channel_companion_target(
 
 
 async def trigger_companion_select(state: AppState, channel_index: int) -> None:
-    """Löst das SELECT-Button-Ziel eines Kanals in Companion aus (Spec §9,
-    bewusste Erweiterung über v1 hinaus -- siehe Modul-Docstring
-    core/companion.py). Kein Effekt ohne zugewiesenes Ziel. Wirft
-    `CompanionError` bei Verbindungsfehler/Non-2xx weiter, damit die Route
-    das dem Nutzer zurückmelden kann -- kein persistenter Fehlerzustand im
-    Snapshot, SELECT ist eine einmalige Aktion ohne Dauerzustand."""
+    """Fires a channel's SELECT button target in Companion. No effect
+    without an assigned target. Re-raises `CompanionError` on a connection
+    error/non-2xx response so the caller can report it -- SELECT is a
+    one-shot action with no persistent state in the snapshot."""
     channel_cfg = _channel_config(state, channel_index)
     target = channel_cfg.companion if channel_cfg else None
     if target is None:
@@ -486,32 +421,20 @@ async def trigger_companion_select(state: AppState, channel_index: int) -> None:
 
 
 async def apply_iris(state: AppState, channel_index: int, value: float, *, final: bool) -> None:
-    """Datenfluss Fader -> Kamera, Spec §3: Mapping -> Rate-Limiter -> Driver.
+    """Fader -> camera data flow: mapping -> rate limiter -> driver.
 
-    Fragt nach jedem tatsaechlich gesendeten Tick (d. h. jedem Tick, den der
-    Rate-Limiter durchlaesst, nicht nur bei `final=True`) zusaetzlich die
-    F-Nummer-Anzeige neu ab (`driver.query_f_number()`) -- Nutzerentscheid
-    2026-07-23, revidiert (erste Fassung fragte nur bei `final=True`):
-    anders als die lokal berechenbare Iris-%, gibt es fuer die F-Nummer keine
-    Formel aus der Fader-Position, nur die Kamera-eigene QIF-Abfrage. Eine
-    einzelne QIF-Abfrage ist klein genug, um pro Tick keinen spuerbaren
-    Zusatz-Traffic zu verursachen -- `query_f_number()` fragt bewusst nur
-    dieses eine Feld ab, nicht den vollen `get_state()` (Gain/Pedestal/ND/
-    Fehler waeren hier unnoetig).
+    Re-queries the F-number display (`driver.query_f_number()`) after every
+    tick the rate limiter actually lets through, not just on `final=True` --
+    unlike iris %, there's no formula for F-number from the fader position,
+    only the camera's own query.
 
-    Bugfix 2026-07-23 (Bugreport: Fader blieb bei aktivem Auto-Iris optisch
-    auf der gezogenen Position stehen, statt automatisch zurueckzuspringen):
-    die Kamera ignoriert `#AXI` stillschweigend, solange Auto-Iris aktiv ist
-    (kein Fehler, aber keine Wirkung auf die echte Position, siehe
-    CLAUDE.md/Spec §14 Punkt 3). Ist `cam_state.auto_iris` (zuletzt bekannter
-    Stand) `True`, wird deshalb nicht mehr blind der Zielwert des Fader-Zugs
-    uebernommen, sondern per `driver.query_iris()` die tatsaechliche
-    Position + der tatsaechliche Auto-Iris-Modus neu abgefragt und
-    veroeffentlicht -- Web-Slider und Motorfader springen damit auf jedem
-    weiterhin durchgelassenen Tick zurueck auf die echte Position, solange
-    Auto-Iris aktiv bleibt. Ist Auto-Iris (soweit bekannt) aus, bleibt das
-    bisherige, guenstigere Verhalten (Zielwert direkt uebernehmen, keine
-    zusaetzliche Abfrage) unveraendert."""
+    The camera silently ignores iris-set commands while auto-iris is active
+    (no error, but no effect on the real position). If `cam_state.auto_iris`
+    is `True`, the fader's target value is therefore not applied blindly;
+    instead the real position and auto-iris mode are re-queried and
+    published, so the web slider and motor fader snap back to the real
+    position on every tick while auto-iris stays active. When auto-iris is
+    off, the cheaper direct-apply behavior is unchanged."""
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
         return
@@ -543,15 +466,10 @@ async def apply_iris(state: AppState, channel_index: int, value: float, *, final
     await state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": cam_state.iris})
 
 
-# --- Encoder-Funktionsauswahl + -Drehung (Spec §9) --------------------------
-# Button 1 (physisch Rec) schaltet fest durch diese Liste (Nutzerentscheid:
-# nicht mehr ueber `config.yaml` konfigurierbar, siehe core/config.py).
-# `camera_status` steht bewusst an erster Stelle (Nutzerauftrag 2026-07-23):
-# ohne jeden Button-1-Druck (App-Start, Kamera-Connect) zeigt Button 1 damit
-# zuerst "Camera Info" statt "Gain" -- alle Default-Index-Lookups fallen auf
-# `.get(channel_index, 0)` zurueck (siehe channel_display_text() u. a.).
-# Shutter ist per Nutzerentscheid komplett aus dem Scope entfernt (kein
-# Treiber-Code, keine Config, kein Encoder-Eintrag), nicht nur zurueckgestellt.
+# --- Encoder function selection + turning ------------------------------
+# Button 1 (Rec) cycles through this fixed list. `camera_status` is first,
+# so before any button-1 press (app start, camera connect) it shows "Camera
+# Info" -- every default-index lookup falls back to `.get(channel_index, 0)`.
 _ENCODER_FUNCTIONS = ("camera_status", "gain", "pedestal", "nd")
 
 _ENCODER_STEP_METHODS = {
@@ -564,7 +482,7 @@ _ENCODER_STATE_FIELDS = {
     "pedestal": "pedestal",
     "nd": "nd_index",
 }
-_ENCODER_ACCEL_WINDOW = 0.1  # Spec §9: "Klicks/100 ms > 3 -> Beschleunigung x5"
+_ENCODER_ACCEL_WINDOW = 0.1  # >3 ticks per 100ms -> 5x acceleration
 _ENCODER_ACCEL_THRESHOLD = 3
 _ENCODER_ACCEL_MULTIPLIER = 5
 
@@ -577,19 +495,12 @@ def _encoder_multiplier(state: AppState, channel_index: int, now: float) -> int:
 
 
 def _encoder_value_range(driver: CameraDriver | None, function_name: str) -> tuple[int, int] | None:
-    """Wertebereich fuer `gain`/`pedestal` aus dem verbundenen Treiber --
-    modellabhaengig (siehe drivers/panasonic_aw.py::_apply_model_catalog(),
-    `drivers/panasonic_models/*.py`), ersetzt die fruehere statische
-    `_ENCODER_RANGES`-Konstante, die fuer JEDES Modell AW-UE160-Werte
-    (-6..+12dB/-200..+200) annahm. `None` heisst "kein Treiber" oder "Modell
-    ohne bekannten Wertebereich" (z. B. unbekanntes Modell oder eines der
-    Modelle ohne Gain-/Pedestal-Eintrag in den beiden Referenz-PDFs) -- kein
-    erfundener Fallback. `gain`s Obergrenze ist `effective_gain_max_db`
-    (Nutzerauftrag 2026-07-20) statt des statischen `gain_max_db` -- bei
-    Modellen mit Super-Gain-Kopplung (aw_ue100.py/aw_ue80.py/aw_ue150.py/
-    aw_he145.py) 36dB statt 42dB, solange Super Gain nicht als "an"
-    bestaetigt ist (live gegen AW-UE100 verifiziert: Werte >36dB werden von
-    der Kamera per ER3 abgelehnt)."""
+    """Value range for `gain`/`pedestal` from the connected driver, which is
+    model-dependent. `None` means either no driver or a model without a
+    known range for this function -- no invented fallback. `gain`'s upper
+    bound is `effective_gain_max_db` rather than the static `gain_max_db`:
+    on models with super-gain coupling it's lower until super gain is
+    confirmed on."""
     if function_name == "gain":
         lo = getattr(driver, "gain_min_db", None)
         hi = getattr(driver, "effective_gain_max_db", None)
@@ -603,23 +514,15 @@ def _encoder_value_range(driver: CameraDriver | None, function_name: str) -> tup
 
 
 async def cycle_encoder_function(state: AppState, channel_index: int) -> str | None:
-    """Button 1 (physisch Rec, Spec §9 "Encoder-Funktionsauswahl"): schaltet
-    nur lokal durch `_ENCODER_FUNCTIONS`, sendet selbst keinen Kamerabefehl.
-    `camera_status` ist ein reiner Anzeige-Eintrag ohne Step-Methode/
-    State-Feld -- Kamera-Name+Blende (Spec: "Camera Status") statt
-    Funktion+Wert, siehe `encoder_preview()`/`channel_display_text()`.
+    """Button 1 (Rec): cycles locally through `_ENCODER_FUNCTIONS`, sending
+    no camera command itself. `camera_status` is a pure display entry with
+    no step method/state field -- shows camera name + iris instead of a
+    function value.
 
-    Fragt beim Wechsel zu einem echten Parameter sofort dessen Ist-Wert ab
-    (Nutzerentscheid), damit die naechste Encoder-Drehung auf dem echten
-    Kamerawert aufsetzt statt auf einem veralteten/lokalen Wert. Ein zweiter
-    Button-1-Druck waehrend dieser Abfrage wartet implizit, da der
-    MIDI-Rx-Poll-Loop Nachrichten sequenziell abarbeitet (siehe
-    midi/fader.py `_poll_loop`).
-
-    Setzt auch das "gespeichert"-Anzeigeflag (`encoder_saved`) und ein noch
-    nicht an die Kamera nachgereichtes Pending-Delta der zuvor aktiven
-    Funktion zurueck -- beides gehoert zur vorherigen Funktion, nicht zur
-    neu ausgewaehlten."""
+    Re-queries the new function's current value immediately on switch, so
+    the next turn starts from the real camera value rather than a stale
+    local one. Also resets the "saved" display flag and any pending delta
+    left over from the previous function."""
     new_index = (state.encoder_function_index.get(channel_index, -1) + 1) % len(_ENCODER_FUNCTIONS)
     state.encoder_function_index[channel_index] = new_index
     function_name = _ENCODER_FUNCTIONS[new_index]
@@ -643,53 +546,41 @@ async def cycle_encoder_function(state: AppState, channel_index: int) -> str | N
 
 
 async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: int) -> None:
-    """Encoder-Drehung bei `gain`/`pedestal`/`nd`: sendet den neuen Wert seit
-    Nutzerentscheid SOFORT live an die Kamera (ersetzt das fruehere
-    Preview/Commit-Verhalten) -- ueber `state.encoder_rate_limiters`, damit
-    nicht jeder einzelne MIDI-Tick einen eigenen HTTP-Request ausloest
-    (dieselbe Idee wie `apply_iris`, aber eigene Limiter-Instanz je Kamera:
-    anderer Wertebereich, keine Hysterese). Ein Tick, den der Limiter gerade
-    zurueckhaelt, geht NICHT verloren, sondern sammelt sich in
-    `encoder_pending_delta` und wird beim naechsten erlaubten Tick als
-    Gesamt-Delta nachgereicht.
+    """Encoder turn for `gain`/`pedestal`/`nd`: sends the new value live to
+    the camera on every tick, through `state.encoder_rate_limiters` so not
+    every MIDI tick triggers its own HTTP request. A tick the limiter is
+    holding back is not lost -- it accumulates in `encoder_pending_delta`
+    and is replayed as a combined delta on the next allowed tick.
 
-    `nd` (Nutzerauftrag 2026-07-22) ist eine geordnete, modellabhaengige und
-    teils lueckenhafte Werteliste (`driver.nd_options`) statt eines
-    kontinuierlichen Zahlenbereichs -- eigener Zweig weiter unten, der in
-    LISTENPOSITIONEN statt Roh-Data-Werten rechnet und am Rand anschlaegt
-    (kein Wrap).
+    `nd` is an ordered, model-dependent, sometimes-sparse value list
+    (`driver.nd_options`) rather than a continuous range -- handled in its
+    own branch below that operates on list positions, not raw data values,
+    and clamps at the edges instead of wrapping.
 
-    `tick_delta` ist ein bereits dekodiertes, vorzeichenbehaftetes Delta
-    (ein "Klick") -- die MIDI-CC-Dekodierung (Spec §5.2/§9: Wert 1-7 = +,
-    65-71 = -) lebt in `midi.mackie.MackieControlProtocol.encoder_cc_to_delta`,
-    die Web-UI liefert das Delta direkt (siehe web/app.py WebSocket
-    "encoder_turn"). Kein Effekt ohne Kamera/Verbindung/bekannten Ist-Wert
-    oder bei `camera_status` (reiner Anzeige-Eintrag, kein Eintrag in
-    `_ENCODER_STATE_FIELDS`).
+    `tick_delta` is an already-decoded, signed delta (one "click"); the MIDI
+    CC decoding lives in
+    `midi.mackie.MackieControlProtocol.encoder_cc_to_delta`, the web UI
+    supplies the delta directly. No effect without a connected camera, a
+    known current value, or on `camera_status` (a display-only entry, not
+    in `_ENCODER_STATE_FIELDS`).
 
-    Der vorgeschlagene Wert wird auf denselben Bereich geclampt wie das
-    UI-Display (`_encoder_value_range()`, modellabhaengig ueber den
-    verbundenen Treiber) -- ohne dieses Clamping liefe der Wert beliebig
-    weiter (frueherer Bug: Anzeige zeigte z. B. "+239dB", damals noch mit
-    fest verdrahteten AW-UE160-Grenzen).
+    The proposed value is clamped to the same range as the UI display
+    (`_encoder_value_range()`).
 
-    Ein Tick bewegt bei `gain` um `driver.gain_step_db` statt immer um 1dB
-    (Bugfix 2026-07-18, siehe CLAUDE.md-Offene-Punkte): die 3dB-Schritt-
-    Modelle (AW-HE50/60/HE40/UE70/HE42) akzeptieren laut PDF nur 0/3/6/9dB
-    usw. -- `GAIN_MIN_DB`/`GAIN_MAX_DB` sind bei diesen Modellen beide
-    Vielfache von `GAIN_STEP_DB`, daher bleibt auch der geclampte Wert immer
-    ein gueltiges Vielfaches. `pedestal` hat kein Schrittweiten-Feld, bleibt
-    unveraendert bei 1 pro Klick.
+    A tick moves `gain` by `driver.gain_step_db` rather than always 1dB: the
+    3dB-step models only accept multiples of 3dB, so a full step keeps the
+    clamped value valid too. `pedestal` has no step field and stays at 1 per
+    click.
 
-    Jeder tatsaechliche Dreh-Tick setzt `encoder_saved` zurueck (Nutzerent-
-    scheid: die "gespeichert"-Anzeige gilt nur bis zum naechsten Dreh)."""
+    Every actual turn tick clears `encoder_saved` (the "saved" display only
+    holds until the next turn)."""
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
         return
     function_name = _ENCODER_FUNCTIONS[state.encoder_function_index.get(channel_index, 0) % len(_ENCODER_FUNCTIONS)]
     field_name = _ENCODER_STATE_FIELDS.get(function_name)
     if field_name is None:
-        return  # camera_status: reiner Anzeige-Eintrag, keine Kamera-Aktion
+        return  # camera_status: display-only, no camera action
     camera_id = entry.camera_id
     driver = state.drivers.get(camera_id)
     if driver is None or not driver.connected:
@@ -699,12 +590,9 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
 
     now = time.monotonic()
     multiplier = _encoder_multiplier(state, channel_index, now)
-    # Modelle mit `GAIN_STEP_DB` > 1 (z. B. AW-HE50/60/HE40/UE70/HE42: nur
-    # 3dB-Schritte laut PDF) akzeptieren keine beliebigen Zwischenwerte -- ein
-    # Tick muss deshalb um einen vollen Schritt bewegen, nicht immer um 1dB
-    # (frueher offener Punkt, siehe CLAUDE.md: "Verhalten der Kamera bei
-    # einem solchen Zwischenwert (z. B. OGU:09) ist nicht dokumentiert").
-    # `pedestal` hat kein Schrittweiten-Feld, bleibt bei 1.
+    # Models with GAIN_STEP_DB > 1 only accept multiples of that step, so a
+    # tick must move by a full step, not always 1dB. `pedestal` has no step
+    # field and stays at 1.
     step = (getattr(driver, "gain_step_db", None) or 1) if function_name == "gain" else 1
     delta = tick_delta * multiplier * step
     pending = state.encoder_pending_delta.get(channel_index, 0) + delta
@@ -719,19 +607,15 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
     step_method = getattr(driver, _ENCODER_STEP_METHODS[function_name], None)
 
     if gain_auto:
-        # Aktuell in Gain-Auto/AGC (Data=0x80, Nutzerauftrag 2026-07-20,
-        # live gegen AW-UE160 UND AW-UE100 bestaetigt): kein numerischer
-        # Ist-Wert vorhanden, deshalb kein Rate-Limiter/Delta-Clamping wie
-        # unten -- Hochdrehen (pending>0) verlaesst Auto, Runterdrehen bleibt
-        # in Auto (kein tieferer Zustand). Der Ausstieg selbst verhaelt sich
-        # dabei genauso proportional/beschleunigt wie jedes andere Drehen
-        # (Nutzerentscheid 2026-07-20, revidiert -- kein Sonder-"Verschlucken"
-        # der ganzen Drehbewegung mehr): `step_gain()` behandelt Auto intern
-        # als virtuelle Position "eine Stufe unter gain_min_db" und landet
-        # bei `gain_min_db + (pending-1)`, geclampt auf
-        # `effective_gain_max_db`. Bewusst OHNE Rate-Limiter: der
-        # Auto<->Manuell-Uebergang ist eine seltene Grenzueberschreitung,
-        # kein kontinuierliches Ziehen wie bei Iris/normalem Gain-Drehen.
+        # Gain is currently in Auto/AGC: no numeric current value, so no
+        # rate-limiter/delta-clamping like below -- turning up (pending>0)
+        # exits Auto, turning down stays in Auto (no lower state). Exiting
+        # is proportional/accelerated like any other turn: `step_gain()`
+        # treats Auto internally as a virtual position one step below
+        # `gain_min_db` and lands at `gain_min_db + (pending-1)`, clamped to
+        # `effective_gain_max_db`. Deliberately without a rate limiter --
+        # the Auto<->manual transition is a rare boundary crossing, not
+        # continuous dragging.
         if pending <= 0 or step_method is None:
             state.encoder_pending_delta[channel_index] = min(pending, 0)
             return
@@ -739,10 +623,9 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
             new_db, new_auto = await step_method(pending)
         except CameraCommandError as exc:
             cam_state.error = str(exc)
-            # Bugreport 2026-07-20: ein von der Kamera abgelehnter Wert
-            # (z. B. ER3, siehe naechster Punkt) durfte das "pending"-Delta
-            # nicht stehen lassen -- sonst zeigt die naechste Vorschau
-            # (encoder_preview()) einen nie tatsaechlich erreichten Wert.
+            # A value rejected by the camera must not leave the pending
+            # delta in place, or the next preview would show a value that
+            # was never actually reached.
             state.encoder_pending_delta[channel_index] = 0
             await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
             return
@@ -753,14 +636,11 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
         return
 
     if function_name == "nd":
-        # ND ist eine geordnete, teils lueckenhafte Werteliste (z. B.
-        # AW-HE130/AW-HR140: nur Data 0/3/4, siehe drivers/panasonic_models/
-        # aw_he130.py) -- anders als gain/pedestal keine kontinuierliche
-        # Zahlenreihe, `pending`/`confirmed` sind deshalb hier LISTEN-
-        # POSITIONEN, nicht Roh-Data-Werte. Anschlag am Rand (kein Wrap,
-        # Nutzerentscheid 2026-07-22) -- anders als `PanasonicAWDriver.
-        # cycle_nd()`, das fuer den (noch nicht verdrahteten) Mute-Button-
-        # Anwendungsfall weiterhin rundenweise durchschaltet.
+        # ND is an ordered, sometimes-sparse value list, not a continuous
+        # range -- `pending`/`confirmed` are list positions here, not raw
+        # data values. Clamps at the edge (no wrap), unlike
+        # `PanasonicAWDriver.cycle_nd()`, which still wraps for the
+        # (not yet wired) mute-button use case.
         nd_options = getattr(driver, "nd_options", None) or []
         positions = [opt_index for opt_index, _ in nd_options]
         if not positions or confirmed not in positions:
@@ -790,10 +670,9 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
     value_range = _encoder_value_range(driver, function_name)
     proposed = confirmed + pending
     if value_range is not None:
-        # Gain-Unterschreitung des Minimums NICHT auf das Minimum clampen
-        # (Nutzerauftrag 2026-07-20) -- ein weiteres Herunterdrehen unter
-        # `gain_min_db` soll stattdessen in Auto wechseln (siehe
-        # PanasonicAWDriver.step_gain()); der obere Rand bleibt geclampt.
+        # Don't clamp gain to the minimum on underflow -- turning down
+        # further switches to Auto instead (see PanasonicAWDriver.step_gain());
+        # the upper bound stays clamped.
         if not (function_name == "gain" and proposed < value_range[0]):
             proposed = max(value_range[0], min(value_range[1], proposed))
 
@@ -806,12 +685,8 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
         result = await step_method(proposed - confirmed)
     except CameraCommandError as exc:
         cam_state.error = str(exc)
-        # Bugreport 2026-07-20 (live gegen AW-UE100 mit Super Gain aus:
-        # Werte >36dB werden von der Kamera mit ER3 abgelehnt, siehe
-        # drivers/panasonic_models/aw_ue100.py) -- ein abgelehnter Wert darf
-        # das "pending"-Delta nicht stehen lassen, sonst zeigt die naechste
-        # Vorschau (encoder_preview()) einen nie tatsaechlich erreichten Wert
-        # (das war die Ursache der faelschlich "+42" angezeigten Vorschau).
+        # A value rejected by the camera must not leave the pending delta
+        # in place, or the next preview would show an unreachable value.
         state.encoder_pending_delta[channel_index] = 0
         await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
         return
@@ -823,23 +698,17 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
         setattr(cam_state, field_name, result)
     cam_state.error = None
     state.encoder_pending_delta[channel_index] = 0
-    # Bewusst KEIN "feature_changed"-Event hier (anders als commit_encoder_value
-    # unten): das wuerde bei jedem einzelnen Dreh-Tick einen vollen
-    # 8-Strip-Scribble-Refresh in midi/fader.py ausloesen (siehe dessen
-    # Modul-Docstring "Tx Scribble Strips"). Aufrufer aktualisieren die
-    # Anzeige stattdessen gezielt selbst (midi/fader.py::_refresh_channel_line2,
-    # web/app.py WebSocket-Handler "encoder_turn").
+    # No "feature_changed" event here (unlike commit_encoder_value below):
+    # that would trigger a full scribble-strip refresh on every turn tick.
+    # Callers update the display directly instead.
 
 
 async def commit_encoder_value(state: AppState, channel_index: int) -> None:
-    """Encoder-Push (Note 32-39, Spec §9 "Verwendung des Encoder-Push...
-    noch offen" -- jetzt per Nutzerentscheid belegt): seit der Umstellung auf
-    Live-Senden (siehe `apply_encoder_turn`) rein visuelles Feedback -- der
-    Kamerawert ist zu diesem Zeitpunkt bereits aktuell, es wird also KEIN
-    zusaetzlicher Kamerabefehl gesendet. Markiert den Kanal nur als
-    "gespeichert" (`encoder_saved`, rote Anzeige in der Web-UI bis zum
-    naechsten Dreh-Tick). Kein Effekt bei `camera_status` (kein Wert zum
-    Speichern) oder ohne zugewiesene Kamera."""
+    """Encoder push: since values are sent live on every turn, this is
+    purely visual feedback -- the camera value is already current, so no
+    additional command is sent. Only marks the channel as "saved"
+    (`encoder_saved`) until the next turn tick. No effect on
+    `camera_status` or without an assigned camera."""
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
         return
@@ -853,23 +722,15 @@ async def commit_encoder_value(state: AppState, channel_index: int) -> None:
 
 
 def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int | None] | None:
-    """Aktive Encoder-Funktion + aktueller Wert (letzter bestaetigter
-    Kamerawert + ein evtl. noch vom Rate-Limiter zurueckgehaltenes Delta,
-    siehe `apply_encoder_turn`) fuer Scribble-Strip (midi/fader.py) und
-    Web-UI (`channel_display_text`/`_channel_encoder_snapshot`). `None`,
-    wenn die aktive Funktion ein reiner Anzeige-Eintrag ohne State-Feld ist
-    (z. B. `camera_status`, Spec-Nutzerentscheid: dann zeigt das Display
-    stattdessen Kamera-Name+Blende) oder der Ist-Wert (noch) nicht bekannt
-    ist. Der Wert selbst ist `None`, wenn `gain` gerade in Auto/AGC ist
-    (Nutzerauftrag 2026-07-20) -- anders als eine komplett unbekannte
-    Funktion liefert diese Funktion dann trotzdem ein Tupel (Zeile 1 zeigt
-    weiterhin "GAIN"), `_encoder_value_text()`/`_channel_encoder_snapshot()`
-    behandeln den `None`-Wert als "AUTO". Bei `nd` ist der zurueckgegebene
-    Wert der Roh-Data-Wert der Zielposition (nicht die Listenposition
-    selbst) -- `encoder_pending_delta` ist fuer `nd` in LISTENPOSITIONEN
-    gezaehlt (siehe `apply_encoder_turn`), muss hier also erst auf eine
-    Position abgebildet werden, bevor der zugehoerige Roh-Wert aufgeloest
-    wird."""
+    """Active encoder function + current value (last confirmed camera value
+    plus any delta still held back by the rate limiter) for the scribble
+    strip and web UI. `None` if the active function is a display-only entry
+    with no state field (e.g. `camera_status`) or the current value isn't
+    known yet. The value itself is `None` when `gain` is in Auto/AGC --
+    still returns a tuple so line 1 keeps showing "GAIN", with the `None`
+    value rendered as "AUTO" by the callers. For `nd`, the returned value is
+    the raw data value of the target position, not the list position itself
+    (`encoder_pending_delta` counts list positions for `nd`)."""
     function_name = _ENCODER_FUNCTIONS[state.encoder_function_index.get(channel_index, 0) % len(_ENCODER_FUNCTIONS)]
     field_name = _ENCODER_STATE_FIELDS.get(function_name)
     if field_name is None:
@@ -897,18 +758,12 @@ def encoder_preview(state: AppState, channel_index: int) -> tuple[str, int | Non
 
 
 def _encoder_function_unsupported(state: AppState, channel_index: int) -> str | None:
-    """Aktive Funktion, wenn sie `gain`/`pedestal`/`nd` ist UND das
-    verbundene Kameramodell dafuer laut den lokalen Referenz-PDFs gar keine
-    Daten hat (`_encoder_value_range()` liefert dann `None` fuer `gain`/
-    `pedestal`, `driver.nd_options` ist leer/`None` fuer `nd` -- z. B.
-    AW-HE40/AW-HE50/AW-HE60 haben gar keinen physischen ND-Filter, siehe
-    drivers/panasonic_models/aw_he40.py/aw_he50.py) -- sonst `None`.
-    Unterscheidet dieses "vom Modell nicht unterstuetzt" (Bugreport
-    2026-07-18: Button 1 wechselte sichtbar auf GAIN/PEDESTAL, aber die
-    Wertanzeige blieb stumm beim Camera-Status-Inhalt haengen) von "Wert nur
-    gerade nicht bekannt" (z. B. Kamera nicht verbunden, AGC aktiv) --
-    letzteres faellt weiterhin auf die bisherige Iris-%/Kameraname-Anzeige
-    zurueck, siehe `channel_display_text`/`channel_line1_text`."""
+    """Returns the active function name if it's `gain`/`pedestal`/`nd` and
+    the connected camera model has no data for it at all (e.g. a model with
+    no physical ND filter); otherwise `None`. Distinguishes "not supported
+    by this model" from "value just not known yet" (camera not connected,
+    AGC active) -- the latter still falls back to the previous iris%/camera
+    name display."""
     function_name = _ENCODER_FUNCTIONS[state.encoder_function_index.get(channel_index, 0) % len(_ENCODER_FUNCTIONS)]
     if function_name not in _ENCODER_STATE_FIELDS:
         return None
@@ -928,10 +783,9 @@ def _encoder_function_unsupported(state: AppState, channel_index: int) -> str | 
 
 
 def _nd_label(driver: CameraDriver | None, index: int | None) -> str | None:
-    """Label des ND-Filter-Data-Werts `index` laut `driver.nd_options`
-    (z. B. "1/64") -- `None`, wenn `index` unbekannt ist oder der Treiber
-    keinen ND-Katalog hat. Alle bisher portierten Labels passen in das
-    7-Zeichen-Limit des Scribble-Strips (siehe `_encoder_value_text`)."""
+    """Label for ND filter data value `index` from `driver.nd_options`
+    (e.g. "1/64") -- `None` if `index` is unknown or the driver has no ND
+    catalog."""
     if index is None:
         return None
     nd_options = getattr(driver, "nd_options", None) or []
@@ -942,17 +796,11 @@ def _nd_label(driver: CameraDriver | None, index: int | None) -> str | None:
 
 
 def _encoder_value_text(function_name: str, value: int | None) -> str:
-    """Kompakte Darstellung des aktiven Encoder-Werts (7-Zeichen-Limit des
-    Scribble-Strips, Spec §5.3 -- kein LED-Ring verfuegbar, siehe
-    midi/fader.py-Modul-Docstring). Kein Funktions-Praefix (G/P) mehr --
-    Zeile 1 zeigt seit Nutzerentscheid bereits den Funktionsnamen
-    (`channel_line1_text`), ein zusaetzliches Praefix in Zeile 2 waere
-    redundant. `gain` ist der einzige mit physikalischer Einheit (dB);
-    `pedestal` ist bei der AW-UE160 ein unitloser Rohwert -200..+200
-    (`AW-UE160_InterfaceSpecification_E.pdf` Kap. 9 `OSJ:0F`), keine
-    Prozentangabe. `value` ist `None`, wenn `gain` in Auto/AGC ist
-    (Nutzerauftrag 2026-07-20, siehe `encoder_preview()`) -- zeigt dann
-    "AUTO" statt eines dB-Werts."""
+    """Compact display of the active encoder value (7-character scribble
+    strip limit). No function prefix -- line 1 already shows the function
+    name. `gain` is the only one with a physical unit (dB); `pedestal` is a
+    unitless raw value. `value` is `None` when `gain` is in Auto/AGC, shown
+    as "AUTO" instead of a dB value."""
     if value is None:
         return "AUTO"
     suffix = "dB" if function_name == "gain" else ""
@@ -960,19 +808,12 @@ def _encoder_value_text(function_name: str, value: int | None) -> str:
 
 
 def channel_display_text(state: AppState, channel_index: int) -> str:
-    """Zeile 2 der EINEN Kanal-Anzeige -- Nutzerentscheid: physisches
-    Scribble-Strip (`midi/fader.py`) und Web-UI zeigen exakt denselben Wert
-    ueber dieselbe Funktion, kein eigenes Web-UI-Format mehr. Bei
-    `camera_status` die Iris-F-Nummer (`cam_state.iris_f_number`, z. B.
-    "F9.8"/"CLOSE" -- Nutzerauftrag 2026-07-23: F-Nummer statt Iris-% als
-    Anzeige, live gegen eine reale AW-UE160 kalibriert, siehe
-    drivers/panasonic_aw.py::_decode_f_number()), bei `gain`/`pedestal` der
-    jeweilige Funktionswert (siehe `encoder_preview`), bei `nd` das Label des
-    Ziel-Data-Werts (z. B. "1/64", siehe `_nd_label`) -- oder "n/a", wenn
-    das Modell diese Funktion gar nicht unterstuetzt
-    (`_encoder_function_unsupported()`, Nutzerentscheid 2026-07-18: explizit
-    statt stillschweigend auf eine Platzhalter-Anzeige zurueckzufallen) oder
-    die F-Nummer (noch) nicht bekannt ist."""
+    """Line 2 of the channel display -- the physical scribble strip and the
+    web UI show exactly this same value through the same function. For
+    `camera_status` this is the iris F-number, for `gain`/`pedestal` the
+    function value (see `encoder_preview`), for `nd` the label of the
+    target data value -- or "n/a" if the model doesn't support this
+    function at all, or the F-number isn't known yet."""
     preview = encoder_preview(state, channel_index)
     if preview is None:
         if _encoder_function_unsupported(state, channel_index) is not None:
@@ -990,14 +831,10 @@ def channel_display_text(state: AppState, channel_index: int) -> str:
 
 
 def channel_line1_text(state: AppState, channel_index: int, camera_name: str | None) -> str:
-    """Zeile 1 der EINEN Kanal-Anzeige -- Nutzerentscheid: bei `camera_status`
-    der Kameraname (bisheriges Verhalten), bei `gain`/`pedestal` stattdessen
-    der Funktionsname (GAIN/PEDESTAL), damit sofort erkennbar ist, worauf
-    sich der Wert in Zeile 2 (`channel_display_text`) bezieht -- ohne das
-    waere z. B. "+45" ohne Kontext mehrdeutig (Gain in dB? Pedestal-Digit?).
-    Zeigt den Funktionsnamen auch dann, wenn das Modell die Funktion gar
-    nicht unterstuetzt (`_encoder_function_unsupported()`) -- sonst waere
-    Zeile 2 "n/a" ohne erkennbaren Bezug."""
+    """Line 1 of the channel display -- the camera name for `camera_status`,
+    otherwise the function name (GAIN/PEDESTAL/...) so it's clear what the
+    value in line 2 refers to. Shows the function name even when the model
+    doesn't support it, so line 2's "n/a" has a visible label."""
     preview = encoder_preview(state, channel_index)
     if preview is None:
         unsupported = _encoder_function_unsupported(state, channel_index)
@@ -1009,14 +846,10 @@ def channel_line1_text(state: AppState, channel_index: int, camera_name: str | N
 
 
 def _channel_encoder_snapshot(state: AppState, index: int) -> dict:
-    """Encoder-Zustand fuer die Web-UI (Spec §9, Nutzerentscheid: Drehregler
-    soll auch im Browser bedienbar sein, siehe web/app.py "encoder_turn"/
-    "encoder_commit"). Bei `camera_status` (reiner Anzeige-Eintrag, siehe
-    `cycle_encoder_function()`) ist `value` `None` -- die Web-UI zeigt
-    Name+Blende dann ueber `channel_display_text` (dieselbe EINE Anzeige wie
-    das physische Scribble-Strip, kein separates zweites Display mehr,
-    Nutzerentscheid). `saved` steuert das rote "gespeichert"-Feedback nach
-    einem Encoder-Push (`commit_encoder_value`), bis zum naechsten Dreh-Tick."""
+    """Encoder state for the web UI, which can also drive the encoder
+    directly. `value` is `None` for `camera_status` (display-only); the web
+    UI then shows name+iris via `channel_display_text`. `saved` drives the
+    "saved" feedback after an encoder push, until the next turn tick."""
     function_name = _ENCODER_FUNCTIONS[state.encoder_function_index.get(index, 0) % len(_ENCODER_FUNCTIONS)]
     preview = encoder_preview(state, index)
     value = preview[1] if preview is not None else None
@@ -1033,10 +866,8 @@ def _channel_encoder_snapshot(state: AppState, index: int) -> dict:
 
 
 def available_button_features(state: AppState, camera_id: str) -> dict[str, str]:
-    """Feature-Katalog für die Setup-Dropdowns (Spec §9a: `key -> Label`).
-    Leer, wenn der Treiber (bzw. das erkannte Kameramodell) keinen Katalog
-    anbietet -- entspricht Spec §9a "kein Plugin-Modul -> keine
-    Button-Belegung verfügbar"."""
+    """Feature catalog (`key -> label`) for the Setup page dropdowns. Empty
+    if the driver/detected camera model offers no catalog."""
     driver = state.drivers.get(camera_id)
     if driver is None:
         return {}
@@ -1046,18 +877,12 @@ def available_button_features(state: AppState, camera_id: str) -> dict[str, str]
 async def assign_channel_button(
     state: AppState, channel_index: int, button_slot: str, feature_key: str | None
 ) -> None:
-    """Speichert die Button-2/3-Zuordnung eines Kanals dauerhaft in
-    `config.yaml` (Spec §9a, per Nutzerentscheid: persistent statt nur
-    Laufzeit). `feature_key=None`/leer löscht die Zuordnung wieder.
+    """Persists a channel's button 2/3 feature assignment to `config.yaml`.
+    `feature_key=None`/empty clears the assignment.
 
-    Fragt bei Zuweisung eines Toggle-Features mit bekanntem Query-Kommando
-    (Nutzerentscheid 2026-07-18, siehe `PanasonicAWDriver.
-    query_button_feature()`) sofort den Ist-Zustand ab, damit der Button in
-    der Web-UI korrekt beleuchtet/unbeleuchtet erscheint statt erst nach dem
-    ersten Druck einen (dann nur lokal geratenen) Zustand zu haben. Ohne
-    bekanntes Query-Kommando (siehe `query_button_feature()`-Docstring) oder
-    ohne verbundene Kamera bleibt der Zustand wie bisher unbekannt, bis zum
-    ersten Druck."""
+    When assigning a toggle feature with a known query command, immediately
+    queries its current state so the button shows the correct lit/unlit
+    state in the web UI right away, instead of only after the first press."""
     if button_slot not in ("button2", "button3"):
         raise ValueError(f"ungültiger Button-Slot: {button_slot!r}")
     channel_cfg = _channel_config(state, channel_index)
@@ -1085,19 +910,14 @@ async def assign_channel_button(
 
 
 async def apply_button_action(state: AppState, channel_index: int, button_slot: str) -> None:
-    """Löst die einem Kanal-Button zugewiesene Kamera-Feature-Aktion aus
-    (Spec §9a). Kein Effekt ohne Kamera/Zuordnung/Verbindung -- entspricht
-    dem physischen Verhalten (ein Button ohne Belegung tut nichts).
+    """Fires the camera feature action assigned to a channel button. No
+    effect without a camera/assignment/connection -- matches physical
+    behavior (an unassigned button does nothing).
 
-    Nur noch "toggle"/"trigger" (Nutzerentscheid 2026-07-18): mehrwertige
-    Kamera-Parameter (Knee, DRS) sind kein eigener "cycle"-Feature-Typ mehr,
-    sondern je ein Toggle pro Zielzustand (z. B. "knee_auto"), siehe
-    drivers/panasonic_aw.py-Klassendocstring -- Button 2/3 haben eine
-    einzelne, nicht mehrfarbige LED und koennen so nur echt an/aus
-    darstellen, kein rundenweises Durchschalten. Das Cycle-Konzept lebt
-    weiterhin bei Button 1 (Encoder-Funktionsauswahl, siehe
-    `cycle_encoder_function()`), das ist ein komplett getrennter
-    Mechanismus ohne Bezug zu BUTTON_FEATURES."""
+    Only "toggle"/"trigger" feature kinds exist: multi-value camera
+    parameters (knee, DRS) are modeled as one toggle per target state
+    rather than a cycling feature, since button 2/3 only have a single,
+    non-multicolor LED and can only show on/off."""
     if button_slot not in ("button2", "button3"):
         raise ValueError(f"ungültiger Button-Slot: {button_slot!r}")
     entry = state.mapping.get_channel("fader", channel_index)
@@ -1121,11 +941,8 @@ async def apply_button_action(state: AppState, channel_index: int, button_slot: 
             await driver.trigger_button_feature(feature_key, enabled=new_enabled)
             cam_state.feature_states[feature_key] = new_enabled
             if feature_key == "auto_iris":
-                # Bugfix 2026-07-23: apply_iris()s Snapback-Logik prueft
-                # cam_state.auto_iris (nicht feature_states), das hier bisher
-                # nicht aktualisiert wurde -- ein Fader-Zug nach Druck auf den
-                # Auto-Iris-Button ignorierte dadurch weiterhin den veralteten
-                # Stand statt sofort zurueckzuspringen.
+                # apply_iris()'s snapback logic checks cam_state.auto_iris,
+                # not feature_states, so it needs to be kept in sync here too.
                 cam_state.auto_iris = new_enabled
             LOGGER.info("Kanal %s: %s -> %s", channel_index, feature_key, "on" if new_enabled else "off")
         else:  # "trigger"
@@ -1140,9 +957,8 @@ async def apply_button_action(state: AppState, channel_index: int, button_slot: 
 
 
 def channel_snapshot(state: AppState) -> list[dict]:
-    """Ein Eintrag je Kanalzug (1-8), Spec §10.2 "Übersicht". Kanaele ohne
-    zugewiesene Kamera (kein Eintrag in `banks[0].channels`) haben
-    `camera_id: None` und sind in der UI nicht steuerbar."""
+    """One entry per channel strip (1-8). Channels without an assigned
+    camera have `camera_id: None` and aren't controllable in the UI."""
     fader_channels = state.mapping.channels_for_type("fader")
     channels = []
     for index in range(1, 9):
@@ -1167,10 +983,6 @@ def channel_snapshot(state: AppState) -> list[dict]:
                 "buttons": _channel_button_snapshot(state, index, driver, cam_state),
                 "companion": _channel_companion_snapshot(state, index),
                 "encoder": _channel_encoder_snapshot(state, index),
-                # EINE Kanal-Anzeige fuer Web-UI und physisches Scribble-Strip
-                # (Nutzerentscheid): Zeile 1 Kameraname/Funktionsname, Zeile 2
-                # Iris-F-Nummer/Funktionswert -- siehe channel_line1_text()/
-                # channel_display_text().
                 "display_line1": channel_line1_text(state, index, camera_cfg.name if camera_cfg else None),
                 "display_text": channel_display_text(state, index),
             }
@@ -1187,9 +999,7 @@ def _channel_companion_snapshot(state: AppState, index: int) -> dict | None:
 
 
 def _channel_button_snapshot(state: AppState, index: int, driver, cam_state) -> dict:
-    """Button-2/3-Zuordnung + zuletzt getrackter Zustand für einen Kanal
-    (Spec §9a). `state` ist bool (an/aus), siehe Kommentar an
-    `CameraState.feature_states`."""
+    """Button 2/3 assignment + last tracked state for a channel."""
     channel_cfg = _channel_config(state, index)
     labels = getattr(driver, "BUTTON_FEATURE_LABELS", {}) if driver else {}
     result: dict[str, dict | None] = {}

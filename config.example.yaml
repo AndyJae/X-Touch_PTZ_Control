@@ -20,9 +20,6 @@ cameras: []
 
 banks: []
 
-channel_defaults:
-  fader: iris
-
 companion:
   # Optional: Bitfocus Companion instance for the SELECT button.
   host: ""
@@ -30,6 +27,5 @@ companion:
 
 global:
   rate_limit_hz: 15.0
-  send_final_on_release: true
   log_level: INFO
   web_port: 8600

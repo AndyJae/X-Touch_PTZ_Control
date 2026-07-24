@@ -1,9 +1,9 @@
-"""web/app.py -- Interface-Schicht: FastAPI-Routen, WebSocket, Templates.
+"""web/app.py -- Interface layer: FastAPI routes, WebSocket, templates.
 
-Enthält bewusst keine Domain-/Anwendungslogik (Treiber-Verdrahtung,
-Mapping->Rate-Limiter->Driver-Fluss, State-Aufbereitung) -- die lebt in
-`core/application.py` und ist von hier unabhängig testbar. Dieses Modul
-übersetzt nur zwischen HTTP/WebSocket und den dortigen Use-Cases.
+Contains no domain/application logic (driver wiring, mapping->rate
+limiter->driver flow, state building) -- that lives in `core/application.py`
+and is testable independently of this module. This module only translates
+between HTTP/WebSocket and those use cases.
 """
 
 from __future__ import annotations
@@ -48,15 +48,13 @@ LOGGER = logging.getLogger("ptz_control.web")
 
 _CONFIG_PATH = "config.yaml"
 
-# Bekannter Portname-Substring des Behringer X-Touch Extender (verifiziert:
-# reale Ports heissen "X-Touch-Ext 0"/"X-Touch-Ext 1", siehe CLAUDE.md) --
-# einziges v1-Zielgeraet (Spec §5), daher als Auto-Erkennungs-Default
-# vertretbar, wenn config.yaml keinen Port vorgibt (Nutzerauftrag 2026-07-24).
+# Real X-Touch Extender ports are named "X-Touch-Ext 0"/"X-Touch-Ext 1" --
+# used as the auto-detection default when config.yaml doesn't specify a port.
 _AUTO_DETECT_MIDI_SUBSTRING = "X-Touch-Ext"
 
 
 def _find_midi_port(names: list[str], substring: str) -> str | None:
-    """Spec §5.5: Substring-Match gegen die verfuegbaren Ports."""
+    """Substring match against the available MIDI port names."""
     matches = [name for name in names if substring.lower() in name.lower()]
     if len(matches) == 1:
         return matches[0]
@@ -70,30 +68,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config = load_config(_CONFIG_PATH)
     state = build_app_state(config, config_path=_CONFIG_PATH)
     app.state.ptz = state
-    # Spec §11: Web-UI startet immer, auch wenn Kameras fehlen/nicht erreichbar
-    # sind -- Fehler werden pro Kamera geloggt, der Prozess bricht nicht ab.
-    # Nebenlaeufig statt sequenziell (Bugreport 2026-07-22): jede nicht
-    # erreichbare Kamera braucht bis zu ~1,5s Timeout + 1 Retry PRO Query
-    # (mehrere Queries in connect_camera()/get_state(), §7.4) -- bei mehreren
-    # gleichzeitig nicht erreichbaren Kameras hat sich das bisher sequenziell
-    # aufsummiert und den Start spuerbar verzoegert (Browser oeffnete sich
-    # dadurch teils vor `server.started`, siehe main.py::_open_browser()).
-    # Jede Kamera bleibt unabhaengig -- eigener Treiber/State-Eintrag, ein
-    # haengender/fehlschlagender Connect blockiert die anderen nicht mehr.
+    # The web UI always starts, even if cameras are missing/unreachable --
+    # errors are logged per camera, the process never aborts. Cameras are
+    # connected concurrently (not sequentially): each camera is independent
+    # (its own driver/state entry), so a hanging/failing connect doesn't
+    # block the others.
     async def _connect_camera_defensively(camera_id: str) -> None:
         try:
             await connect_camera(state, camera_id)
-        except Exception as exc:  # defensiv: Startup darf nie an einer Kamera scheitern
+        except Exception as exc:  # defensive: startup must never fail on a camera
             LOGGER.warning("Kamera %s: Connect fehlgeschlagen: %s", camera_id, exc)
             state.state_store.get_camera(camera_id).error = str(exc)
 
     await asyncio.gather(*(_connect_camera_defensively(cid) for cid in state.drivers))
     LOGGER.info("X-Touch PTZ Control Web-UI bereit: %d Kamera(s) konfiguriert", len(state.drivers))
 
-    # Bugfix: config.yaml kann einen Companion-Host enthalten, ohne dass
-    # Companion beim Start tatsaechlich laeuft -- die Setup-Seite zeigte den
-    # Button bisher rein anhand von `companion.host` als "Saved" an. Echte
-    # Erreichbarkeitspruefung beim Start, analog zum Kamera-Connect oben.
+    # config.yaml can contain a Companion host without Companion actually
+    # running -- confirm real reachability at startup, same as camera connect
+    # above.
     if state.config.companion.host:
         state.companion_connected = await is_reachable(
             state.companion_client, state.config.companion.host, state.config.companion.port
@@ -106,12 +98,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
 
     midi_fader: XTouchFader | None = None
-    # Spec §5.5: explizit konfigurierter Port (config.yaml) hat weiterhin
-    # Vorrang und verhaelt sich exakt wie zuvor. Nutzerauftrag 2026-07-24:
-    # ist NICHTS konfiguriert, automatisch anhand des bekannten Behringer
-    # X-Touch-Extender-Portnamens erkennen (reiner Start-Scan, kein
-    # Hotplug/Live-Reconnect waehrend der Laufzeit -- das X-Touch muss vor
-    # dem Start bereits per USB angeschlossen sein, siehe Help-Seite).
+    # An explicitly configured port takes precedence; otherwise auto-detect
+    # by the known Behringer X-Touch Extender port name. This is a one-time
+    # scan at startup, not hotplug/live-reconnect -- the X-Touch must already
+    # be connected via USB before the app starts.
     if config.midi.input_port:
         input_port_substring = config.midi.input_port
         output_port_substring = config.midi.output_port
@@ -150,28 +140,25 @@ def _ptz_state(request: Request) -> AppState:
 
 @app.get("/api/startup/status")
 async def api_startup_status(request: Request) -> JSONResponse:
-    """Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
-    2026-07-23) -- vom Frontend bei jedem Seitenaufruf abgefragt (nicht in den
-    Seiten-Kontext gehängt, damit es unabhängig davon funktioniert, welche
-    Seite zuerst geöffnet wird). `pending` bleibt `True`, bis eine der beiden
-    Aktionen unten aufgerufen wurde, danach für den Rest des Prozesses `False`."""
+    """Startup dialog ("Load previous config"/"Start new config"), polled by
+    the frontend on every page load. `pending` stays `True` until one of the
+    two actions below is called, then `False` for the rest of the process."""
     return JSONResponse({"pending": _ptz_state(request).startup_choice_pending})
 
 
 @app.post("/api/startup/load-previous")
 async def api_startup_load_previous(request: Request) -> JSONResponse:
-    """"Load previous config": kein Reset noetig -- die App hat beim Boot
-    bereits ganz normal mit der zuletzt gespeicherten config.yaml verbunden
-    (siehe lifespan()), hier wird nur der Dialog als beantwortet markiert."""
+    """"Load previous config": no reset needed -- the app already connected
+    normally to the last saved config.yaml at boot; this just marks the
+    dialog as answered."""
     _ptz_state(request).startup_choice_pending = False
     return JSONResponse({"ok": True})
 
 
 @app.post("/api/startup/new-config")
 async def api_startup_new_config(request: Request) -> JSONResponse:
-    """"Start new config": disconnect-after-the-fact (Nutzerentscheid,
-    siehe reset_to_new_config()) -- trennt alle beim Boot verbundenen
-    Kameras und setzt config.yaml auf den Schema-Default-Zustand zurueck."""
+    """"Start new config": disconnects every camera connected at boot and
+    resets config.yaml to schema defaults."""
     state = _ptz_state(request)
     await reset_to_new_config(state)
     state.startup_choice_pending = False
@@ -221,9 +208,8 @@ _LOG_LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"]
 
 @app.get("/logs", response_class=HTMLResponse)
 async def logs_page(request: Request) -> HTMLResponse:
-    """Spec §10 Punkt 4: letzte 200 Zeilen, Filter nach Level. `level=ALL`
-    zeigt alles, jeder andere Wert diesen Level und schwerwiegendere
-    (Standard-Logging-Semantik: WARNING zeigt auch ERROR)."""
+    """Last 200 log lines, filterable by level. `level=ALL` shows
+    everything, any other value shows that level and more severe ones."""
     selected_level = request.query_params.get("level", "ALL").upper()
     if selected_level not in _LOG_LEVELS:
         selected_level = "ALL"
@@ -244,10 +230,8 @@ async def logs_page(request: Request) -> HTMLResponse:
 
 @app.post("/api/channels/{channel_index}/camera/disconnect")
 async def api_disconnect_camera(channel_index: int, request: Request) -> JSONResponse:
-    """Entkoppelt die Kamera eines Kanals (Setup-Tabelle: "Connect Camera"
-    im verbundenen Zustand erneut geklickt) und entfernt die Registrierung
-    komplett aus config.yaml (Nutzerentscheid 2026-07-20, siehe
-    disconnect_camera())."""
+    """Disconnects a channel's camera and removes its registration entirely
+    from config.yaml, see disconnect_camera()."""
     state = _ptz_state(request)
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
@@ -258,9 +242,8 @@ async def api_disconnect_camera(channel_index: int, request: Request) -> JSONRes
 
 @app.post("/api/channels/{channel_index}/camera")
 async def api_register_camera(channel_index: int, request: Request) -> JSONResponse:
-    """Registriert/aktualisiert die Kamera eines Kanals aus der Setup-Tabelle
-    ("Connect Camera") -- ersetzt externes Eintragen in config.yaml für
-    Kamera-Stammdaten (Nutzerentscheid, Abkehr von Spec §10.3)."""
+    """Registers or updates a channel's camera from the Setup page's
+    "Connect Camera" form."""
     state = _ptz_state(request)
     body = await request.json()
     name = str(body.get("name") or "").strip()
@@ -282,9 +265,8 @@ async def api_register_camera(channel_index: int, request: Request) -> JSONRespo
 
 @app.post("/api/channels/{channel_index}/camera/name")
 async def api_rename_camera(channel_index: int, request: Request) -> JSONResponse:
-    """Aktualisiert nur den Anzeigenamen (Setup-Tabelle: Namensfeld
-    verlassen) -- unabhängig vom Connect/Disconnect-Toggle, siehe
-    rename_camera()."""
+    """Updates only the display name, independent of the connect/disconnect
+    toggle, see rename_camera()."""
     state = _ptz_state(request)
     body = await request.json()
     name = str(body.get("name") or "")
@@ -294,11 +276,9 @@ async def api_rename_camera(channel_index: int, request: Request) -> JSONRespons
 
 @app.get("/api/channels/{channel_index}/available-buttons")
 async def api_available_channel_buttons(channel_index: int, request: Request) -> JSONResponse:
-    """Feature-Katalog des am Kanal verbundenen Kameramodells (`key -> Label`,
-    siehe `available_button_features()`) -- fuer das Zahnrad-Popover auf der
-    Übersicht-Seite (Nutzerauftrag 2026-07-18: Funktion direkt dort waehlen
-    koennen, ohne auf die Setup-Seite wechseln zu muessen). Leer, wenn der
-    Kanal keine (verbundene) Kamera hat."""
+    """Feature catalog of the channel's connected camera model (`key ->
+    label`), for the gear popover on the overview page. Empty if the
+    channel has no (connected) camera."""
     state = _ptz_state(request)
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
@@ -330,9 +310,8 @@ async def api_trigger_channel_button(channel_index: int, button_slot: str, reque
 
 @app.post("/api/channels/{channel_index}/encoder/select")
 async def api_select_encoder_function(channel_index: int, request: Request) -> JSONResponse:
-    """Web-UI-Aequivalent zu Button 1 (physisch Rec) am X-Touch Extender:
-    schaltet die Encoder-Funktion des Kanals lokal weiter (Spec §9,
-    Nutzerentscheid: Drehregler soll auch im Browser bedienbar sein)."""
+    """Web UI equivalent of button 1 (Rec) on the X-Touch Extender: cycles
+    the channel's encoder function locally."""
     state = _ptz_state(request)
     function_name = await cycle_encoder_function(state, channel_index)
     return JSONResponse({"function": function_name})
@@ -340,9 +319,8 @@ async def api_select_encoder_function(channel_index: int, request: Request) -> J
 
 @app.post("/api/companion/config")
 async def api_configure_companion(request: Request) -> JSONResponse:
-    """Globale Bitfocus-Companion-Instanz (eine für alle Kanäle,
-    Nutzerentscheid) -- Setup-Panel an der Stelle des ehemaligen "Camera
-    Status"-Blocks."""
+    """Configures the single global Bitfocus Companion instance shared
+    across all channels."""
     state = _ptz_state(request)
     body = await request.json()
     host = str(body.get("host") or "").strip()
@@ -355,16 +333,16 @@ async def api_configure_companion(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": f"Unter {host}:{port} ist kein Server erreichbar"}, status_code=502
         )
-    # host leer (Disconnect) -> nicht verbunden; host gesetzt -> Erreichbarkeit
-    # wurde oben bereits bestaetigt (sonst waere die Route schon zurueckgekehrt).
+    # Empty host (disconnect) -> not connected; a set host had its
+    # reachability confirmed above already.
     await configure_companion(state, host, port, connected=bool(host))
     return JSONResponse({"ok": True})
 
 
 @app.post("/api/channels/{channel_index}/companion")
 async def api_assign_channel_companion(channel_index: int, request: Request) -> JSONResponse:
-    """SELECT-Button-Ziel (Companion Page/Row/Column) eines Kanals, siehe
-    assign_channel_companion_target(). Leere Werte löschen die Zuordnung."""
+    """A channel's SELECT button target (Companion page/row/column), see
+    assign_channel_companion_target(). Empty values clear the assignment."""
     state = _ptz_state(request)
     body = await request.json()
 
@@ -411,10 +389,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 final = bool(message.get("final", False))
                 await apply_iris(state, channel_index, value, final=final)
             elif message.get("type") == "encoder_turn":
-                # `apply_encoder_turn` publiziert bewusst kein EventBus-Event
-                # (sonst wuerde jeder Dreh-Tick auch bei MIDI einen vollen
-                # 8-Strip-Scribble-Refresh ausloesen, siehe midi/fader.py) --
-                # daher hier direkt an alle WS-Clients broadcasten.
+                # apply_encoder_turn() publishes no event bus event (that
+                # would trigger a full scribble-strip refresh on MIDI too),
+                # so broadcast to WS clients directly here.
                 channel_index = int(message["channel"])
                 delta = int(message["delta"])
                 await apply_encoder_turn(state, channel_index, delta)

@@ -1,9 +1,7 @@
 html {
     font-size: 14px;
-    /* Vertikale Scrollleiste reserviert immer Platz, auch wenn der Inhalt
-       (z. B. Config/Logs) nicht scrollt -- sonst springt die verfuegbare
-       Breite je nach Seite (Setup/Uebersicht scrollen fast immer, Config/
-       Logs meist nicht). */
+    /* Always reserve space for the vertical scrollbar, even on pages that
+       don't scroll, so the available width doesn't jump between pages. */
     scrollbar-gutter: stable;
 }
 
@@ -190,13 +188,6 @@ body::before {
     font-weight: 700;
     text-transform: uppercase;
     font-size: 0.72rem;
-}
-
-.grid-2 {
-    display: grid;
-    gap: 16px;
-    margin-bottom: 22px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .panel {
@@ -409,7 +400,7 @@ button:last-child {
     box-shadow: 0 4px 12px rgba(47, 191, 106, 0.3);
 }
 
-/* --- Hardware-nahe Surface-Ansicht (MIDI-Kanalzug) --- */
+/* --- Hardware-style surface view (MIDI channel strip) --- */
 
 .chassis {
     display: grid;
@@ -498,9 +489,8 @@ button:last-child {
     transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-/* Rotes Feedback, solange der per Encoder-Push gespeicherte Gain-/
-   Pedestal-Wert seit dem letzten Dreh-Tick unveraendert ist (Nutzerentscheid,
-   siehe commit_encoder_value()/apply_encoder_turn() in core/application.py). */
+/* Red feedback while the encoder-push-saved gain/pedestal value is
+   unchanged since the last turn tick. */
 .scribble-strip.is-saved {
     background: #2e0a0a;
     border-color: rgba(226, 62, 62, 0.65);
@@ -693,10 +683,6 @@ button:last-child {
 
 @media (max-width: 860px) {
 
-    .grid-2 {
-        grid-template-columns: 1fr;
-    }
-
     .chassis {
         grid-template-columns: repeat(4, minmax(0, 1fr));
     }
@@ -708,10 +694,9 @@ button:last-child {
     }
 }
 
-/* Startup-Dialog "Load previous config"/"Start new config" (Nutzerauftrag
-   2026-07-23) -- Overlay liegt außerhalb von .app-shell (siehe base.html),
-   damit es dessen Grauwert unten überlagert statt selbst mitgedimmt zu
-   werden. */
+/* Startup dialog ("Load previous config"/"Start new config") -- the overlay
+   sits outside .app-shell (see base.html) so it overlays the dimmed state
+   below rather than being dimmed itself. */
 .startup-overlay {
     position: fixed;
     inset: 0;
@@ -750,9 +735,8 @@ button:last-child {
     justify-content: center;
 }
 
-/* Web-UI im Hintergrund "grau", waehrend der Startup-Dialog offen ist --
-   sichtbar, aber nicht bedienbar (Nutzerauftrag: "web ui in the background
-   but grayed out" statt eines rein nativen Dialogs). */
+/* Web UI grayed out in the background while the startup dialog is open --
+   visible but not interactive. */
 .app-shell.is-dimmed {
     filter: grayscale(1) brightness(0.55);
     pointer-events: none;

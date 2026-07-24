@@ -1,18 +1,11 @@
-"""drivers/panasonic_models/registry.py -- Modell-Registry (Spec §9a).
+"""drivers/panasonic_models/registry.py -- Camera model registry.
 
-Laedt beim ersten Zugriff alle Module aus `drivers/panasonic_models/` (ausser
-sich selbst) und indiziert sie nach `CAMERA_ID` (+ optionalen
-`CAMERA_ID_ALIASES`). `PanasonicAWDriver.connect()` ruft `resolve_model()`
-mit dem per `QID` erkannten Modell-String auf, um das passende
-BUTTON_FEATURES/BUTTON_FEATURE_LABELS-Modul zu finden -- unbekannte Modelle
-liefern `None` (kein erfundener Fallback), der Treiber zeigt dann einfach
-keine Button-Features an (siehe `available_button_features()` in
-core/application.py, bereits tolerant gegenueber fehlendem Katalog).
-
-Angelehnt an `C:\\smart_reset_work\\core\\registry.py`s `PluginRegistry`, aber
-ohne dessen Transport-Registry-Haelfte -- PTZ_Control hat nur einen Treiber
-(`PanasonicAWDriver`), der alle diese Modelle ueber denselben CGI-Mechanismus
-anspricht, es gibt kein Pendant zu deren protocol-spezifischen Transports.
+Loads every module in `drivers/panasonic_models/` (except itself) on first
+access and indexes them by `CAMERA_ID` (plus optional `CAMERA_ID_ALIASES`).
+`PanasonicAWDriver.connect()` calls `resolve_model()` with the model string
+detected via `QID` to find the matching BUTTON_FEATURES/
+BUTTON_FEATURE_LABELS module -- unknown models return `None`, and the
+driver simply shows no button features.
 """
 
 from __future__ import annotations
@@ -46,9 +39,6 @@ class ModelRegistry:
             return None
         return self._models.get(camera_id)
 
-    def registered_camera_ids(self) -> list[str]:
-        return sorted({getattr(m, "CAMERA_ID", "") for m in self._models.values() if getattr(m, "CAMERA_ID", "")})
-
     def load_package(self, package_name: str = _PACKAGE_NAME) -> int:
         package = importlib.import_module(package_name)
         loaded = 0
@@ -58,7 +48,7 @@ class ModelRegistry:
             full_name = f"{package_name}.{info.name}"
             try:
                 module = importlib.import_module(full_name)
-            except Exception as exc:  # pragma: no cover - defensive, siehe PluginRegistry-Vorbild
+            except Exception as exc:  # pragma: no cover - defensive
                 LOGGER.error("Konnte '%s' nicht importieren: %s", full_name, exc)
                 continue
             self.register(module)
@@ -70,8 +60,7 @@ _registry: ModelRegistry | None = None
 
 
 def get_registry() -> ModelRegistry:
-    """Lazy Singleton -- einmalig befuellt, danach nur gelesen (kein Lock noetig,
-    analog zum Vorbild)."""
+    """Lazy singleton -- populated once, then read-only."""
     global _registry
     if _registry is None:
         _registry = ModelRegistry()

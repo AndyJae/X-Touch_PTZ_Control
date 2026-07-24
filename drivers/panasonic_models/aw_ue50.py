@@ -1,8 +1,6 @@
 """drivers/panasonic_models/aw_ue50.py -- Panasonic AW-UE50.
 
-Gleicher Befehlssatz wie AW-UE80 (siehe `aw_ue80.py`) -- nur CAMERA_ID/
-DISPLAY_NAME unterscheiden sich, analog zu
-`C:\\smart_reset_work\\camera_plugins\\panasonic\\aw_ue50.py`.
+Same command set as AW-UE80 (see `aw_ue80.py`) -- only CAMERA_ID differs.
 """
 
 from drivers.panasonic_models.aw_ue80 import (  # noqa: F401
@@ -25,4 +23,3 @@ from drivers.panasonic_models.aw_ue80 import (  # noqa: F401
 )
 
 CAMERA_ID = "AW-UE50"
-DISPLAY_NAME = "Panasonic AW-UE50"

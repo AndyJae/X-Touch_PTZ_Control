@@ -1,42 +1,13 @@
 """drivers/panasonic_models/aw_hr140.py -- Panasonic AW-HR140.
 
-Portiert aus `C:\\smart_reset_work\\camera_plugins\\panasonic\\aw_hr140.py`s
-UI_BUTTONS/UI_BUTTON_LABELS (identisch zu AW-HE120/HE130, aber als eigenes
-Modell/eigene Datei gefuehrt, analog zur Quelle).
-
-Gain/Pedestal (`HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/
-§3.2.14, gilt fuer "AW-HR140/AW-UE150"): Gain kontinuierlich 0-42dB (OGU
-08h=0dB .. 32h=42dB, 1dB-Schritte); Pedestal ueber `OTP`/`QTP`, Bereich
--150..+150, Data = 0x96 + Wert -- gleiche Pedestal-Familie wie AW-HE120/
-AW-HE130 (NICHT die `OSJ:0F`-Familie von AW-UE150 -- diese Tabelle listet
-HR140 nur beim Gain gemeinsam mit UE150, beim Pedestal aber separat bei der
-OTP-Gruppe).
-
-DRS/Knee-Korrektur (2026-07-18, dieselbe PDF, §3.2.30 "Knee settings" +
-DRS-Tabelle): `drs` hat 4 gueltige Werte (0=Off/1=Low/2=Mid/3=High); `knee`
-(`OSA:2D`) ist laut §3.2.30 explizit "Only supported by the AW-HE130/
-AW-HR140/AW-UE150/AK-UB300" -- fuer AW-HR140 also korrekt vorhanden, mit
-3 gueltigen Werten (0=OFF/1=MANUAL/2=AUTO). Beide als je ein Toggle pro
-Zielzustand (`drs_low`/`drs_mid`/`drs_high`, `knee_manual`/`knee_auto`)
-statt eigener "cycle"-Features (Nutzerentscheid 2026-07-18, siehe
-drivers/panasonic_aw.py-Klassendocstring).
-
-Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
-(`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`), `knee_manual`/
-`knee_auto` (`QSA:2D`), `osd` (`QUS`) und `white_clip` (`QSA:2E`) -- alle
-direkt in der o. g. PDF als Request/Response-Paar verifiziert.
-
-Bewusst KEIN SUPPORTS_IRIS_F_NUMBER (2026-07-23, PDF-Pruefung, siehe
-drivers/panasonic_aw.py::_F_NUMBER_DATA_MIN): dieselbe PDF nennt "Iris F
-value" (`QIF`/`OIF`) explizit "Only supported by the AK-UB300/AW-UE150" --
-trotz sonst gleicher Knee-/White-Clip-Gruppe wird AW-HR140 dort NICHT
-genannt, `query_f_number()` fragt fuer dieses Modell deshalb gar nicht
-erst an.
+Pedestal uses `OTP`/`QTP` (range -150..+150, same family as AW-HE120/
+AW-HE130 -- not AW-UE150's `OSJ:0F` family, despite sharing its gain range).
+`knee` has 3 valid values (Off/Manual/Auto), modeled as one toggle per
+target state. No iris-F-number support.
 """
 
 CAMERA_ID = "AW-HR140"
 CAMERA_ID_ALIASES = ["AW-HR140E", "AW-HR140N"]
-DISPLAY_NAME = "Panasonic AW-HR140"
 
 GAIN_MIN_DB = 0
 GAIN_MAX_DB = 42
@@ -50,10 +21,8 @@ PEDESTAL_CENTER_DATA = 0x96
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
-# ND-Filter (OFT/QFT), `HDIntegratedCamera_InterfaceSpecifications-E.pdf`
-# §3.2.1.4, Gruppe "AW-HE130/AW-HR140": NUR drei gueltige Werte (0/3/4),
-# Data 1/2 existieren fuer diese Gruppe nicht -- Reihenfolge der Liste
-# entspricht der Durchdreh-Reihenfolge (kein einfacher 0..3-Bereich).
+# ND filter (OFT/QFT): only three valid values (0/3/4) for this group,
+# data 1/2 don't exist.
 ND_FILTER_OPTIONS: list[tuple[int, str]] = [
     (0, "THROUGH"),
     (3, "1/64"),

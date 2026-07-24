@@ -9,83 +9,23 @@ class CameraState:
     iris_f_number: str | None = None
     auto_iris: bool | None = None
     gain_db: int | None = None
-    # `None` = unbekannt/nicht gelesen, `True` = Auto/AGC aktiv (Data=0x80,
-    # Nutzerauftrag 2026-07-20, live gegen AW-UE160 UND AW-UE100 bestaetigt --
-    # ein regulaerer dritter Gain-Zustand, kein Fehler), `False` = manueller
-    # Modus (`gain_db` gueltig). Siehe drivers/panasonic_aw.py::step_gain().
+    # None = unknown, True = Auto/AGC active, False = manual mode (gain_db valid).
     gain_auto: bool | None = None
     pedestal: int | None = None
     nd_index: int | None = None
-    bars: bool | None = None
     error: str | None = None
-    # Feature-Button-Zustand (Spec §9a), Schlüssel = Feature-Key aus
-    # PanasonicAWDriver.BUTTON_FEATURES: bool für Toggles (seit 2026-07-18
-    # der einzige Feature-Typ auf Button 2/3, siehe dortiger Kommentar --
-    # `int` bleibt im Typ, weil ältere/gespeicherte Zustände theoretisch
-    # noch einen Cycle-Index enthalten könnten). NICHT kamera-verifiziert --
-    # die zugrundeliegenden Kommandos haben keine Query-Gegenstücke (auch in
-    # der Referenzquelle smart-reset-browser nicht), Zustand ist rein lokal
-    # getrackt und geht bei Reconnect/Neustart auf den Default (nicht
-    # gesetzt) zurück.
+    # Toggle-button feature state, keyed by feature key from
+    # PanasonicAWDriver.BUTTON_FEATURES. Tracked locally only (no query
+    # command exists for these), resets on reconnect/restart.
     feature_states: dict[str, bool | int] = field(default_factory=dict)
-
-
-@dataclass
-class ChannelState:
-    channel_index: int
-    name: str = ""
-    camera_id: str | None = None
-    function: str = "iris"
-    value: float = 0.0
-    touch_active: bool = False
-    last_source: str = "unknown"
-    button_states: dict[str, bool] = field(default_factory=dict)
 
 
 class StateStore:
     def __init__(self) -> None:
         self._camera_states: dict[str, CameraState] = {}
-        self._channel_states: dict[int, ChannelState] = {}
 
     def get_camera(self, camera_id: str) -> CameraState:
         return self._camera_states.setdefault(camera_id, CameraState())
 
     def set_camera(self, camera_id: str, state: CameraState) -> None:
         self._camera_states[camera_id] = state
-
-    def get_channel(self, channel_index: int) -> ChannelState:
-        return self._channel_states.setdefault(channel_index, ChannelState(channel_index=channel_index))
-
-    def update_channel(
-        self,
-        channel_index: int,
-        *,
-        value: float | None = None,
-        camera_id: str | None = None,
-        function: str | None = None,
-        name: str | None = None,
-        touch_active: bool | None = None,
-        source: str = "system",
-        button_states: dict[str, bool] | None = None,
-    ) -> ChannelState:
-        channel = self.get_channel(channel_index)
-        if value is not None:
-            channel.value = value
-        if camera_id is not None:
-            channel.camera_id = camera_id
-        if function is not None:
-            channel.function = function
-        if name is not None:
-            channel.name = name
-        if touch_active is not None:
-            channel.touch_active = touch_active
-        if button_states is not None:
-            channel.button_states = button_states
-        channel.last_source = source
-        return channel
-
-    def snapshot(self) -> dict[str, object]:
-        return {
-            "channels": {index: vars(state) for index, state in sorted(self._channel_states.items())},
-            "cameras": {camera_id: vars(state) for camera_id, state in self._camera_states.items()},
-        }

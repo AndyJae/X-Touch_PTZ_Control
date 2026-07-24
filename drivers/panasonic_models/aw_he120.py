@@ -1,48 +1,12 @@
 """drivers/panasonic_models/aw_he120.py -- Panasonic AW-HE120.
 
-Portiert aus `C:\\smart_reset_work\\camera_plugins\\panasonic\\aw_he120.py`s
-UI_BUTTONS/UI_BUTTON_LABELS.
-
-Gain/Pedestal (`HDIntegratedCamera_InterfaceSpecifications-E.pdf` §3.2.6/
-§3.2.14): Gain kontinuierlich 0-18dB (OGU 08h=0dB .. 1Ah=18dB, 1dB-Schritte);
-Pedestal ueber `OTP`/`QTP` wie bei HE50/HE60, aber eigene Formel/Bereich
--150..+150, Data = 0x96 + Wert (Ankerpunkte 000h=-150/096h=0/12Ch=+150) --
-gleiche Pedestal-Familie wie AW-HE130/AW-HR140.
-
-DRS/Knee-Korrektur (2026-07-18, dieselbe PDF, §3.2.30 "Knee settings" +
-DRS-Tabelle): `drs` hat 4 gueltige Werte (0=Off/1=Low/2=Mid/3=High, Tabelle
-fuer "AW-HE120/AW-HE130/AW-HR140/AW-UE150") -- als je ein Toggle pro
-Zielzustand (`drs_low`/`drs_mid`/`drs_high`) statt einem "cycle"-Feature
-(Nutzerentscheid 2026-07-18, siehe drivers/panasonic_aw.py-Klassendocstring).
-`knee` (`OSA:2D`) wurde bisher faelschlich als Toggle gefuehrt (aus
-smart_reset_work, dort nicht gegen diese PDF geprueft) -- laut §3.2.30 ist
-Knee Mode aber explizit **"Only supported by the AW-HE130/AW-HR140/
-AW-UE150/AK-UB300"**, AW-HE120 wird dort NICHT genannt. Der Eintrag wurde
-deshalb komplett entfernt (kein erfundenes/falsches Feature).
-
-Query-Ergaenzung (2026-07-18): `query`/`query_on_value` bei `auto_focus`
-(`QAF`), `drs_low`/`drs_mid`/`drs_high` (`QSE:33`) und `osd` (`QUS`) --
-alle drei direkt in der o. g. PDF als Request/Response-Paar verifiziert.
-
-White-Clip-Korrektur (2026-07-18, Rest-Katalog-Pruefung): `white_clip`
-(`OSA:2E`) wurde bisher faelschlich gefuehrt (aus smart_reset_work, dort
-nicht gegen diese PDF geprueft) -- §3.2.31 "White Clip settings" ist aber
-explizit **"Only supported by the AW-HE130/AW-HR140/AW-UE150"**, AW-HE120
-wird dort NICHT genannt. Der Eintrag wurde deshalb komplett entfernt
-(kein erfundenes/falsches Feature) -- exakt dieselbe Art Fehler wie zuvor
-bei `knee` (siehe oben).
-
-Bewusst KEIN SUPPORTS_IRIS_F_NUMBER (2026-07-23, PDF-Pruefung, siehe
-drivers/panasonic_aw.py::_F_NUMBER_DATA_MIN): dieselbe PDF nennt "Iris F
-value" (`QIF`/`OIF`) explizit "Only supported by the AK-UB300/AW-UE150" --
-AW-HE120 wird dort nicht genannt (gleiches Muster wie bei `knee`/
-`white_clip` oben), `query_f_number()` fragt fuer dieses Modell deshalb gar
-nicht erst an.
+Pedestal uses `OTP`/`QTP` (range -150..+150, same family as AW-HE130/
+AW-HR140). No `knee`/`white_clip`/iris-F-number support -- those are
+documented as exclusive to AW-HE130/AW-HR140/AW-UE150(/AK-UB300).
 """
 
 CAMERA_ID = "AW-HE120"
 CAMERA_ID_ALIASES = ["AW-HE125", "AW-HE120W", "AW-HE120K"]
-DISPLAY_NAME = "Panasonic AW-HE120"
 
 GAIN_MIN_DB = 0
 GAIN_MAX_DB = 18
@@ -56,8 +20,7 @@ PEDESTAL_CENTER_DATA = 0x96
 PEDESTAL_SCALE = 1
 PEDESTAL_DATA_WIDTH = 3
 
-# ND-Filter (OFT/QFT), `HDIntegratedCamera_InterfaceSpecifications-E.pdf`
-# §3.2.1.4, Gruppe "AW-HE120/AW-UE150": 0-3 -> Through/1/4/1/16/1/64.
+# ND filter (OFT/QFT): data 0-3 -> Through/1/4/1/16/1/64.
 ND_FILTER_OPTIONS: list[tuple[int, str]] = [
     (0, "THROUGH"),
     (1, "1/4"),
