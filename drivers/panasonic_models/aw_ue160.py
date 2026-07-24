@@ -1,10 +1,14 @@
 """drivers/panasonic_models/aw_ue160.py -- Panasonic AW-UE160.
 
-Knee is modeled as two toggles (`knee_manual`/`knee_auto`) rather than a
-single cycling feature, since this camera needs two commands per target
-state (`OSL:45` arms knee, `OSA:2D` selects manual/auto). No query is
-provided for these two: the state depends on both commands together, and
-how they interact when `OSL:45` is off is undocumented.
+Knee needs two commands per target state (`OSL:45` arms knee, `OSA:2D`
+selects manual/auto). `knee_manual`/`knee_auto` are mutually exclusive
+toggles (`exclusive_with`, see core/application.py::apply_button_action())
+-- turning one on turns the other off locally, since the camera only has
+one active knee mode. They also share the `OSL:45:1` arm command in their
+"on" list; `_match_toggle_feature()` in drivers/panasonic_aw.py treats a
+command shared across multiple features' "on" list as ambiguous and skips
+it, relying on the other, distinguishing command (`OSA:2D:1`/`OSA:2D:2`) to
+identify which one actually turned on.
 """
 
 CAMERA_ID = "AW-UE160"
@@ -37,8 +41,14 @@ BUTTON_FEATURES: dict[str, dict] = {
     "drs": {"kind": "toggle", "on": "OSA:0D:1", "off": "OSA:0D:0", "query": "QSA:0D", "query_on_value": "1"},
     "flare": {"kind": "toggle", "on": "OSA:11:1", "off": "OSA:11:0", "query": "QSA:11", "query_on_value": "1"},
     "gamma": {"kind": "toggle", "on": "OSA:0A:1", "off": "OSA:0A:0", "query": "QSA:0A", "query_on_value": "1"},
-    "knee_manual": {"kind": "toggle", "on": ["OSL:45:1", "OSA:2D:1"], "off": "OSL:45:0"},
-    "knee_auto": {"kind": "toggle", "on": ["OSL:45:1", "OSA:2D:2"], "off": "OSL:45:0"},
+    "knee_manual": {
+        "kind": "toggle", "on": ["OSL:45:1", "OSA:2D:1"], "off": "OSL:45:0",
+        "exclusive_with": ["knee_auto"],
+    },
+    "knee_auto": {
+        "kind": "toggle", "on": ["OSL:45:1", "OSA:2D:2"], "off": "OSL:45:0",
+        "exclusive_with": ["knee_manual"],
+    },
     "linear_matrix": {"kind": "toggle", "on": "OSL:6C:1", "off": "OSL:6C:0", "query": "QSL:6C", "query_on_value": "1"},
     "matrix": {"kind": "toggle", "on": "OSA:84:1", "off": "OSA:84:0", "query": "QSA:84", "query_on_value": "1"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},

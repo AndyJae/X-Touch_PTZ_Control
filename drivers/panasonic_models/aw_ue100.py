@@ -1,8 +1,9 @@
 """drivers/panasonic_models/aw_ue100.py -- Panasonic AW-UE100.
 
 Gain maximum is coupled to "Super Gain" (`OSI:28`, not exposed as its own
-button feature): 36dB while off, 42dB while on. `drs`/`knee` are modeled as
-one toggle per target state rather than a cycling feature.
+button feature): 36dB while off, 42dB while on. `drs` is modeled as one
+toggle per target state. `knee_manual`/`knee_auto` are mutually exclusive
+toggles (`exclusive_with`, see core/application.py::apply_button_action()).
 """
 
 CAMERA_ID = "AW-UE100"
@@ -38,8 +39,14 @@ BUTTON_FEATURES: dict[str, dict] = {
     "drs_low": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "1"},
     "drs_mid": {"kind": "toggle", "on": "OSE:33:2", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "2"},
     "drs_high": {"kind": "toggle", "on": "OSE:33:3", "off": "OSE:33:0", "query": "QSE:33", "query_on_value": "3"},
-    "knee_manual": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "1"},
-    "knee_auto": {"kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "2"},
+    "knee_manual": {
+        "kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0",
+        "query": "QSA:2D", "query_on_value": "1", "exclusive_with": ["knee_auto"],
+    },
+    "knee_auto": {
+        "kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0",
+        "query": "QSA:2D", "query_on_value": "2", "exclusive_with": ["knee_manual"],
+    },
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
     "white_clip": {"kind": "toggle", "on": "OSA:2E:1", "off": "OSA:2E:0", "query": "QSA:2E", "query_on_value": "1"},
 }

@@ -119,20 +119,39 @@ def _decode_gain_data(data: int) -> tuple[int | None, bool]:
     return data - _GAIN_ZERO_DB_DATA, False
 
 
-def _match_toggle_feature(body: str, features: dict[str, dict]) -> tuple[str, bool] | None:
+def _match_toggle_feature(body: str, features: dict[str, dict]) -> list[tuple[str, bool]]:
     """Matches an update-notification payload (the same command string as
-    sent) against a toggle feature in `BUTTON_FEATURES` by comparing `body`
-    to each known `on`/`off` command. No match -> `None`."""
+    sent) against toggle features in `BUTTON_FEATURES` by comparing `body`
+    to each known `on`/`off` command.
+
+    A command can be shared by more than one feature (e.g. AW-UE160's
+    `knee_manual`/`knee_auto` both send `OSL:45:1` as part of their "on"
+    sequence, since a single physical command arms knee mode before a
+    second command picks manual/auto). If `body` matches more than one
+    feature's "on" list, which one actually turned on can't be determined
+    from this command alone, so no "on" event fires for it -- the other,
+    distinguishing command in the sequence fires on its own. A shared "off"
+    match is unambiguous (every feature that maps to it really did turn
+    off) and fires for all of them."""
+    on_matches: list[str] = []
+    off_matches: list[str] = []
     for key, feature in features.items():
         if feature.get("kind") != "toggle":
             continue
-        for enabled, commands in ((True, feature.get("on")), (False, feature.get("off"))):
-            if commands is None:
-                continue
-            command_list = commands if isinstance(commands, list) else [commands]
-            if body in command_list:
-                return key, enabled
-    return None
+        on_commands = feature.get("on")
+        if on_commands is not None:
+            on_list = on_commands if isinstance(on_commands, list) else [on_commands]
+            if body in on_list:
+                on_matches.append(key)
+        off_commands = feature.get("off")
+        if off_commands is not None:
+            off_list = off_commands if isinstance(off_commands, list) else [off_commands]
+            if body in off_list:
+                off_matches.append(key)
+    results = [(key, False) for key in off_matches]
+    if len(on_matches) == 1:
+        results.append((on_matches[0], True))
+    return results
 
 
 class PanasonicAWDriver(CameraDriver):
@@ -341,11 +360,11 @@ class PanasonicAWDriver(CameraDriver):
             for callback in self._callbacks:
                 callback({"type": "iris_changed", "value": iris})
             return
-        toggle_match = _match_toggle_feature(body, self.BUTTON_FEATURES)
-        if toggle_match is not None:
-            key, enabled = toggle_match
-            for callback in self._callbacks:
-                callback({"type": "feature_changed", "key": key, "enabled": enabled})
+        toggle_matches = _match_toggle_feature(body, self.BUTTON_FEATURES)
+        if toggle_matches:
+            for key, enabled in toggle_matches:
+                for callback in self._callbacks:
+                    callback({"type": "feature_changed", "key": key, "enabled": enabled})
             return
         if body.startswith("OGU:"):
             value = _extract_value(body)
@@ -553,11 +572,11 @@ class PanasonicAWDriver(CameraDriver):
         `auto_iris` delegates to the existing typed method to avoid
         duplicating command logic.
 
-        `feature["on"]`/`feature["off"]` are usually a single command
-        string, but can also be a list: multi-value camera parameters like
-        knee/DRS are modeled as one toggle per target state (e.g. AW-UE160's
-        "Knee: Auto" needs two commands, `OSL:45:1` and `OSA:2D:2`, in that
-        order)."""
+        `feature["on"]`/`feature["off"]`/`feature["cmd"]` are usually a
+        single command string, but can also be a list: multi-value camera
+        parameters like knee need more than one command for a single target
+        state (e.g. AW-UE160's "Knee: Auto" sends `OSL:45:1` then
+        `OSA:2D:2`, in that order)."""
         if key == "auto_iris":
             if enabled is None:
                 raise ValueError("'auto_iris' ist ein Toggle, 'enabled' erforderlich")
@@ -570,14 +589,14 @@ class PanasonicAWDriver(CameraDriver):
             if enabled is None:
                 raise ValueError(f"{key!r} ist ein Toggle, 'enabled' erforderlich")
             commands = feature["on"] if enabled else feature["off"]
-            if isinstance(commands, str):
-                commands = [commands]
-            for cmd in commands:
-                await self._request("aw_cam", cmd)
         elif feature["kind"] == "trigger":
-            await self._request("aw_cam", feature["cmd"])
+            commands = feature["cmd"]
         else:
             raise ValueError(f"{key!r}: unbekannte Feature-Art {feature['kind']!r}")
+        if isinstance(commands, str):
+            commands = [commands]
+        for cmd in commands:
+            await self._request("aw_cam", cmd)
 
     async def query_button_feature(self, key: str) -> bool | None:
         """Queries the current state of a toggle button feature.

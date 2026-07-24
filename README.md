@@ -66,8 +66,11 @@ model-specific features.
    `config.yaml` is treated the same as the example, and the app creates
    one as soon as you save anything).
 4. Start the app: `python main.py` — the web UI opens automatically at
-   `http://127.0.0.1:8600/`. It also adds an icon to the system tray
-   (right-click it to quit).
+   `http://127.0.0.1:8600/`. It also adds an icon to the system tray and
+   keeps running there. Closing the browser tab/window does **not** stop
+   the app — click the tray icon (or right-click it and choose **Open**) to
+   reopen the web UI, and right-click it and choose **Quit** to actually
+   shut the app down.
 5. Open **Setup** and register a camera per channel (name, IP, port), then
    click **Connect Camera**.
 6. The X-Touch Extender is picked up automatically if it's connected;
@@ -87,6 +90,23 @@ See `config.example.yaml` for the full schema with comments.
 
 `config.yaml` is not committed to this repository (it holds your camera
 IPs and other local details) — start from `config.example.yaml` instead.
+
+## Building a standalone exe
+
+The steps above run the app from source with `python main.py`. To build a
+single portable `.exe` that doesn't need a Python install:
+
+```
+pip install -r requirements.txt
+pip install pyinstaller
+pyinstaller main.spec
+```
+
+This produces `dist/X-Touch PTZ Control.exe` — a single file with the
+Python runtime, all dependencies, the web UI assets, and the tray icon
+bundled in. Copy it wherever you like; `config.yaml` is created next to it
+on first save, same as running from source. It's built windowed (no
+console) — if it fails to start, check `ptz_control.log` next to the exe.
 
 ## How it works
 

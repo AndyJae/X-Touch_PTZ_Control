@@ -8,17 +8,31 @@ import threading
 import time
 import webbrowser
 
+# A windowed (console=False) PyInstaller build has no console attached, so
+# sys.stdout/sys.stderr are None or a non-functional stream -- logging (and
+# any bare print()) would crash trying to write to them. Redirect to a log
+# file next to the exe before anything else runs.
+if getattr(sys, "frozen", False):
+    try:
+        _log_path = os.path.join(os.path.dirname(sys.executable), "ptz_control.log")
+        _log_file = open(_log_path, "a", encoding="utf-8", buffering=1)
+        sys.stdout = _log_file
+        sys.stderr = _log_file
+    except OSError:
+        pass
+
 import pystray
 import uvicorn
 from PIL import Image
 
 from core.config import ConfigError, load_config
+from core.paths import resource_dir
 from web.app import app
 
 LOGGER = logging.getLogger("ptz_control")
 
 _MUTEX_NAME = "Global\\PTZControlApp_SingleInstance"
-_ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Images", "Icon.ico")
+_ICON_PATH = str(resource_dir() / "Images" / "Icon.ico")
 # Safety net for the browser-open poll below -- well above the worst-case
 # lifespan startup time with several unreachable cameras.
 _BROWSER_OPEN_TIMEOUT = 30.0

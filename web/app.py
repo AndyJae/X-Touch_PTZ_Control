@@ -42,11 +42,12 @@ from core.application import (
 from core.companion import CompanionError, is_reachable
 from core.config import load_config
 from core.log_buffer import LOG_BUFFER
+from core.paths import app_dir, resource_dir
 from midi.fader import XTouchFader
 
 LOGGER = logging.getLogger("ptz_control.web")
 
-_CONFIG_PATH = "config.yaml"
+_CONFIG_PATH = str(app_dir() / "config.yaml")
 
 # Real X-Touch Extender ports are named "X-Touch-Ext 0"/"X-Touch-Ext 1" --
 # used as the auto-detection default when config.yaml doesn't specify a port.
@@ -129,9 +130,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="X-Touch PTZ Control", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory="web/static"), name="static")
+app.mount("/static", StaticFiles(directory=str(resource_dir() / "web" / "static")), name="static")
 
-templates = Jinja2Templates(directory="web/templates")
+templates = Jinja2Templates(directory=str(resource_dir() / "web" / "templates"))
 
 
 def _ptz_state(request: Request) -> AppState:

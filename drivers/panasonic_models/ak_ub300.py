@@ -34,8 +34,14 @@ ND_FILTER_OPTIONS: list[tuple[int, str]] = [
 BUTTON_FEATURES: dict[str, dict] = {
     "auto_iris": {"kind": "toggle", "on": "ORS:1", "off": "ORS:0"},
     "drs": {"kind": "toggle", "on": "OSE:33:1", "off": "OSE:33:0"},
-    "knee_manual": {"kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "1"},
-    "knee_auto": {"kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0", "query": "QSA:2D", "query_on_value": "2"},
+    "knee_manual": {
+        "kind": "toggle", "on": "OSA:2D:1", "off": "OSA:2D:0",
+        "query": "QSA:2D", "query_on_value": "1", "exclusive_with": ["knee_auto"],
+    },
+    "knee_auto": {
+        "kind": "toggle", "on": "OSA:2D:2", "off": "OSA:2D:0",
+        "query": "QSA:2D", "query_on_value": "2", "exclusive_with": ["knee_manual"],
+    },
     "super_gain": {"kind": "toggle", "on": "OSI:28:1", "off": "OSI:28:0"},
     "osd": {"kind": "toggle", "on": "DUS:1", "off": "DUS:0", "query": "QUS", "query_on_value": "1"},
 }

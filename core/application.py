@@ -180,7 +180,15 @@ def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -
                 # actual position change, not on every notification heartbeat.
                 asyncio.create_task(_refresh_f_number_from_notification(state, camera_id, driver))
         elif event_type == "feature_changed":
-            state.state_store.get_camera(camera_id).feature_states[event["key"]] = event["enabled"]
+            cam_state = state.state_store.get_camera(camera_id)
+            cam_state.feature_states[event["key"]] = event["enabled"]
+            if event["enabled"]:
+                # Externally triggered change (e.g. the camera's own web UI)
+                # -- keep exclusive_with siblings (see apply_button_action())
+                # in sync the same way a locally triggered change does.
+                feature = getattr(driver, "BUTTON_FEATURES", {}).get(event["key"], {})
+                for sibling in feature.get("exclusive_with", []):
+                    cam_state.feature_states[sibling] = False
             asyncio.create_task(
                 state.event_bus.publish("feature_changed", {"camera_id": camera_id, "key": event["key"]})
             )
@@ -917,7 +925,10 @@ async def apply_button_action(state: AppState, channel_index: int, button_slot: 
     Only "toggle"/"trigger" feature kinds exist: multi-value camera
     parameters (knee, DRS) are modeled as one toggle per target state
     rather than a cycling feature, since button 2/3 only have a single,
-    non-multicolor LED and can only show on/off."""
+    non-multicolor LED and can only show on/off. A toggle can list
+    `exclusive_with` sibling keys (e.g. AW-UE160's `knee_manual`/
+    `knee_auto`): turning one on locally clears the others, since the
+    camera only has one active state for the group."""
     if button_slot not in ("button2", "button3"):
         raise ValueError(f"ungültiger Button-Slot: {button_slot!r}")
     entry = state.mapping.get_channel("fader", channel_index)
@@ -940,6 +951,9 @@ async def apply_button_action(state: AppState, channel_index: int, button_slot: 
             new_enabled = not bool(cam_state.feature_states.get(feature_key, False))
             await driver.trigger_button_feature(feature_key, enabled=new_enabled)
             cam_state.feature_states[feature_key] = new_enabled
+            if new_enabled:
+                for sibling in feature.get("exclusive_with", []):
+                    cam_state.feature_states[sibling] = False
             if feature_key == "auto_iris":
                 # apply_iris()'s snapback logic checks cam_state.auto_iris,
                 # not feature_states, so it needs to be kept in sync here too.
