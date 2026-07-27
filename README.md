@@ -54,6 +54,14 @@ same but haven't been confirmed on real hardware.
 An unrecognized camera model still connects, just without any of the
 model-specific features.
 
+## Testing without a camera
+
+Don't have a Panasonic PTZ camera on hand? [Panasonic_PTZ_Emulator](https://github.com/AndyJae/Panasonic_PTZ_Emulator)
+simulates the same CGI protocol these cameras use — iris, gain, pedestal, ND
+filter, and per-model feature toggles included. Point this app at it
+(`127.0.0.1:8081` by default) instead of a real camera's IP and everything
+above works the same way.
+
 ## Quick start
 
 1. If you're using the physical X-Touch Extender, set it to **MC (Mackie
