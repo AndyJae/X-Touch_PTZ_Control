@@ -15,8 +15,10 @@ class CameraState:
     nd_index: int | None = None
     error: str | None = None
     # Toggle-button feature state, keyed by feature key from
-    # PanasonicAWDriver.BUTTON_FEATURES. Tracked locally only (no query
-    # command exists for these), resets on reconnect/restart.
+    # PanasonicAWDriver.BUTTON_FEATURES. Starts empty on every reconnect
+    # (get_state() returns a fresh CameraState) but core/application.py's
+    # connect_camera() re-queries it right away for any feature already
+    # assigned to a button2/button3 slot, via query_button_feature().
     feature_states: dict[str, bool | int] = field(default_factory=dict)
 
 

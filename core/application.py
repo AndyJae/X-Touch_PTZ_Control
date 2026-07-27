@@ -32,7 +32,7 @@ from core.config import (
 )
 from core.mapping import MappingEngine, build_mapping_from_config
 from core.ratelimit import RateLimiter
-from core.state import StateStore
+from core.state import CameraState, StateStore
 from drivers.base import CameraCommandError, CameraDriver
 from drivers.panasonic_aw import PanasonicAWDriver
 
@@ -235,6 +235,7 @@ async def connect_camera(state: AppState, camera_id: str) -> None:
             return
         full_state.error = None
         state.state_store.set_camera(camera_id, full_state)
+        await _resync_assigned_button_features(state, camera_id, driver, full_state)
         LOGGER.info("Kamera %s verbunden (Modell %s)", camera_id, driver.model)
         start_lens_feedback = getattr(driver, "start_lens_feedback", None)
         if start_lens_feedback is not None:
@@ -244,6 +245,37 @@ async def connect_camera(state: AppState, camera_id: str) -> None:
                 LOGGER.warning("Kamera %s: Lens-Info-Feedback fehlgeschlagen: %s", camera_id, exc)
     finally:
         await state.event_bus.publish("connection_changed", {"camera_id": camera_id})
+
+
+async def _resync_assigned_button_features(
+    state: AppState, camera_id: str, driver: CameraDriver, cam_state: CameraState
+) -> None:
+    """Queries the real state of any button2/button3 feature already
+    assigned to this camera's channel (persisted from a previous session's
+    config.yaml) right after connect, so the web UI/LED reflects it
+    immediately -- `get_state()` returns a fresh `CameraState` with empty
+    `feature_states`, and assign_channel_button() only queries a feature at
+    the moment it's newly assigned, never again on a later reconnect."""
+    query_button_feature = getattr(driver, "query_button_feature", None)
+    if query_button_feature is None:
+        return
+    channel_index = next(
+        (
+            index
+            for index, mapping in state.mapping.channels_for_type("fader").items()
+            if mapping.camera_id == camera_id
+        ),
+        None,
+    )
+    if channel_index is None:
+        return
+    channel_cfg = _channel_config(state, channel_index)
+    if channel_cfg is None:
+        return
+    for feature_key in channel_cfg.buttons.values():
+        known_state = await query_button_feature(feature_key)
+        if known_state is not None:
+            cam_state.feature_states[feature_key] = known_state
 
 
 async def disconnect_camera(state: AppState, camera_id: str) -> None:
