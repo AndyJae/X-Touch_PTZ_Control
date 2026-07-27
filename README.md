@@ -204,7 +204,10 @@ reflects that. Contributions are very welcome, especially:
   larger contribution.
 - **Code quality, tests, and bug fixes** in general — the test suite isn't
   part of this repository, so bring or build your own test setup to verify
-  changes.
+  changes. For camera-facing changes, [Panasonic_PTZ_Emulator](https://github.com/AndyJae/Panasonic_PTZ_Emulator)
+  is a shared Panasonic CGI camera emulator built for this project and
+  [smart-reset-browser](https://github.com/AndyJae/smart-reset-browser) — a
+  way to test against a simulated camera without real hardware.
 - **Ideas for where this should go next** — open an issue if you have
   thoughts on scope or direction.
 
