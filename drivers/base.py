@@ -79,6 +79,16 @@ class CameraDriver(ABC):
         ...
 
     @abstractmethod
+    async def ping(self) -> None:
+        """Lightweight liveness probe -- a single cheap query, distinct
+        from `get_state()` (which fetches the full camera status).
+        Raises `CameraCommandError` and flips `connected` to `False` if the
+        camera is unreachable, same as any other command. Used by
+        `core.application.camera_liveness_loop()` to detect a camera going
+        silent without waiting for a user-triggered command to fail."""
+        ...
+
+    @abstractmethod
     async def query_f_number(self) -> str | None:
         """Current iris F-number (e.g. "F9.8", "CLOSE") -- callable
         separately from `get_state()` so a fader drag can refresh it live

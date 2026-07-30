@@ -42,7 +42,10 @@ class CompanionConfig(BaseModel):
 
 
 class BankChannelConfig(BaseModel):
-    camera: str
+    # `None` when the channel has no camera assigned but still holds a
+    # Companion SELECT target (see `companion` below) -- the entry then
+    # survives a camera disconnect instead of being dropped entirely.
+    camera: str | None = None
     # Feature key assigned to each button slot ("button2"/"button3" only --
     # button 1 is reserved for encoder function selection). Values are free
     # feature keys (e.g. "drs", "knee"), not validated against a fixed list
@@ -50,6 +53,11 @@ class BankChannelConfig(BaseModel):
     buttons: dict[str, str] = Field(default_factory=dict)
     # Companion SELECT target for this channel; optional.
     companion: CompanionTarget | None = None
+    # Display name for a channel with no camera assigned -- lets the Setup
+    # page name/label an empty channel. Once a camera is registered, the
+    # name lives on `CameraConfig.name` instead (see `register_camera()`);
+    # this field is only read as a fallback when `camera` is `None`.
+    name: str | None = None
 
     @model_validator(mode="after")
     def _check_button_slots(self) -> "BankChannelConfig":

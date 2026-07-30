@@ -85,6 +85,17 @@ class AppState:
     # one of the two web UI actions answers it, then False for the rest of
     # the process. Runtime-only, not persisted.
     startup_choice_pending: bool = True
+    # Last channel a SELECT press targeted (physical button or web UI),
+    # regardless of whether that channel has a Companion target assigned --
+    # shared so the physical LED and the web UI show the same state. Set in
+    # `trigger_companion_select()`.
+    last_select_channel: int | None = None
+    # Tracks which driver instance `_wire_camera_events()` last subscribed
+    # to, per camera_id -- `connect_camera()` runs on every (re)connect,
+    # including the auto-reconnect watchdog's repeated retries on the same
+    # still-existing driver, so without this a flaky camera would
+    # accumulate duplicate event handlers over a session.
+    wired_drivers: dict[str, CameraDriver] = field(default_factory=dict)
 
     async def broadcast(self, payload: dict) -> None:
         stale: list[WebSocket] = []
@@ -123,7 +134,7 @@ def _subscribe_snapshot_broadcast(state: AppState) -> None:
     """Broadcasts a full state snapshot to all WebSocket clients whenever a
     camera domain event fires (`iris_changed`, `connection_changed`,
     `error`, `feature_changed`, `config_changed`, `gain_changed`,
-    `pedestal_changed`, `nd_changed`)."""
+    `pedestal_changed`, `nd_changed`, `select_changed`)."""
 
     async def _on_camera_event(_payload: dict) -> None:
         await state.broadcast({"type": "snapshot", "channels": channel_snapshot(state)})
@@ -137,6 +148,7 @@ def _subscribe_snapshot_broadcast(state: AppState) -> None:
         "gain_changed",
         "pedestal_changed",
         "nd_changed",
+        "select_changed",
     ):
         state.event_bus.subscribe(topic, _on_camera_event)
 
@@ -151,6 +163,31 @@ def _channel_config(state: AppState, channel_index: int) -> BankChannelConfig | 
     return channels[channel_index - 1]
 
 
+def _ensure_bank_channel(state: AppState, channel_index: int) -> BankChannelConfig:
+    """Returns a channel's bank entry, creating an empty one (and the bank
+    itself, padded to 8 channels) on demand if this channel has never held
+    anything before -- lets Companion/name assignment work on a channel
+    with no camera, same pattern as `register_camera()`'s padding."""
+    if not state.config.banks:
+        state.config.banks = [BankConfig(name="Bank A", channels=[])]
+    channels = state.config.banks[0].channels
+    while len(channels) < 8:
+        channels.append(None)
+    if channels[channel_index - 1] is None:
+        channels[channel_index - 1] = BankChannelConfig()
+    return channels[channel_index - 1]
+
+
+def _drop_bank_channel_if_empty(state: AppState, channel_index: int) -> None:
+    """Resets the slot back to `None` if the entry no longer holds anything
+    (no camera, no button assignments, no Companion target, no name) --
+    avoids leaving an inert entry behind in `config.yaml`."""
+    channels = state.config.banks[0].channels
+    entry = channels[channel_index - 1]
+    if entry is not None and entry.camera is None and not entry.buttons and entry.companion is None and not entry.name:
+        channels[channel_index - 1] = None
+
+
 async def _refresh_f_number_from_notification(state: AppState, camera_id: str, driver: CameraDriver) -> None:
     """Re-queries just the F-number (`driver.query_f_number()`, not the full
     `get_state()`) and re-publishes `iris_changed` so the web UI snapshot
@@ -163,7 +200,17 @@ async def _refresh_f_number_from_notification(state: AppState, camera_id: str, d
 def _wire_camera_events(state: AppState, camera_id: str, driver: CameraDriver) -> None:
     """Bridges driver events (`subscribe()`, sync) onto the async event bus,
     so the web UI and MIDI motor fader also react to changes triggered
-    outside this app (e.g. the camera's own web UI)."""
+    outside this app (e.g. the camera's own web UI).
+
+    Only wires once per driver instance, checked via identity in
+    `state.wired_drivers` -- `connect_camera()` calls this on every
+    (re)connect, including repeated auto-reconnect attempts on the same
+    still-existing driver, which would otherwise stack duplicate handlers
+    on a flaky camera over a session. A genuinely new driver instance (a
+    fresh `register_camera()` call) always gets wired fresh."""
+    if state.wired_drivers.get(camera_id) is driver:
+        return
+    state.wired_drivers[camera_id] = driver
 
     def on_event(event: dict) -> None:
         event_type = event.get("type")
@@ -244,6 +291,11 @@ async def connect_camera(state: AppState, camera_id: str) -> None:
             except CameraCommandError as exc:
                 LOGGER.warning("Kamera %s: Lens-Info-Feedback fehlgeschlagen: %s", camera_id, exc)
     finally:
+        if not driver.connected:
+            # Resets the motor fader/iris display to 0, same as an
+            # explicit disconnect_camera() -- covers both a failed initial
+            # connect and every failed retry from camera_reconnect_loop().
+            cam_state.iris = 0.0
         await state.event_bus.publish("connection_changed", {"camera_id": camera_id})
 
 
@@ -285,7 +337,13 @@ async def disconnect_camera(state: AppState, camera_id: str) -> None:
     Resets `iris` to 0.0 and publishes `connection_changed` first, while the
     channel mapping still exists, so the physical motor fader can be driven
     to 0 before the channel mapping, bank entry, and camera config are
-    removed and `config_changed` is published."""
+    removed and `config_changed` is published.
+
+    A channel's Companion SELECT target (Page/Row/Column) is independent of
+    the camera -- if one is assigned, the bank entry survives with
+    `camera=None` and cleared buttons instead of being dropped, so SELECT
+    keeps working after the disconnect. Button 2/3 feature assignments are
+    always cleared -- they're tied to the (now gone) camera's model."""
     driver = state.drivers.get(camera_id)
     if driver is None:
         return
@@ -307,7 +365,13 @@ async def disconnect_camera(state: AppState, camera_id: str) -> None:
     state.config.cameras = [c for c in state.config.cameras if c.id != camera_id]
     if channel_index is not None:
         if state.config.banks and 1 <= channel_index <= len(state.config.banks[0].channels):
-            state.config.banks[0].channels[channel_index - 1] = None
+            channels = state.config.banks[0].channels
+            existing = channels[channel_index - 1]
+            if existing is not None and existing.companion is not None:
+                existing.camera = None
+                existing.buttons = {}
+            else:
+                channels[channel_index - 1] = None
         state.mapping.unset_channel("fader", channel_index)
     save_config(state.config_path, state.config)
 
@@ -315,7 +379,109 @@ async def disconnect_camera(state: AppState, camera_id: str) -> None:
     state.drivers.pop(camera_id, None)
     state.rate_limiters.pop(camera_id, None)
     state.encoder_rate_limiters.pop(camera_id, None)
+    state.wired_drivers.pop(camera_id, None)
     await state.event_bus.publish("config_changed", {"channel_index": channel_index})
+
+
+# --- Camera liveness watchdog + auto-reconnect --------------------------
+# Two independent background loops, started/stopped from web/app.py's
+# lifespan alongside the MIDI connection:
+# - camera_liveness_loop(): pings one registered camera per second, cycling
+#   through all of them in order -- a camera going silent while nobody
+#   happens to send it a command (the only other way `connected` flips to
+#   `False`, see PanasonicAWDriver._request()) is detected within at most
+#   len(state.drivers) seconds, plus the failing camera's own request
+#   timeout/retry (see _liveness_check_one()).
+# - camera_reconnect_loop(): every _RECONNECT_INTERVAL, retries
+#   connect_camera() for every camera currently not connected.
+_LIVENESS_STEP_INTERVAL = 1.0
+_RECONNECT_INTERVAL = 2.0
+
+
+async def _liveness_check_one(state: AppState, camera_id: str) -> None:
+    """Pings `camera_id` if it's currently marked connected; a no-op
+    otherwise. Split out from `camera_liveness_loop()` so tests can trigger
+    a single check deterministically, without waiting on the loop's real
+    per-channel sleep.
+
+    Deliberately does NOT wrap `driver.ping()` in its own shorter timeout --
+    an earlier version did (`asyncio.wait_for(..., timeout=1.0)`), to keep
+    one unreachable camera from delaying the per-second cadence for the
+    others. That backfired: `PanasonicAWDriver._request()` only flips
+    `connected` to `False` once ITS OWN timeout/retry gives up (up to ~3s
+    worst case), and the added 1.0s wrapper always cancelled the ping
+    first -- a genuinely unreachable camera (e.g. physically unplugged, a
+    network-level hang rather than an instant refusal) was silently never
+    marked disconnected at all. Relying on the driver's own bounded
+    timeout/retry instead means a single dead camera can add up to ~3s to
+    one pass of the cycle, but the failure is actually detected."""
+    driver = state.drivers.get(camera_id)
+    if driver is None or not driver.connected:
+        return
+    try:
+        await driver.ping()
+    except CameraCommandError:
+        pass
+    if not driver.connected:
+        # Resets the motor fader/iris display to 0, same as
+        # connect_camera()'s failure path/an explicit disconnect_camera() --
+        # this is the faster of the two (up to ~1s/channel vs. the
+        # reconnect loop's 2s cadence), so the fader/LEDs/scribble strip
+        # reflect the loss as soon as this check actually catches it.
+        state.state_store.get_camera(camera_id).iris = 0.0
+        # The ping failure flipped `connected` inside driver.ping()/its
+        # underlying request -- publish so the Surface page's WebSocket
+        # snapshot and the physical scribble strip/LEDs update live,
+        # instead of only becoming visible on the Setup page's next reload.
+        await state.event_bus.publish("connection_changed", {"camera_id": camera_id})
+
+
+async def camera_liveness_loop(state: AppState) -> None:
+    """Runs for the process lifetime (cancelled at shutdown). Only pings
+    cameras currently marked connected -- a camera already known to be
+    disconnected is `camera_reconnect_loop()`'s job, not this one's.
+
+    With zero cameras configured, the per-camera loop below never runs --
+    the sleep still has to happen unconditionally each pass, or this busy-
+    loops without ever yielding to the event loop, freezing the whole
+    process (found live: hung the entire test suite)."""
+    try:
+        while True:
+            if not state.drivers:
+                await asyncio.sleep(_LIVENESS_STEP_INTERVAL)
+                continue
+            for camera_id in list(state.drivers):
+                await _liveness_check_one(state, camera_id)
+                await asyncio.sleep(_LIVENESS_STEP_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+
+
+async def _reconnect_check_one(state: AppState, camera_id: str) -> None:
+    """Retries `connect_camera()` for `camera_id` if it's currently marked
+    disconnected; a no-op otherwise. Split out from `camera_reconnect_loop()`
+    for the same testability reason as `_liveness_check_one()` above."""
+    driver = state.drivers.get(camera_id)
+    if driver is None or driver.connected:
+        return
+    try:
+        await connect_camera(state, camera_id)
+    except Exception as exc:  # defensive: one camera's failure must not stop the watchdog
+        LOGGER.debug("Auto-Reconnect fuer %s fehlgeschlagen: %s", camera_id, exc)
+
+
+async def camera_reconnect_loop(state: AppState) -> None:
+    """Runs for the process lifetime (cancelled at shutdown). Reuses
+    `connect_camera()` -- the same use case the Setup page's "Connect
+    Camera" button calls -- so a recovered camera gets the exact same
+    resync (button-feature state, lens feedback) a manual reconnect would."""
+    try:
+        while True:
+            await asyncio.sleep(_RECONNECT_INTERVAL)
+            for camera_id in list(state.drivers):
+                await _reconnect_check_one(state, camera_id)
+    except asyncio.CancelledError:
+        raise
 
 
 async def reset_to_new_config(state: AppState) -> None:
@@ -392,16 +558,31 @@ async def register_camera(
 
 
 async def rename_camera(state: AppState, channel_index: int, name: str) -> None:
-    """Updates only the display name of an already-registered camera,
-    independent of the connect/disconnect toggle so renaming never drops an
-    existing connection. No effect if the channel has no camera yet."""
+    """Updates a channel's display name, independent of the connect/
+    disconnect toggle so renaming never drops an existing connection.
+
+    With a camera assigned, updates `CameraConfig.name` (empty defaults to
+    "CAM {index}", unchanged behavior). Without one, the name is instead
+    stored on the bank entry (created on demand, like
+    `assign_channel_companion_target()`) so a channel can be labeled before
+    a camera is ever connected -- empty clears it there too, dropping the
+    entry entirely if nothing else is assigned. Whichever name is currently
+    showing in the Setup page's input is what "Connect Camera" submits as
+    the new camera's name, so a name typed before connecting carries over
+    naturally without any extra transfer logic here."""
     entry = state.mapping.get_channel("fader", channel_index)
-    if entry is None:
+    if entry is not None:
+        camera_cfg = state.cameras.get(entry.camera_id)
+        if camera_cfg is not None:
+            camera_cfg.name = name.strip() or f"CAM {channel_index}"
+            save_config(state.config_path, state.config)
+            await state.event_bus.publish("config_changed", {"channel_index": channel_index})
         return
-    camera_cfg = state.cameras.get(entry.camera_id)
-    if camera_cfg is None:
-        return
-    camera_cfg.name = name.strip() or f"CAM {channel_index}"
+    if not 1 <= channel_index <= 8:
+        raise ValueError(f"Kanal außerhalb 1-8: {channel_index}")
+    channel_cfg = _ensure_bank_channel(state, channel_index)
+    channel_cfg.name = name.strip() or None
+    _drop_bank_channel_if_empty(state, channel_index)
     save_config(state.config_path, state.config)
     await state.event_bus.publish("config_changed", {"channel_index": channel_index})
 
@@ -422,14 +603,21 @@ async def assign_channel_companion_target(
     state: AppState, channel_index: int, page: int | None, row: int | None, column: int | None
 ) -> None:
     """Persists a channel's SELECT button target (Companion page/row/column).
-    `page/row/column=None` clears the assignment."""
-    channel_cfg = _channel_config(state, channel_index)
-    if channel_cfg is None:
-        raise ValueError(f"Kanal {channel_index} hat keine Kamera zugewiesen")
+    `page/row/column=None` clears the assignment.
+
+    Independent of whether the channel has a camera -- creates the bank
+    entry on demand (`camera=None`) if none exists yet, so SELECT is
+    assignable on an empty channel. If clearing the target leaves the entry
+    completely empty (no camera, no buttons, no companion target), the slot
+    is reset to `None` instead of leaving an inert entry in `config.yaml`."""
+    if not 1 <= channel_index <= 8:
+        raise ValueError(f"Kanal außerhalb 1-8: {channel_index}")
+    channel_cfg = _ensure_bank_channel(state, channel_index)
     if page is None or row is None or column is None:
         channel_cfg.companion = None
     else:
         channel_cfg.companion = CompanionTarget(page=page, row=row, column=column)
+    _drop_bank_channel_if_empty(state, channel_index)
     save_config(state.config_path, state.config)
     await state.event_bus.publish("config_changed", {"channel_index": channel_index})
 
@@ -438,7 +626,15 @@ async def trigger_companion_select(state: AppState, channel_index: int) -> None:
     """Fires a channel's SELECT button target in Companion. No effect
     without an assigned target. Re-raises `CompanionError` on a connection
     error/non-2xx response so the caller can report it -- SELECT is a
-    one-shot action with no persistent state in the snapshot."""
+    one-shot action with no persistent state in the snapshot.
+
+    `state.last_select_channel` is updated and `select_changed` published
+    regardless of the outcome below -- matches "last pressed", shared by the
+    physical LED and the web UI, whether triggered from the X-Touch or a web
+    click. Actual display is gated separately (LED/web UI) on the channel
+    having a Companion target assigned at all."""
+    state.last_select_channel = channel_index
+    await state.event_bus.publish("select_changed", {"channel_index": channel_index})
     channel_cfg = _channel_config(state, channel_index)
     target = channel_cfg.companion if channel_cfg else None
     if target is None:
@@ -1013,11 +1209,15 @@ def channel_snapshot(state: AppState) -> list[dict]:
         camera_cfg = state.cameras.get(camera_id) if camera_id else None
         cam_state = state.state_store.get_camera(camera_id) if camera_id else None
         driver = state.drivers.get(camera_id) if camera_id else None
+        # Without a camera, falls back to the bank entry's own `name` (see
+        # `rename_camera()`) -- lets a channel be labeled before a camera is
+        # ever connected.
+        channel_cfg = _channel_config(state, index)
         channels.append(
             {
                 "index": index,
                 "camera_id": camera_id,
-                "name": camera_cfg.name if camera_cfg else None,
+                "name": camera_cfg.name if camera_cfg else (channel_cfg.name if channel_cfg else None),
                 "host": camera_cfg.host if camera_cfg else None,
                 "port": camera_cfg.port if camera_cfg else None,
                 "model": driver.model if driver else None,
@@ -1028,6 +1228,7 @@ def channel_snapshot(state: AppState) -> list[dict]:
                 "error": cam_state.error if cam_state else None,
                 "buttons": _channel_button_snapshot(state, index, driver, cam_state),
                 "companion": _channel_companion_snapshot(state, index),
+                "select_active": index == state.last_select_channel,
                 "encoder": _channel_encoder_snapshot(state, index),
                 "display_line1": channel_line1_text(state, index, camera_cfg.name if camera_cfg else None),
                 "display_text": channel_display_text(state, index),

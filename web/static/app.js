@@ -480,6 +480,15 @@ function applySurfaceSnapshot(channels) {
                 button.title = assigned.label;
             }
         });
+
+        // Mirrors the physical Select LED: filled background = last
+        // channel a SELECT press targeted (physical or web), and this
+        // channel has a Companion target assigned -- see
+        // trigger_companion_select()/AppState.last_select_channel.
+        const selectButton = article.querySelector("[data-select-btn]");
+        if (selectButton) {
+            selectButton.classList.toggle("is-on", !!(ch.companion && ch.select_active));
+        }
     });
 }
 

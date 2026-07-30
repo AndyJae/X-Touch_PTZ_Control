@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 
@@ -9,6 +10,8 @@ import httpx
 from core.state import CameraState
 from drivers.base import CameraCommandError, CameraDriver
 from drivers.panasonic_models.registry import resolve_model
+
+LOGGER = logging.getLogger("ptz_control.panasonic")
 
 # --- Iris (#AXI / #GI): normalized 0.0-1.0 <-> 555h-FFFh, linear ---
 _IRIS_DATA_MIN = 0x555
@@ -48,9 +51,15 @@ _NOTIFY_SIZE_FIELD_LEN = 2
 _NOTIFY_MID_RESERVE = 4
 _NOTIFY_HEADER_LEN = _NOTIFY_HEADER_RESERVE + _NOTIFY_SIZE_FIELD_LEN + _NOTIFY_MID_RESERVE
 # QSV notifications arrive every 60s as a heartbeat; >90s without one means
-# the connection is treated as stale and re-registered. Any notification
-# counts as a heartbeat here, not just QSV.
+# the connection is treated as stale and re-registered (new socket). Any
+# notification counts as a heartbeat here, not just QSV.
 _NOTIFY_HEARTBEAT_TIMEOUT = 90.0
+# The camera only accepts a single registered event-notification client at a
+# time -- opening the camera's own web UI in a browser registers itself the
+# same way and silently steals the slot. Re-sending the registration (same
+# socket, no teardown) on this shorter interval reclaims it regularly instead
+# of only recovering after a full silence timeout.
+_NOTIFY_REREGISTER_INTERVAL = 30.0
 
 
 def _parse_notification_payload(frame: bytes) -> str | None:
@@ -404,9 +413,19 @@ class PanasonicAWDriver(CameraDriver):
     async def _heartbeat_loop(self) -> None:
         try:
             while True:
-                await asyncio.sleep(30)
-                if time.monotonic() - self._last_notification_at > _NOTIFY_HEARTBEAT_TIMEOUT:
-                    await self._reregister_lens_feedback()
+                await asyncio.sleep(_NOTIFY_REREGISTER_INTERVAL)
+                try:
+                    if time.monotonic() - self._last_notification_at > _NOTIFY_HEARTBEAT_TIMEOUT:
+                        await self._reregister_lens_feedback()
+                    else:
+                        # Re-send the registration on the existing socket, so
+                        # a slot stolen by another client (e.g. the camera's
+                        # own web UI) gets reclaimed even while QSV
+                        # heartbeats keep arriving and the silence timeout
+                        # above never fires.
+                        await self._notify_request("start")
+                except httpx.HTTPError as exc:
+                    LOGGER.warning("Notification-Registrierung fehlgeschlagen fuer %s: %s", self.host, exc)
         except asyncio.CancelledError:
             raise
 
@@ -649,6 +668,14 @@ class PanasonicAWDriver(CameraDriver):
             nd_index=await self._query_nd(),
             error=await self._query_error(),
         )
+
+    async def ping(self) -> None:
+        """Re-sends the same lightweight `QID` query used to detect the
+        model at connect time -- unlike `_query_model()`, doesn't swallow
+        `CameraCommandError`, so the liveness watchdog can tell success from
+        failure. `_request()` already flips `connected` to `False` on
+        failure, same as any other command."""
+        await self._request("aw_cam", "QID")
 
     def subscribe(self, callback: Callable[[dict], None]) -> None:
         self._callbacks.append(callback)

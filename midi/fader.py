@@ -40,8 +40,9 @@ state is purely binary (no blinking). Rec lights up on any channel with a
 connected camera, regardless of feature state -- it only selects the
 encoder function, it has no on/off logic itself. Select lights only the
 last-pressed channel, and only while Companion is connected and that
-channel has a connected camera -- it stays a one-shot action with no
-persistent success/failure state of its own."""
+channel has a Companion target (Page/Row/Column) assigned -- independent of
+whether a camera is connected on that channel. It stays a one-shot action
+with no persistent success/failure state of its own."""
 
 from __future__ import annotations
 
@@ -110,7 +111,6 @@ class XTouchFader:
         self._task: asyncio.Task[None] | None = None
         self._touch_active: dict[int, bool] = {}
         self._last_value: dict[int, float] = {}
-        self._last_select_channel: int | None = None
 
     async def start(self) -> None:
         self._in_port = mido.open_input(self._input_port_name)
@@ -129,6 +129,11 @@ class XTouchFader:
                 "nd_changed",
             ):
                 self._state.event_bus.subscribe(topic, self._on_scribble_relevant_event)
+            # select_changed only refreshes button LEDs (not the scribble
+            # strips) -- matches the previous direct-call-only behavior for
+            # a Select press, avoids unnecessary SysEx traffic on every
+            # press (physical or via the web UI).
+            self._state.event_bus.subscribe("select_changed", self._on_select_changed)
             LOGGER.info("MIDI-Ausgang verbunden: %s", self._output_port_name)
             await self._resync_from_state()
             self._refresh_scribble_strips()
@@ -241,13 +246,15 @@ class XTouchFader:
             and msg.velocity > 0
         ):
             # Select: fires the channel's Companion SELECT target, a
-            # one-shot action with no persistent state. The LED shows the
-            # last-pressed channel regardless of whether the trigger itself
-            # succeeded. CompanionError is only logged here (unlike the web
-            # route) so a connection error doesn't kill the poll loop.
+            # one-shot action with no persistent state. `trigger_
+            # companion_select()` itself updates `AppState.
+            # last_select_channel` and publishes `select_changed` (picked up
+            # by `_on_select_changed()` below to refresh the LEDs), so the
+            # LED shows the last-pressed channel regardless of whether the
+            # trigger itself succeeded. CompanionError is only logged here
+            # (unlike the web route) so a connection error doesn't kill the
+            # poll loop.
             channel_index = msg.note - _SELECT_NOTE_BASE + 1
-            self._last_select_channel = channel_index
-            self._refresh_button_leds()
             try:
                 await trigger_companion_select(self._state, channel_index)
             except CompanionError as exc:
@@ -354,6 +361,9 @@ class XTouchFader:
         self._refresh_scribble_strips()
         self._refresh_button_leds()
 
+    async def _on_select_changed(self, _payload: dict) -> None:
+        self._refresh_button_leds()
+
     def _refresh_scribble_strips(self) -> None:
         """Full refresh of all 8 strips, triggered by the infrequent events
         (connect/disconnect, feature toggle, config change). Lines 1/2 come
@@ -361,9 +371,17 @@ class XTouchFader:
         functions the web UI uses for its channel display."""
         for ch in channel_snapshot(self._state):
             if ch["camera_id"] is None:
-                upper, lower = "", "----"
+                # Upper line shows a name set via rename_camera() even
+                # without a camera (see channel_snapshot()'s fallback to
+                # BankChannelConfig.name) -- lower line stays the fixed
+                # "unassigned" marker, not part of that name.
+                upper, lower = ch["name"] or "", "----"
             elif not ch["connected"]:
-                upper, lower = ch["name"] or "", "NC"
+                # Nutzerauftrag 2026-07-28: eine verlorene (vorher
+                # verbundene) Kamera soll wie eine leere Bank aussehen --
+                # obere Zeile bleibt deshalb leer statt den Kameranamen zu
+                # zeigen, anders als bei einem Kanal ohne jede Kamera oben.
+                upper, lower = "", "NC"
             else:
                 upper, lower = ch["display_line1"], ch["display_text"]
             self._send_scribble_strip(ch["index"], upper, lower)
@@ -408,23 +426,28 @@ class XTouchFader:
 
     def _refresh_button_leds(self) -> None:
         """Full refresh of all four LED types across all 8 channels,
-        triggered by the same events as the scribble strips plus directly
-        after a Select press. Solo/Mute state comes from the same
+        triggered by the same events as the scribble strips plus
+        `select_changed`. Solo/Mute state comes from the same
         `_channel_button_snapshot()` source the web UI uses for its `is-on`
-        class. Rec lights up on any channel with a connected camera,
-        regardless of Solo/Mute feature state. Select lights only
-        `_last_select_channel`, only while `AppState.companion_connected` is
-        set and that channel has a connected camera."""
+        class, additionally gated on `ch["connected"]` (Nutzerauftrag
+        2026-07-28: a lost camera must show as if nothing were connected at
+        all, not keep displaying its last known feature state). Rec lights
+        up on any channel with a connected camera, regardless of Solo/Mute
+        feature state. Select lights only `AppState.last_select_channel`
+        (`ch["select_active"]`, shared with the web UI), only while
+        `AppState.companion_connected` is set and that channel has a
+        Companion target (Page/Row/Column) assigned -- deliberately
+        independent of `ch["connected"]` (Nutzerentscheid 2026-07-28: SELECT
+        keeps working, and its LED can stay lit, even while the channel's
+        camera is lost)."""
         for ch in channel_snapshot(self._state):
             self._send_button_led(ch["index"], _REC_NOTE_BASE, ch["connected"])
             for slot, note_base in (("button2", _SOLO_NOTE_BASE), ("button3", _MUTE_NOTE_BASE)):
                 assigned = ch["buttons"][slot]
-                on = bool(assigned and assigned["state"])
+                on = bool(assigned and assigned["state"] and ch["connected"])
                 self._send_button_led(ch["index"], note_base, on)
             select_on = (
-                ch["connected"]
-                and self._state.companion_connected
-                and ch["index"] == self._last_select_channel
+                ch["companion"] is not None and self._state.companion_connected and ch["select_active"]
             )
             self._send_button_led(ch["index"], _SELECT_NOTE_BASE, select_on)
 

@@ -33,11 +33,13 @@ class MappingEngine:
 
 def build_mapping_from_config(config: AppConfig) -> MappingEngine:
     """Builds the mapping engine from `banks`. Only the first bank is active
-    (no bank-switch UI)."""
+    (no bank-switch UI). A channel entry with `camera=None` (a Companion
+    SELECT target with no camera attached, see `BankChannelConfig`) is
+    skipped -- it has nothing to map to a driver."""
     engine = MappingEngine()
     if not config.banks:
         return engine
     for index, entry in enumerate(config.banks[0].channels, start=1):
-        if entry is not None:
+        if entry is not None and entry.camera is not None:
             engine.set_channel("fader", index, entry.camera)
     return engine

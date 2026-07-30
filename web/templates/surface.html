@@ -60,7 +60,7 @@
                     <div class="feature-popover" data-feature-popover hidden></div>
                 </div>
                 {% endfor %}
-                <button type="button" class="surf-btn btn-select" data-select-btn data-channel-index="{{ ch.index }}"
+                <button type="button" class="surf-btn btn-select {{ 'is-on' if ch.companion and ch.select_active }}" data-select-btn data-channel-index="{{ ch.index }}"
                         {{ "disabled" if not ch.companion }}
                         title="{{ 'Companion Page ' ~ ch.companion.page ~ '/Row ' ~ ch.companion.row ~ '/Col ' ~ ch.companion.column if ch.companion else 'no Companion target assigned (Setup page)' }}">
                     SELECT

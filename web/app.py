@@ -28,6 +28,8 @@ from core.application import (
     assign_channel_companion_target,
     available_button_features,
     build_app_state,
+    camera_liveness_loop,
+    camera_reconnect_loop,
     channel_snapshot,
     commit_encoder_value,
     configure_companion,
@@ -121,7 +123,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         LOGGER.warning("MIDI-Eingangsport %r nicht gefunden", input_port_substring)
 
+    # Camera liveness watchdog + auto-reconnect (Nutzerauftrag 2026-07-28):
+    # detects a camera going silent even without a user-triggered command
+    # failing, and retries connect_camera() until it's back.
+    liveness_task = asyncio.create_task(camera_liveness_loop(state))
+    reconnect_task = asyncio.create_task(camera_reconnect_loop(state))
+
     yield
+    for task in (liveness_task, reconnect_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     for driver in state.drivers.values():
         await driver.disconnect()
     await state.companion_client.aclose()
@@ -266,12 +280,16 @@ async def api_register_camera(channel_index: int, request: Request) -> JSONRespo
 
 @app.post("/api/channels/{channel_index}/camera/name")
 async def api_rename_camera(channel_index: int, request: Request) -> JSONResponse:
-    """Updates only the display name, independent of the connect/disconnect
-    toggle, see rename_camera()."""
+    """Updates a channel's display name, independent of the connect/
+    disconnect toggle and of whether a camera is assigned, see
+    rename_camera()."""
     state = _ptz_state(request)
     body = await request.json()
     name = str(body.get("name") or "")
-    await rename_camera(state, channel_index, name)
+    try:
+        await rename_camera(state, channel_index, name)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"ok": True})
 
 
