@@ -665,12 +665,22 @@ async def apply_iris(state: AppState, channel_index: int, value: float, *, final
     only the camera's own query.
 
     The camera silently ignores iris-set commands while auto-iris is active
-    (no error, but no effect on the real position). If `cam_state.auto_iris`
-    is `True`, the fader's target value is therefore not applied blindly;
-    instead the real position and auto-iris mode are re-queried and
-    published, so the web slider and motor fader snap back to the real
-    position on every tick while auto-iris stays active. When auto-iris is
-    off, the cheaper direct-apply behavior is unchanged."""
+    (no error, but no effect on the real position) -- however, `#AXI` is
+    deliberately not even sent in that case (see below), rather than relying
+    on that. If `cam_state.auto_iris` is `True`, the fader's target value is
+    therefore not applied at all; instead the real position and auto-iris
+    mode are re-queried and published, so the web slider and motor fader
+    snap back to the real position on every tick while auto-iris stays
+    active. When auto-iris is off, the cheaper direct-apply behavior is
+    unchanged.
+
+    Bugreport 2026-07-28, real AW-UE160: sending `#AXI` on every tick even
+    while auto-iris was active (relying purely on the camera ignoring it)
+    let the fader's dragged-during-auto target leak in the moment auto-iris
+    was switched off again -- the camera appears to apply the last `#AXI`
+    it received rather than cleanly freezing at its own current
+    auto-computed position. Not sending it while auto-iris is active removes
+    that dependency entirely, regardless of the exact camera-side cause."""
     entry = state.mapping.get_channel("fader", channel_index)
     if entry is None:
         return
@@ -683,13 +693,6 @@ async def apply_iris(state: AppState, channel_index: int, value: float, *, final
     if not limiter.should_send(value, final=final):
         return
     cam_state = state.state_store.get_camera(camera_id)
-    try:
-        await driver.set_iris(value)
-    except CameraCommandError as exc:
-        cam_state.error = str(exc)
-        await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
-        return
-    cam_state.error = None
     if cam_state.auto_iris:
         real_iris, real_auto_iris = await driver.query_iris()
         if real_iris is not None:
@@ -697,7 +700,14 @@ async def apply_iris(state: AppState, channel_index: int, value: float, *, final
         if real_auto_iris is not None:
             cam_state.auto_iris = real_auto_iris
     else:
+        try:
+            await driver.set_iris(value)
+        except CameraCommandError as exc:
+            cam_state.error = str(exc)
+            await state.event_bus.publish("error", {"camera_id": camera_id, "message": str(exc)})
+            return
         cam_state.iris = value
+    cam_state.error = None
     cam_state.iris_f_number = await driver.query_f_number()
     await state.event_bus.publish("iris_changed", {"camera_id": camera_id, "value": cam_state.iris})
 
@@ -853,7 +863,18 @@ async def apply_encoder_turn(state: AppState, channel_index: int, tick_delta: in
         # the Auto<->manual transition is a rare boundary crossing, not
         # continuous dragging.
         if pending <= 0 or step_method is None:
-            state.encoder_pending_delta[channel_index] = min(pending, 0)
+            # Bugreport 2026-07-29: turning further down while already in
+            # Auto is a genuine no-op (no lower state exists) -- pinning
+            # the pending delta at 0 here (instead of letting it keep
+            # accumulating negatively) means a later upward turn takes
+            # effect immediately, regardless of how far the encoder was
+            # turned down while already in Auto. Previously the negative
+            # accumulation had to be "paid off" first, needing as many
+            # up-ticks as prior down-ticks (or a single fast/accelerated
+            # turn) to ever exit Auto -- unlike pedestal/nd, whose pending
+            # delta is always the bounded `proposed - confirmed`, not a raw
+            # accumulator.
+            state.encoder_pending_delta[channel_index] = 0
             return
         try:
             new_db, new_auto = await step_method(pending)
@@ -1246,18 +1267,27 @@ def _channel_companion_snapshot(state: AppState, index: int) -> dict | None:
 
 
 def _channel_button_snapshot(state: AppState, index: int, driver, cam_state) -> dict:
-    """Button 2/3 assignment + last tracked state for a channel."""
+    """Button 2/3 assignment + last tracked state for a channel.
+
+    Bugreport 2026-07-28: right after a (re)connect, `driver.BUTTON_
+    FEATURE_LABELS` is briefly empty until the model catalog finishes
+    loading -- a snapshot rendered in that window (e.g. triggered by an
+    unrelated channel's event) used to fall back to the raw, lowercase
+    feature key (`labels.get(key, key)`) as if it were the real label. A
+    key with no catalog entry now shows the slot as unassigned instead --
+    the correct label appears automatically once the catalog is ready and
+    the next snapshot goes out."""
     channel_cfg = _channel_config(state, index)
     labels = getattr(driver, "BUTTON_FEATURE_LABELS", {}) if driver else {}
     result: dict[str, dict | None] = {}
     for slot in ("button2", "button3"):
         key = channel_cfg.buttons.get(slot) if channel_cfg else None
-        if not key:
+        if not key or key not in labels:
             result[slot] = None
             continue
         result[slot] = {
             "key": key,
-            "label": labels.get(key, key),
+            "label": labels[key],
             "state": cam_state.feature_states.get(key) if cam_state else None,
         }
     return result

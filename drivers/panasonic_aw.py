@@ -255,6 +255,17 @@ class PanasonicAWDriver(CameraDriver):
     # --- Lifecycle -----------------------------------------------------
 
     async def connect(self) -> None:
+        # A previous connect() that was never disconnect()'d -- e.g. a
+        # camera_reconnect_loop() retry on an already-registered driver
+        # that the liveness watchdog marked disconnected, which never goes
+        # through register_camera()'s explicit old_driver.disconnect() --
+        # would otherwise leak the old httpx.AsyncClient plus (if lens
+        # feedback had been started) the old notification server/heartbeat
+        # task, since they'd simply be overwritten below. disconnect() is a
+        # no-op when there's nothing to clean up (fresh driver, `_client`
+        # still `None`), so this doesn't change behavior for the normal
+        # first-time-connect case.
+        await self.disconnect()
         self._client = httpx.AsyncClient(
             base_url=f"http://{self.host}:{self.port}", timeout=_REQUEST_TIMEOUT
         )

@@ -198,7 +198,19 @@ class XTouchFader:
         if msg.type == "pitchwheel":
             channel_index = msg.channel + 1
             value = self._protocol.pitchbend_to_normalized(msg.pitch + 8192)
-            self._last_value[channel_index] = value
+            # Bugreport 2026-07-28: while auto-iris is active, dragging the
+            # fader is a no-op on the camera (apply_iris() re-queries the
+            # real position instead of using this value) -- but if the
+            # dragged position were still recorded here, it would stick
+            # around in `_last_value` and get sent as a real manual target
+            # on some LATER, unrelated touch release, once auto-iris had
+            # since been turned off (the camera would actually apply it by
+            # then, jumping to wherever the fader happened to be dragged to
+            # while auto-iris was on). Only recording it while auto-iris is
+            # off keeps `_last_value` meaningful for the eventual touch
+            # release.
+            if not self._auto_iris_active(channel_index):
+                self._last_value[channel_index] = value
             # Ongoing movement always goes through the rate limiter; only
             # touch release below forces a final send.
             await apply_iris(self._state, channel_index, value, final=False)
@@ -313,6 +325,12 @@ class XTouchFader:
             if mapping.camera_id == camera_id:
                 return channel_index
         return None
+
+    def _auto_iris_active(self, channel_index: int) -> bool:
+        entry = self._state.mapping.get_channel("fader", channel_index)
+        if entry is None:
+            return False
+        return bool(self._state.state_store.get_camera(entry.camera_id).auto_iris)
 
     def _send(self, msg: mido.Message) -> None:
         """Central Tx path for all MIDI output (fader motor, scribble
