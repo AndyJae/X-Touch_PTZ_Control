@@ -70,7 +70,7 @@
         <li><strong>REC button</strong> — cycles the encoder's function: Gain → Pedestal → ND → Camera Info.</li>
         <li><strong>Encoder</strong> — turning it adjusts the active function live.</li>
         <li><strong>Solo / Mute buttons</strong> — click the gear icon (⚙) to assign a camera feature (e.g. Auto Focus, Knee, DRS — depends on the model), then click the button to toggle it.</li>
-        <li><strong>SELECT</strong> — triggers a Bitfocus Companion button, if a Page/Row/Column target is assigned for that channel on the Setup page.</li>
+        <li><strong>SELECT</strong> — triggers a Bitfocus Companion button, if a Page/Row/Column target is assigned for that channel on the Setup page. Works independently of a camera — a channel with a Companion target but no camera still lights up and triggers normally.</li>
     </ul>
 </section>
 
@@ -79,6 +79,7 @@
     <ul>
         <li><strong>Companion Config</strong> — host/port for the optional Companion integration.</li>
         <li><strong>Camera &amp; Button Assignment</strong> — one row per channel: connect/disconnect a camera, rename it, assign Solo/Mute button features, assign a Companion target. Disconnecting a camera also removes it from <code>config.yaml</code>.</li>
+        <li>A channel's <strong>name</strong> and <strong>Companion target</strong> can both be set without a camera assigned to that channel — Solo/Mute button features remain tied to a connected camera's model.</li>
     </ul>
 </section>
 
