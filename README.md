@@ -17,7 +17,13 @@ filter control, all from one 8-channel surface.
   toggle features (e.g. Auto Focus, Knee, DRS — depends on the camera
   model).
 - **A SELECT button** per channel can optionally trigger a Bitfocus
-  Companion button.
+  Companion button — independent of whether that channel has a camera, so
+  it also works on channels used purely as Companion shortcuts.
+- **A camera liveness watchdog** pings every connected camera once a
+  second and keeps retrying the connection in the background if one drops
+  — a lost camera shows up immediately (motor fader to 0, LEDs off) on
+  both the web UI and the physical surface, and reconnects on its own once
+  it's back.
 - Everything is controlled from a local web UI — it works standalone, the
   X-Touch Extender is optional.
 
